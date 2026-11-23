@@ -1,0 +1,70 @@
+name: Windows x64 SDK checks
+on:
+  workflow_call:
+    inputs:
+      validation-arguments:
+        type: string
+        description: JSON array of arguments for the SDK's Windows validation entry point.
+        default: '["tools/windows.py"]'
+      install-rust:
+        type: boolean
+        description: Install the SDK's pinned Rust toolchain before running its checks.
+        default: false
+      check-rust-format:
+        type: boolean
+        description: Check formatting with the SDK's pinned Rust toolchain.
+        default: false
+permissions:
+  contents: read
+jobs:
+  windows:
+    name: Build and verify x64 consumers
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_CLI_USE_MSBUILD_SERVER: "0"
+      MSBUILDDISABLENODEREUSE: "1"
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        if: inputs.install-rust
+        run: rustup install --no-self-update
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.15.1"
+          architecture: x64
+      - name: Select the pinned Rust toolchain and check formatting
+        if: inputs.check-rust-format
+        run: cargo fmt --all -- --check
+      - uses: actions/setup-dotnet@v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          dotnet-version: "10.0.403"
+          architecture: x64
+      - name: Run Windows x64 tooling fixtures
+        run: python -E -S -B -m unittest discover -s tools/tests
+      - name: Build the x64 DLL and validate C, .NET and installed NuGet consumers
+        env:
+          NAVI_SDK_TOOLING_CACHE: ${{ runner.temp }}/sdk-tooling
+          SDK_VALIDATION_ARGUMENTS: ${{ inputs.validation-arguments }}
+        shell: python
+        run: |
+          import json
+          import os
+          import subprocess
+          import sys
+
+          arguments = json.loads(os.environ["SDK_VALIDATION_ARGUMENTS"])
+          if not isinstance(arguments, list) or not arguments or not all(
+              isinstance(argument, str) and argument for argument in arguments
+          ):
+              raise SystemExit("validation-arguments must be a nonempty JSON array of nonempty strings.")
+          subprocess.run(
+              [sys.executable, "-E", "-S", "-B", "tools/_tooling.py", *arguments],
+              check=True,
+          )

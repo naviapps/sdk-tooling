@@ -42,6 +42,13 @@ After changing a workflow's action dependencies, regenerate its
 `actions.lock` with `gh actions-lock` and review the resolved commits.
 Run `gh actions-lock --verify` to check it.
 
+Public SDKs call the [Windows x64](.github/workflows/check-sdk-windows.yml)
+and [Swift](.github/workflows/check-sdk-swift.yml) workflows at a full SDK
+Tooling commit SHA. The shared workflows provision the runners and invoke
+SDK-owned tests. Each SDK defines its triggers, inputs and macOS distribution job.
+Update the caller's workflow reference when adopting workflow changes. The
+shared workflows' action dependencies are locked in this repository.
+
 ### SDK checkouts
 
 Review the SDK's `mise.toml`, select full Xcode, then run its check target:

@@ -1,0 +1,75 @@
+name: Swift SDK checks
+on:
+  workflow_call:
+    inputs:
+      consumer-module:
+        description: Python module to run instead of tools/consumer.py
+        type: string
+        default: ""
+      swift-build:
+        description: Select Swift Build for the SDK and its consumer
+        type: boolean
+        default: false
+      allow-swift-6-3-warnings:
+        description: Allow warnings on Swift 6.3 when a dependency supplies incompatible flags
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  swift:
+    name: Swift checks (macOS ${{ matrix.macos }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - macos: "26"
+            runner: macos-26
+            xcode: /Applications/Xcode_26.6.app/Contents/Developer
+          - macos: "27"
+            runner: xcode-27
+            xcode: /Applications/Xcode_27.2.app/Contents/Developer
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: ${{ matrix.xcode }}
+      GIT_TERMINAL_PROMPT: "0"
+      SDK_SWIFT_BUILD: ${{ inputs.swift-build }}
+      SDK_SWIFT_ALLOW_WARNINGS: ${{ matrix.macos == '26' && inputs.allow-swift-6-3-warnings }}
+    steps:
+      - uses: actions/checkout@v6.1.0
+        with:
+          persist-credentials: false
+      - name: Check Swift toolchain
+        run: |
+          sw_vers
+          xcrun swift --version
+      - name: Test Swift SDK
+        shell: bash
+        run: |
+          swift_flags=(-Xswiftc -strict-concurrency=complete)
+          if [[ "$SDK_SWIFT_BUILD" == "true" ]]; then
+            swift_flags+=(--build-system swiftbuild)
+          fi
+          if [[ "$SDK_SWIFT_ALLOW_WARNINGS" != "true" ]]; then
+            swift_flags+=(-Xswiftc -warnings-as-errors)
+          fi
+          xcrun swift test "${swift_flags[@]}"
+      - name: Test standalone Swift consumer
+        shell: bash
+        env:
+          SDK_CONSUMER_MODULE: ${{ inputs.consumer-module }}
+        run: |
+          consumer_args=(-B)
+          if [[ -n "$SDK_CONSUMER_MODULE" ]]; then
+            consumer_args+=(-m "$SDK_CONSUMER_MODULE")
+          else
+            consumer_args+=(tools/consumer.py)
+          fi
+          if [[ "$SDK_SWIFT_BUILD" == "true" ]]; then
+            consumer_args+=(--build-system swiftbuild)
+          fi
+          if [[ "$SDK_SWIFT_ALLOW_WARNINGS" == "true" ]]; then
+            consumer_args+=(--allow-warnings)
+          fi
+          python3 "${consumer_args[@]}"

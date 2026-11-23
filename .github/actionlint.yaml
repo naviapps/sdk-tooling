@@ -1,0 +1,3 @@
+# Remove this override once actionlint recognizes the GitHub-hosted runner label.
+self-hosted-runner:
+  labels: [xcode-27]

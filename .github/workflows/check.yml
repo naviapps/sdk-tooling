@@ -51,7 +51,7 @@ jobs:
         with:
           version: "2026.11.12"
           cache: false
-          install_args: ruff dprint actionlint uv pypi:pyflakes
+          install_args: ruff dprint actionlint shellcheck uv pypi:pyflakes
           add_shims_to_path: false
           export_path: false
           env: false

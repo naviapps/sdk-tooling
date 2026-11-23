@@ -3,6 +3,12 @@
 # Docs: https://gh.io/actions-lockfile
 version: 'v0.0.3'
 workflows:
+    '.github/workflows/check-sdk-swift.yml':
+        - 'actions/checkout@v6.1.0'
+    '.github/workflows/check-sdk-windows.yml':
+        - 'actions/checkout@v6.1.0'
+        - 'actions/setup-dotnet@v6.0.0'
+        - 'actions/setup-python@v7.1.0'
     '.github/workflows/check.yml':
         - 'actions/checkout@v6.1.0'
         - 'actions/setup-dotnet@v6.0.0'
