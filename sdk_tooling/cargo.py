@@ -670,157 +670,97 @@ def runtime_notices(root: Path, env: dict, *, notice_directory="ThirdParty"):
     return {"version": pinned, "files": files}
 
 
-def _runtime_source(source, pinned, env, sdk_root):
+def _runtime_source(source, pinned):
     """Read one explicitly selected public source, never another SDK's copy."""
-    if source is not None:
-        base = Path(source)
-        if base.name.lower() == "rust" and base.parent.name.lower() == "thirdparty":
-            raise RuntimeError("Another SDK's retained Rust notices are not an upstream source")
-        if base.is_symlink() or not base.is_dir():
-            raise RuntimeError("Explicit Rust notice source must be a real directory")
-        manifest_path = base / "provenance.json"
-        if manifest_path.exists() or manifest_path.is_symlink():
-            raw = _read(manifest_path)
-            manifest = json.loads(raw)
-            origin = manifest.get("provenance", {})
-            if manifest.get("version") != pinned:
-                raise RuntimeError("Explicit Rust notice source version differs from the SDK pin")
-            if (
-                origin.get("repository")
-                not in (
-                    "rust-lang/rust",
-                    "https://github.com/rust-lang/rust",
-                    "https://github.com/rust-lang/rust.git",
-                )
-                or not re.fullmatch(r"[a-f0-9]{40}", origin.get("revision", ""))
-                or set(manifest.get("files", {})) != set(_RUNTIME)
-            ):
-                raise RuntimeError(
-                    "Explicit Rust notice source lacks public Rust revision/hash provenance"
-                )
-            proof = {
-                "kind": "public-source-manifest",
-                "repository": "https://github.com/rust-lang/rust",
-                "revision": origin["revision"],
-                "sourceManifestSHA256": _hash(raw),
-            }
-            if "sourceArchiveURL" in origin or "sourceArchiveSHA256" in origin:
-                url = urlsplit(origin.get("sourceArchiveURL", ""))
-                checksum = origin.get("sourceArchiveSHA256", "")
-                if (
-                    url.scheme != "https"
-                    or url.netloc != "static.rust-lang.org"
-                    or url.query
-                    or url.fragment
-                    or not url.path.startswith("/dist/")
-                    or pinned not in url.path
-                    or not _SHA256.fullmatch(checksum)
-                ):
-                    raise RuntimeError(
-                        "Explicit Rust archive provenance differs from the pinned public source"
-                    )
-                proof.update(
-                    sourceArchiveURL=origin["sourceArchiveURL"], sourceArchiveSHA256=checksum
-                )
-            files = {}
-            for name in _RUNTIME:
-                record = manifest["files"][name]
-                relative = _relative(record.get("path", name)).as_posix()
-                path = base / relative
-                # Resolve directory links too; even an explicit manifest cannot
-                # borrow notice bytes from outside its selected source tree.
-                if not path.resolve().is_relative_to(base.resolve()):
-                    raise RuntimeError("Rust source notice path escapes its selected tree")
-                data = _read(path)
-                if (
-                    not data
-                    or record.get("bytes") != len(data)
-                    or record.get("sha256") != _hash(data)
-                ):
-                    raise RuntimeError("Rust source notice differs from its explicit provenance")
-                files[name] = data
-            return files, proof
-
-        # Public Rust release source/distribution trees carry their own version
-        # and full commit stamp. No Git checkout operation or network is needed.
-        stamp = base / "version" if (base / "version").exists() else base / "src/version"
-        stamp_bytes = _read(stamp)
-        version = stamp_bytes.decode().strip().split()
-        if not version or version[0] != pinned:
-            raise RuntimeError("Explicit Rust source tree version differs from the SDK pin")
-        revision = _read(base / "git-commit-hash").decode().strip()
-        if not re.fullmatch(r"[a-f0-9]{40}", revision):
-            raise RuntimeError("Rust source tree requires its full release commit stamp")
-        proof = {
-            "kind": "public-release-tree",
-            "repository": "https://github.com/rust-lang/rust",
-            "revision": revision,
-            "versionFile": stamp.relative_to(base).as_posix(),
-            "versionFileSHA256": _hash(stamp_bytes),
-        }
-        docs = base / "share/doc/rust"
-    else:
-        inspection = {
-            key: value
-            for key, value in env.items()
-            if not any(word in key.upper() for word in ("TOKEN", "PASSWORD", "SECRET"))
-        }
-        inspection.update(RUSTUP_AUTO_INSTALL="0", CARGO_NET_OFFLINE="true")
-        compiler = env.get("RUSTC", "rustc")
-        output = _command(
-            [compiler, "--version", "--verbose"],
-            sdk_root,
-            inspection,
-            operation="Rust compiler version",
-        ).decode()
-        fields = dict(line.split(": ", 1) for line in output.splitlines() if ": " in line)
+    base = Path(source)
+    if base.name.lower() == "rust" and base.parent.name.lower() == "thirdparty":
+        raise RuntimeError("Another SDK's retained Rust notices are not an upstream source")
+    if base.is_symlink() or not base.is_dir():
+        raise RuntimeError("Explicit Rust notice source must be a real directory")
+    manifest_path = base / "provenance.json"
+    if manifest_path.exists() or manifest_path.is_symlink():
+        raw = _read(manifest_path)
+        manifest = json.loads(raw)
+        origin = manifest.get("provenance", {})
+        if manifest.get("version") != pinned:
+            raise RuntimeError("Explicit Rust notice source version differs from the SDK pin")
         if (
-            not output.startswith("rustc " + pinned + " ")
-            or fields.get("release") != pinned
-            or not re.fullmatch(r"[a-f0-9]{40}", fields.get("commit-hash", ""))
+            origin.get("repository")
+            not in (
+                "rust-lang/rust",
+                "https://github.com/rust-lang/rust",
+                "https://github.com/rust-lang/rust.git",
+            )
+            or not re.fullmatch(r"[a-f0-9]{40}", origin.get("revision", ""))
+            or set(manifest.get("files", {})) != set(_RUNTIME)
         ):
             raise RuntimeError(
-                "Selected installed Rust compiler differs from the SDK's pinned release"
+                "Explicit Rust notice source lacks public Rust revision/hash provenance"
             )
-        base = Path(
-            _command(
-                [compiler, "--print", "sysroot"],
-                sdk_root,
-                inspection,
-                operation="Rust compiler sysroot",
-            )
-            .decode()
-            .strip()
-        )
-        if not base.is_absolute() or not base.is_dir():
-            raise RuntimeError("Selected Rust compiler did not report an installed sysroot")
-        docs = base / "share/doc/rust"
         proof = {
-            "kind": "installed-compiler-docs",
+            "kind": "public-source-manifest",
             "repository": "https://github.com/rust-lang/rust",
-            "revision": fields["commit-hash"],
-            "release": fields["release"],
+            "revision": origin["revision"],
+            "sourceManifestSHA256": _hash(raw),
         }
-        channel = base / "lib/rustlib/multirust-channel-manifest.toml"
-        if channel.exists():
-            raw = _read(channel)
-            manifest = tomllib.loads(raw.decode())
-            release = manifest.get("pkg", {}).get("rustc", {}).get("version", "")
-            match = re.fullmatch(re.escape(pinned) + r" \(([a-f0-9]{7,40}) [0-9-]+\)", release)
-            if not match or not fields["commit-hash"].startswith(match[1]):
+        if "sourceArchiveURL" in origin or "sourceArchiveSHA256" in origin:
+            url = urlsplit(origin.get("sourceArchiveURL", ""))
+            checksum = origin.get("sourceArchiveSHA256", "")
+            if (
+                url.scheme != "https"
+                or url.netloc != "static.rust-lang.org"
+                or url.query
+                or url.fragment
+                or not url.path.startswith("/dist/")
+                or pinned not in url.path
+                or not _SHA256.fullmatch(checksum)
+            ):
                 raise RuntimeError(
-                    "Installed Rust component manifest differs from the compiler pin"
+                    "Explicit Rust archive provenance differs from the pinned public source"
                 )
-            proof["sourceToolchainManifestSHA256"] = _hash(raw)
+            proof.update(sourceArchiveURL=origin["sourceArchiveURL"], sourceArchiveSHA256=checksum)
+        files = {}
+        for name in _RUNTIME:
+            record = manifest["files"][name]
+            relative = _relative(record.get("path", name)).as_posix()
+            path = base / relative
+            # Resolve directory links too; even an explicit manifest cannot
+            # borrow notice bytes from outside its selected source tree.
+            if not path.resolve().is_relative_to(base.resolve()):
+                raise RuntimeError("Rust source notice path escapes its selected tree")
+            data = _read(path)
+            if not data or record.get("bytes") != len(data) or record.get("sha256") != _hash(data):
+                raise RuntimeError("Rust source notice differs from its explicit provenance")
+            files[name] = data
+        return files, proof
+
+    # Public Rust release source/distribution trees carry their own version
+    # and full commit stamp. No Git checkout operation or network is needed.
+    stamp = base / "version" if (base / "version").exists() else base / "src/version"
+    stamp_bytes = _read(stamp)
+    version = stamp_bytes.decode().strip().split()
+    if not version or version[0] != pinned:
+        raise RuntimeError("Explicit Rust source tree version differs from the SDK pin")
+    revision = _read(base / "git-commit-hash").decode().strip()
+    if not re.fullmatch(r"[a-f0-9]{40}", revision):
+        raise RuntimeError("Rust source tree requires its full release commit stamp")
+    proof = {
+        "kind": "public-release-tree",
+        "repository": "https://github.com/rust-lang/rust",
+        "revision": revision,
+        "versionFile": stamp.relative_to(base).as_posix(),
+        "versionFileSHA256": _hash(stamp_bytes),
+    }
+    docs = base / "share/doc/rust"
 
     files, paths = {}, {}
     for name in _RUNTIME:
-        path = base / name if source is not None and (base / name).exists() else docs / name
+        path = base / name if (base / name).exists() else docs / name
         if not path.is_file():
             raise RuntimeError(
                 "Pinned Rust notice source is incomplete ("
                 + name
-                + "); supply an explicit verified public source; no download or SDK fallback is performed"
+                + "); supply a complete verified public source"
             )
         if not path.resolve().is_relative_to(base.resolve()):
             raise RuntimeError("Rust source notice path escapes its selected tree")
@@ -836,17 +776,14 @@ def _runtime_source(source, pinned, env, sdk_root):
 def retain_runtime_notices(root: Path, env: dict, source=None, *, notice_directory="ThirdParty"):
     """Explicit maintainer retention; normal builds must call runtime_notices().
 
-    Source precedence: explicit Path, SDK_TOOLING_RUST_NOTICE_SOURCE, then the
-    selected pinned rustc's share/doc/rust. Explicit trees require version (or
-    src/version), git-commit-hash and all four static notices, or provenance.json
-    with version, public Rust repository/revision and per-file bytes/sha256
-    (optional relative path). The caller supplies public, preverified material;
-    this helper never downloads or generates missing notices.
+    Pass a verified upstream source as a Path or via SDK_TOOLING_RUST_NOTICE_SOURCE.
+    Release trees require version (or src/version), git-commit-hash and all four
+    static notices. A prepared source manifest records version, public Rust
+    repository/revision and per-file bytes/sha256 (optional relative path).
 
-    Valid retained manifests need no installed compiler/docs when no source was
-    requested. Explicit sources are still checked against retained bytes and
-    never silently upgrade or overwrite different existing notices. Return the
-    new manifest, or retained-file proof without claiming source revalidation.
+    With no source, validate previously retained notices. When a source is
+    supplied, require its bytes to match any already retained notices. Return
+    the new manifest or the retained-file proof.
     """
     root = Path(root).resolve()
     pinned = _runtime_pin(root)
@@ -862,7 +799,9 @@ def retain_runtime_notices(root: Path, env: dict, source=None, *, notice_directo
         }
         if supplied is None:
             return retained
-    files, proof = _runtime_source(supplied, pinned, env, root)
+    if supplied is None:
+        raise RuntimeError("Supply a verified public Rust notice source for initial retention")
+    files, proof = _runtime_source(supplied, pinned)
     records = {name: {"bytes": len(data), "sha256": _hash(data)} for name, data in files.items()}
     if retained is not None:
         if records != retained["files"]:

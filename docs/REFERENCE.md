@@ -243,7 +243,8 @@ and the selected normal/build dependency graph. It only prunes generated registr
 notice directories whose files match the hashes in `registry-notices.json`.
 Use the tooling pinned by an older SDK revision to verify its historical index.
 Manual upstream notices stay in place.
-Maintainers explicitly provision matching public Rust notices with
+For initial retention, pass a verified public Rust release tree or prepared
+source manifest directory to
 `cargo.retain_runtime_notices(root, env, source=verified_public_source)`.
 Normal native builds validate the retained `ThirdParty/Rust/provenance.json` and
 four notice files without installed Rust documentation or downloading Rust source.

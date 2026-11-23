@@ -950,38 +950,6 @@ class RuntimeRetentionTests(unittest.TestCase):
         (self.source / "provenance.json").write_text(json.dumps(manifest))
         return manifest
 
-    def installed(self, *, version="1.99.1", missing=None, component_version="1.99.1"):
-        sysroot = self.base / "installed-rust"
-        docs = sysroot / "share/doc/rust"
-        docs.mkdir(parents=True)
-        for name, data in self.files.items():
-            if name != missing:
-                (docs / name).write_bytes(data)
-        component = sysroot / "lib/rustlib/multirust-channel-manifest.toml"
-        component.parent.mkdir(parents=True)
-        component.write_text(
-            '[pkg.rustc]\nversion="' + component_version + ' (aaaaaaaaa 2026-10-13)"\n'
-        )
-
-        def command(argv, **options):
-            self.assertEqual(options["cwd"], self.root)
-            self.assertEqual(options["env"]["RUSTUP_AUTO_INSTALL"], "0")
-            if argv == ["rustc", "--version", "--verbose"]:
-                return (
-                    "rustc "
-                    + version
-                    + " (aaaaaaaaa 2026-10-13)\nrelease: "
-                    + version
-                    + "\ncommit-hash: "
-                    + self.revision
-                    + "\nhost: fixture-host\n"
-                ).encode()
-            self.assertEqual(argv, ["rustc", "--print", "sysroot"])
-            return str(sysroot).encode()
-
-        self.command.side_effect = command
-        return sysroot
-
     def test_explicit_public_tree_retains_four_exact_files_and_portable_provenance(self):
         result = self.retain()
         self.assertEqual(result["version"], "1.99.1")
@@ -1107,36 +1075,11 @@ class RuntimeRetentionTests(unittest.TestCase):
         self.assertEqual((self.destination / "COPYRIGHT").read_text(), "manual original")
         self.assertFalse((self.destination / "provenance.json").exists())
 
-    def test_pinned_installed_compiler_docs_and_component_manifest_are_retained(self):
-        self.installed()
-        result = retain_runtime_notices(self.root, self.env)
-        self.assertEqual(result["provenance"]["kind"], "installed-compiler-docs")
-        self.assertIn("sourceToolchainManifestSHA256", result["provenance"])
-        self.assertEqual(
-            result["provenance"]["sourceFiles"]["COPYRIGHT"], "share/doc/rust/COPYRIGHT"
-        )
-        self.assertNotIn(str(self.base), json.dumps(result))
-        self.assertEqual(self.command.call_count, 2)
-
-    def test_missing_installed_documentation_has_no_network_or_sibling_fallback(self):
-        self.installed(missing="COPYRIGHT-library.html")
-        with self.assertRaisesRegex(RuntimeError, "source is incomplete"):
+    def test_initial_retention_requires_a_verified_public_source(self):
+        with self.assertRaisesRegex(RuntimeError, "Supply a verified public Rust notice source"):
             retain_runtime_notices(self.root, self.env)
-        self.assertFalse(self.destination.exists())
-        self.assertEqual(self.command.call_count, 2)
-
-    def test_installed_version_mismatch_is_explicit(self):
-        self.installed(version="1.99.0")
-        with self.assertRaisesRegex(RuntimeError, "installed Rust compiler differs"):
-            retain_runtime_notices(self.root, self.env)
-        self.assertEqual(self.command.call_count, 1)
-        self.assertFalse(self.destination.exists())
-
-    def test_installed_component_version_mismatch_is_not_ignored(self):
-        self.installed(component_version="1.99.0")
-        with self.assertRaisesRegex(RuntimeError, "component manifest differs"):
-            retain_runtime_notices(self.root, self.env)
-        self.assertFalse(self.destination.exists())
+        self.assertFalse((self.root / "ThirdParty").exists())
+        self.command.assert_not_called()
 
     def test_manifest_relative_source_file_cannot_escape_its_public_tree(self):
         manifest = self.source_manifest()
