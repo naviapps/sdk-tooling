@@ -19,7 +19,7 @@ class SourceGateTests(unittest.TestCase):
             git(root, "init", "--quiet")
             module = root / "sdk_tooling" / "example.py"
             module.parent.mkdir()
-            module.write_text("value = 1\n", encoding="utf-8")
+            module.write_bytes(b"value = 1\n")
             git(root, "add", "--", "sdk_tooling")
             git(
                 root,
@@ -40,7 +40,7 @@ class SourceGateTests(unittest.TestCase):
                 source_gate.verify(root, "0" * 40, git)
 
             git(root, "update-index", "--assume-unchanged", "sdk_tooling/example.py")
-            module.write_text("value = 2\n", encoding="utf-8")
+            module.write_bytes(b"value = 2\n")
             self.assertEqual(git(root, "status", "--porcelain=v1"), b"")
             with self.assertRaisesRegex(ValueError, "differs from its pinned bytes"):
                 source_gate.verify(root, pin, git)
