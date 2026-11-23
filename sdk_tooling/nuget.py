@@ -367,7 +367,6 @@ def pack_native(
     runtimes,
     sources=(),
     input_files=(),
-    pack_targets=None,
     environment=None,
 ):
     """Build a standard managed project with verified native assets and publish its receipt."""
@@ -417,13 +416,10 @@ def pack_native(
     output = root / ".native-build/packages"
 
     def packer_inputs():
-        inputs = hashes(
+        return hashes(
             [Path(__file__), Path(artifacts.__file__), Path(dotnet_tools.__file__)],
             Path(__file__).parent,
         )
-        if pack_targets is not None:
-            inputs["sdk-targets/" + pack_targets.name] = file_sha256(pack_targets)
-        return inputs
 
     with (
         build_lock(output),
@@ -438,8 +434,6 @@ def pack_native(
             "UseSharedCompilation": "false",
             "SdkNativeRuntimeAssets": str(stage / "runtimes"),
         }
-        if pack_targets is not None:
-            properties["CustomAfterMicrosoftCommonTargets"] = str(pack_targets)
         runtime_files, accepted_bytes = {}, {}
         for rid, (library, filename, digest) in libraries.items():
             member = f"runtimes/{rid}/native/{filename}"

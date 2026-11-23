@@ -16,11 +16,11 @@ from .artifacts import build_lock, file_sha256, files, hashes, publish, stage_na
 from .cargo import CargoDependencies
 from .cargo_build import compile_units, verify_units
 from .dotnet import subprocess_environment
-from .ffi import tool_input_hashes
+from .ffi import WINDOWS_X64_TARGET, tool_input_hashes
 
 MSVC_TARGETS = {
     "arm64": "aarch64-pc-windows-msvc",
-    "x64": "x86_64-pc-windows-msvc",
+    "x64": WINDOWS_X64_TARGET,
 }
 MSVC_MACHINES = {"arm64": 0xAA64, "x64": 0x8664}
 MSVC_COMPONENTS = {
@@ -533,7 +533,7 @@ def build_library(
             )
         if native_host is not None:
             toolchain.update(host=compiler_host, target=target)
-        builder.retain_notices(env)
+        builder.retain_notices(env, windows_target=target)
         graph = CargoDependencies(builder.root, [builder.package], [target], env)
         dependencies = graph.provenance()
         graph.configure_remaps(env)

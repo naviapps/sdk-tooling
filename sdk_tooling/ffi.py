@@ -11,7 +11,8 @@ from .c_compiler import compile_c
 from .cargo import CargoDependencies, notice_root, runtime_notices
 
 DARWIN_TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin")
-NOTICE_TARGETS = (*DARWIN_TARGETS, "aarch64-pc-windows-msvc")
+WINDOWS_X64_TARGET = "x86_64-pc-windows-msvc"
+NOTICE_TARGETS = (*DARWIN_TARGETS, WINDOWS_X64_TARGET)
 
 
 def tool_input_hashes(*platform_sources):
@@ -194,13 +195,13 @@ class FfiProduct:
             self.root,
         )
 
-    def retain_notices(self, env=None):
+    def retain_notices(self, env=None, *, windows_target=WINDOWS_X64_TARGET):
         env = env or os.environ.copy()
         relative = self.notice_root.relative_to(self.root).as_posix()
         runtime_notices(self.root, env, notice_directory=relative)
-        CargoDependencies(self.root, self.notice_packages, NOTICE_TARGETS, env).retain_notices(
-            notice_directory=relative
-        )
+        CargoDependencies(
+            self.root, self.notice_packages, (*DARWIN_TARGETS, windows_target), env
+        ).retain_notices(notice_directory=relative)
 
     def dependencies(self, env, *, targets):
         graph = CargoDependencies(self.root, [self.package], targets, env)

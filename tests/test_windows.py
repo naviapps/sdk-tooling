@@ -534,7 +534,7 @@ class WindowsPublicationTests(unittest.TestCase):
             library="fixture",
             ffi=root / "crates/ffi",
             symbol_prefix="fixture_",
-            retain_notices=lambda env: None,
+            retain_notices=Mock(),
             abi_versions=lambda windows: {"fixture_abi_version": 1},
             build_sources=lambda: {"runtime.rs": "first"},
             dependencies=lambda env, targets: fixture_dependencies(*targets),
@@ -606,6 +606,10 @@ class WindowsPublicationTests(unittest.TestCase):
             for parent in parents:
                 result = self.build(builder, output_root=parent)
                 self.assertEqual(result, parent / "win-arm64")
+                self.assertEqual(
+                    builder.retain_notices.call_args.kwargs["windows_target"],
+                    MSVC_TARGETS["arm64"],
+                )
                 self.assertEqual(
                     (result / "ThirdParty/notice.txt").read_bytes(), b"original\r\nnotice"
                 )

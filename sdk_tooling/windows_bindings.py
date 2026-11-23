@@ -1,7 +1,6 @@
 """Build x64 Rust DLLs and run SDK-owned .NET contributor fixtures."""
 
 import json
-import re
 import subprocess
 from pathlib import Path
 
@@ -62,27 +61,20 @@ def _build_dlls(root, env, packages):
     return tuple(libraries.values())
 
 
-def _run(args, *, root):
+def _run(_args, *, root):
     root = root.resolve(strict=True)
-    packages, paths = args.package, args.project
-    if not packages and not paths:
-        config = _section(root, "windows_bindings")
-        if config.keys() - {"packages", "projects"}:
-            raise ValueError("Unknown setting in [windows_bindings]")
-        packages = _strings(config.get("packages"), "windows_bindings.packages")
-        paths = (
-            _strings(config["projects"], "windows_bindings.projects")
-            if "projects" in config
-            else (_section(root, "bindings").get("dotnet_project"),)
-        )
+    config = _section(root, "windows_bindings")
+    if config.keys() - {"packages", "projects", "arguments"}:
+        raise ValueError("Unknown setting in [windows_bindings]")
+    packages = _strings(config.get("packages"), "windows_bindings.packages")
+    paths = (
+        _strings(config["projects"], "windows_bindings.projects")
+        if "projects" in config
+        else (_section(root, "bindings").get("dotnet_project"),)
+    )
+    arguments = _strings(config.get("arguments", []), "windows_bindings.arguments")
     if not packages or not paths or len(set(paths)) != len(paths):
         raise ValueError("Select Rust packages and distinct .NET projects for the Windows fixtures")
-    if args.native_property is not None and (
-        len(packages) != 1
-        or len(paths) != 1
-        or not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", args.native_property)
-    ):
-        raise ValueError("A native MSBuild property requires one Rust package and one .NET fixture")
     projects = [_inside(root, path, "Windows binding project") for path in paths]
     if any(project.suffix != ".csproj" or not project.is_file() for project in projects):
         raise ValueError("Select existing .csproj files for the Windows fixtures")
@@ -90,42 +82,26 @@ def _run(args, *, root):
     env = dotnet.subprocess_environment()
     env["DOTNET_CLI_UI_LANGUAGE"] = "en"
     executable, _, emulated = select_dotnet_host(env, "x64")
+    if Path(executable).is_absolute():
+        env["DOTNET_ROOT_X64"] = str(Path(executable).resolve().parent)
     libraries = _build_dlls(root, env, packages)
-    if args.native_property is not None:
-        # Older consumers let the managed project copy its native dependency.
-        dotnet.run_managed(
-            executable,
-            projects[0],
-            env=env,
-            cwd=root,
-            properties={args.native_property: libraries[0]},
-            arguments=args.argument,
-        )
-    else:
-        for project in projects:
-            with temporary_workspace(None, prefix="windows-bindings-") as output:
-                dotnet.run_command(
-                    [
-                        executable,
-                        "build",
-                        project,
-                        "--configuration",
-                        "Release",
-                        "--output",
-                        output,
-                    ],
-                    cwd=root,
-                    env=env,
-                    runner=None,
-                )
-                for library in libraries:
-                    stage_native(library, output / library.name)
-                dotnet.run_command(
-                    [executable, output / (project.stem + ".dll"), *args.argument],
-                    cwd=root,
-                    env=env,
-                    runner=None,
-                )
+    for project in projects:
+        with temporary_workspace(None, prefix="windows-bindings-") as output:
+            dotnet.run_command(
+                [executable, "build", project, "--configuration", "Release", "--output", output],
+                cwd=root,
+                env=env,
+                runner=None,
+            )
+            for library in libraries:
+                stage_native(library, output / library.name)
+            apphost = output / (project.stem + ".exe")
+            if apphost.is_file():
+                windows.require_pe_machine(apphost, "x64")
+                command = [apphost]
+            else:
+                command = [executable, output / (project.stem + ".dll")]
+            dotnet.run_command([*command, *arguments], cwd=root, env=env, runner=None)
     if emulated:
         print("Windows x64 binding fixtures passed under emulation on ARM64.")
 
@@ -134,8 +110,4 @@ def add_command(commands):
     parser = commands.add_parser(
         "test-windows-bindings", help="Build x64 DLLs and test the .NET contributor fixtures"
     )
-    parser.add_argument("--package", action="append", default=[], help="Rust workspace package")
-    parser.add_argument("--project", action="append", default=[], help=".NET fixture project")
-    parser.add_argument("--native-property", help="MSBuild property that stages the DLL")
-    parser.add_argument("--argument", action="append", default=[], help=".NET fixture argument")
     parser.set_defaults(handler=_run)

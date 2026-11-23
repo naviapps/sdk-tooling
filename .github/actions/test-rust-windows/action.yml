@@ -7,18 +7,6 @@ inputs:
   test-bindings:
     description: Run the .NET fixtures declared in sdk-checks.toml.
     default: "false"
-  managed-project:
-    description: Managed console fixture project to build and run with the native DLL.
-    default: ""
-  native-package:
-    description: Cargo package providing the managed fixture's one cdylib target.
-    default: ""
-  native-property:
-    description: MSBuild property that stages the DLL beside the managed fixture.
-    default: ""
-  managed-argument:
-    description: Optional argument passed to the managed fixture.
-    default: ""
 runs:
   using: composite
   steps:
@@ -37,7 +25,7 @@ runs:
       shell: pwsh
       run: cargo test --workspace --locked --target $env:CARGO_BUILD_TARGET
     - name: Install pinned x64 .NET SDK
-      if: inputs.dotnet == 'true' || inputs.test-bindings == 'true' || inputs.managed-project != ''
+      if: inputs.dotnet == 'true' || inputs.test-bindings == 'true'
       uses: actions/setup-dotnet@v6.0.0
       env:
         DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
@@ -45,30 +33,14 @@ runs:
         global-json-file: global.json
         architecture: x64
     - name: Install SDK Tooling Python
-      if: inputs.test-bindings == 'true' || inputs.managed-project != ''
+      if: inputs.test-bindings == 'true'
       uses: actions/setup-python@v7.1.0
       with:
         python-version: "3.15.1"
         architecture: x64
     - name: Test .NET bindings
-      if: inputs.test-bindings == 'true' || inputs.managed-project != ''
+      if: inputs.test-bindings == 'true'
       shell: pwsh
-      env:
-        SDK_MANAGED_PROJECT: ${{ inputs.managed-project }}
-        SDK_NATIVE_PACKAGE: ${{ inputs.native-package }}
-        SDK_NATIVE_PROPERTY: ${{ inputs.native-property }}
-        SDK_MANAGED_ARGUMENT: ${{ inputs.managed-argument }}
       run: |
         $launcher = Join-Path $env:GITHUB_ACTION_PATH '../../../ci/run_sdk_tooling.py'
-        $options = @()
-        if ($env:SDK_MANAGED_PROJECT) {
-          if (!$env:SDK_NATIVE_PACKAGE -or !$env:SDK_NATIVE_PROPERTY) {
-            throw 'A managed fixture needs a native Cargo package and MSBuild property.'
-          }
-          $options += @('--project', $env:SDK_MANAGED_PROJECT, '--package', $env:SDK_NATIVE_PACKAGE,
-                        '--native-property', $env:SDK_NATIVE_PROPERTY)
-        }
-        if ($env:SDK_MANAGED_ARGUMENT) {
-          $options += "--argument=$env:SDK_MANAGED_ARGUMENT"
-        }
-        python -I -B $launcher test-windows-bindings @options
+        python -I -B $launcher test-windows-bindings

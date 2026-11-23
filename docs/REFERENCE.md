@@ -241,6 +241,8 @@ framework's `Resources/ThirdPartyNotices.txt`. Original `ThirdParty/` files rema
 in the SDK and supply managed packages. Registry retention verifies locked archives
 and the selected normal/build dependency graph. It only prunes generated registry
 notice directories whose files match the hashes in `registry-notices.json`.
+The default graph includes both macOS targets and Windows x64. Explicit Windows
+builds select the Windows target from the build, including on ARM64 hosts.
 Use the tooling pinned by an older SDK revision to verify its historical index.
 Manual upstream notices stay in place.
 For initial retention, pass a verified public Rust release tree or prepared
@@ -330,9 +332,10 @@ See [consumer verification](#consumer-verification) for independent package and 
 
 For Windows contributor checks, `test-windows-bindings` builds the SDK's
 workspace `cdylib` packages for `x86_64-pc-windows-msvc`. It reads the DLL paths
-from Cargo's compiler artifact messages and runs each .NET fixture with those
-DLLs in its temporary output directory. Declare the packages and projects in
-`sdk-checks.toml`:
+from Cargo's compiler artifact messages and stages those DLLs beside each
+.NET fixture in its temporary output directory. It runs the x64 apphost when
+the build produces one, or uses the selected x64 .NET to run the assembly.
+Declare the packages and projects in `sdk-checks.toml`:
 
 ```toml
 [windows_bindings]
@@ -340,9 +343,10 @@ packages = ["example-ffi"]
 projects = ["bindings/dotnet/tests/Example.Tests/Example.Tests.csproj"]
 ```
 
-If `projects` is omitted, the command uses `[bindings].dotnet_project`. On a
-prepared Windows host, run `sdk-tooling test-windows-bindings` with a tooling
-revision that provides the command. These source fixtures run independently of
+If `projects` is omitted, the command uses `[bindings].dotnet_project`. Optional
+`arguments` are passed to each fixture. On a prepared Windows host, run
+`sdk-tooling test-windows-bindings` with a tooling revision that provides the
+command. These source fixtures run independently of
 the release package and native build receipts.
 
 `c_compiler` invokes Clang or MSVC for C callers. `dotnet` runs, builds and
