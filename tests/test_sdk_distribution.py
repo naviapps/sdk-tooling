@@ -102,6 +102,89 @@ class DistributionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "nuget.pack"):
                 parse(source)
 
+    def test_only_combined_nuget_defers_macos_until_the_windows_build(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            source = Path(disposable).resolve()
+            (source / "global.json").touch()
+            (source / "native.toml").touch()
+            pin = "b" * 40
+            normal = {"macos": [["make", "check-distribution"]], "windows": [["dotnet", "test"]]}
+            workflow_plan = DISPATCH["workflow_plan"]
+            plan = workflow_plan(source, normal, pin)
+            self.assertEqual(
+                plan,
+                {
+                    "platforms": '["macos", "windows"]',
+                    "revision": pin,
+                    "dotnet": "true",
+                    "xcframeworks": "true",
+                    "nuget": "false",
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "requires a combined NuGet"):
+                workflow_plan(source, normal, pin, windows_on_arm=True)
+            combined = normal | {"nuget": "distribution/pack.py"}
+            plan = workflow_plan(source, combined, pin, windows_on_arm=True)
+            self.assertEqual(json.loads(plan["platforms"]), ["windows"])
+            self.assertEqual(plan["nuget"], "true")
+
+    def test_macos_distribution_packs_after_regenerating_native_artifacts(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            root = Path(disposable).resolve()
+            source, tooling = root / "sdk", root / "tooling"
+            source.mkdir()
+            (source / "native.toml").touch()
+            launcher = tooling / "ci" / "run_sdk_tooling.py"
+            launcher.parent.mkdir(parents=True)
+            launcher.touch()
+            framework, package = root / "framework", root / "package"
+            log = []
+
+            def execute(source, platform, commands, env, temp, tooling, *, xcframework_output):
+                self.assertTrue(temp.is_dir())
+                self.assertEqual(xcframework_output, framework)
+                self.assertEqual(platform, "macos")
+                log.append("rebuild")
+
+            def pack(source, env, cli, script, output):
+                self.assertEqual(script, "distribution/pack.py")
+                self.assertEqual(output, package)
+                log.append("pack")
+                return "b" * 64
+
+            main = DISPATCH["main"]
+            with (
+                patch("pathlib.Path.cwd", return_value=source),
+                patch.dict(
+                    main.__globals__,
+                    verify_checkout=lambda *_args, **_kwargs: log.append("verify"),
+                    child_environment=lambda _: {},
+                    tooling_revision=lambda *_: "c" * 40,
+                    distribution_plan=lambda _: {"macos": [], "nuget": "distribution/pack.py"},
+                    execute=execute,
+                    check_dotnet_version=lambda _source, env: env,
+                    pack_combined_nuget=pack,
+                    write_output=lambda **values: log.append(values),
+                ),
+                patch.dict(os.environ, GITHUB_OUTPUT="fixture"),
+            ):
+                main(
+                    [
+                        "macos",
+                        "window-management",
+                        "a" * 40,
+                        "--tooling-repository",
+                        "example-org/sdk-tooling",
+                        "--tooling",
+                        str(tooling),
+                        "--xcframework-output",
+                        str(framework),
+                        "--nuget-artifact",
+                        str(package),
+                    ]
+                )
+            self.assertEqual(log, ["verify", "verify", "rebuild", "pack", {"sha256": "b" * 64}])
+
     def test_combined_nuget_consumers_receive_one_byte_identical_package(self):
         with tempfile.TemporaryDirectory() as disposable:
             work = Path(disposable).resolve()
@@ -122,6 +205,7 @@ class DistributionTests(unittest.TestCase):
                 "sha256": checksum,
             }
             seen = []
+            hosts = []
 
             def run(checkout, env, *argv):
                 self.assertEqual(checkout, source)
@@ -148,19 +232,39 @@ class DistributionTests(unittest.TestCase):
                     Path(argv[-1]).write_text(package_name, encoding="utf-8")
                 else:
                     self.assertEqual(argv[1], "nuget-consumer")
-                    seen.append(Path(argv[-1]).read_bytes())
+                    seen.append((Path(argv[2]).read_bytes(), argv[3:]))
 
-            with patch.dict(pack.__globals__, run=run):
+            with patch.dict(pack.__globals__, run=run, require_windows_host=hosts.append):
                 self.assertEqual(pack(source, {}, cli, script, output), checksum)
                 artifact = output / package_name
-                self.assertEqual(consume(source, {}, cli, artifact, expected=checksum), checksum)
+                for host in ("x64", "arm64"):
+                    self.assertEqual(
+                        consume(source, {}, cli, artifact, expected=checksum, windows_host=host),
+                        checksum,
+                    )
                 with self.assertRaisesRegex(ValueError, "accepted receipt"):
                     consume(source, {}, cli, artifact, expected="0" * 64)
 
-            self.assertEqual(seen, [package_bytes, package_bytes])
+            self.assertEqual(hosts, ["x64", "arm64"])
+            self.assertEqual(
+                seen,
+                [(package_bytes, ()), *[(package_bytes, ("--windows-architecture", "x64"))] * 2],
+            )
             self.assertEqual(
                 {path.name for path in output.iterdir()}, {package_name, f"{package_name}.json"}
             )
+
+    def test_windows_consumer_refuses_an_unexpected_runner_architecture(self):
+        require = DISPATCH["require_windows_host"]
+        for expected, actual, other in (("arm64", "ARM64", "x64"), ("x64", "AMD64", "arm64")):
+            with (
+                self.subTest(expected=expected),
+                patch.object(sys, "platform", "win32"),
+                patch.dict(require.__globals__, machine=lambda: actual),
+            ):
+                require(expected)
+                with self.assertRaisesRegex(ValueError, f"Windows {other} worker"):
+                    require(other)
 
     def test_combined_nuget_rejects_changes_during_acceptance(self):
         with tempfile.TemporaryDirectory() as disposable:

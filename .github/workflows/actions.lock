@@ -3,13 +3,18 @@
 # Docs: https://gh.io/actions-lockfile
 version: 'v0.0.3'
 workflows:
-    '.github/workflows/check-sdk-distribution.yml':
+    '.github/workflows/check-sdk-distribution-platform.yml':
         - 'actions/checkout@v6.1.0'
         - 'actions/download-artifact@v8.0.2'
         - 'actions/setup-dotnet@v6.0.0'
         - 'actions/setup-python@v7.1.0'
         - 'actions/upload-artifact@v7.0.2'
         - 'jdx/mise-action@v5.3.0'
+    '.github/workflows/check-sdk-distribution.yml':
+        - 'actions/checkout@v6.1.0'
+        - 'actions/download-artifact@v8.0.2'
+        - 'actions/setup-dotnet@v6.0.0'
+        - 'actions/setup-python@v7.1.0'
     '.github/workflows/check-swift.yml':
         - 'actions/checkout@v6.1.0'
         - 'jdx/mise-action@v5.3.0'

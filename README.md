@@ -102,8 +102,11 @@ Public SDKs run contributor checks in their own repositories. They can call the
 [Swift matrix](.github/workflows/check-swift.yml) and the
 [Windows x64 check step](.github/actions/test-rust-windows/action.yml) at an
 immutable SDK Tooling revision. The Swift matrix runs the SDK's `make test` and
-`make test-consumer` targets on macOS 26 and 27. Windows checks can opt in to
-installing the x64 .NET SDK declared in the SDK's `global.json`.
+`make test-consumer` targets on macOS 26 and 27. It runs `make check-source` on
+macOS 27 by default. SDKs can select macOS 26 with `source-macos` or choose a
+Make target that prepares and runs their source checks with `source-target`.
+Windows checks can opt in to installing the x64 .NET SDK declared in the SDK's
+`global.json`.
 
 The shared
 [SDK distribution checks](.github/workflows/check-sdk-distribution.yml) are run
@@ -115,9 +118,9 @@ gh workflow run check-sdk-distribution.yml --repo naviapps/sdk-tooling \
   --field sdk=configuration-storage --field "revision=$(git rev-parse HEAD)"
 ```
 
-The jobs read `sdk-distribution.toml` from a clean SDK checkout at the requested
-commit. Each platform has a `commands` array of argument arrays. A project can
-declare either platform or both. For example:
+The workflow reads `sdk-distribution.toml` from a clean SDK checkout at the
+requested commit and starts only the declared platform jobs. Each platform has
+a `commands` array of argument arrays. For example:
 
 ```toml
 [macos]
@@ -140,9 +143,11 @@ To verify one cross-platform NuGet package, add `[nuget]` with a
 `pack = "distribution/pack_nuget.py"` entry. Both platform plans must be
 present. The Windows plan exports its accepted native build at
 `sdk-windows/win-x64`. The packer accepts repeated `--runtime` options and
-reports the generated package filename to `--result`. The workflow combines
-the verified Windows output and the tracked macOS framework into one package,
-then runs the macOS and Windows consumers against that exact file.
+reports the generated package filename to `--result`. The macOS distribution
+job combines the accepted Windows build and the regenerated macOS framework
+into one package and tests it. Each Windows consumer verifies the same bytes
+before and after running. Use `--field windows-on-arm=true` at dispatch to run
+the x64 package with x64 .NET on GitHub's Windows on Arm runner too.
 
 On macOS the dispatcher runs the commands through the SDK's mise environment.
 The `sdk-tooling` command runs the pinned checkout with the dispatcher's Python

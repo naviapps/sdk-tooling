@@ -13,6 +13,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
+from platform import machine
 
 REVISION = re.compile(r"[a-f0-9]{40}")
 SHA256 = re.compile(r"[a-f0-9]{64}")
@@ -199,6 +200,21 @@ def distribution_plan(source):
     return selected
 
 
+def workflow_plan(source, plan, pin, *, windows_on_arm=False):
+    combined = "nuget" in plan
+    if windows_on_arm and not combined:
+        raise ValueError("Windows on Arm requires a combined NuGet distribution plan")
+    return {
+        "revision": pin,
+        "platforms": json.dumps(
+            ["windows"] if combined else [platform for platform in PLATFORMS if platform in plan]
+        ),
+        "dotnet": str("windows" in plan and has_dotnet_pin(source)).lower(),
+        "xcframeworks": str("macos" in plan and builds_xcframeworks(source, "macos")).lower(),
+        "nuget": str(combined).lower(),
+    }
+
+
 def execute(source, platform, commands, env, temp, tooling, *, xcframework_output=None):
     if platform == "windows" and env.get("RUNNER_TEMP"):
         # Cargo clones can contain macOS framework paths even on Windows.
@@ -283,6 +299,12 @@ def check_dotnet_version(source, env):
     return dict(env, DOTNET_BIN=dotnet)
 
 
+def require_windows_host(expected):
+    machines = {"x64": "amd64", "arm64": "arm64"}
+    if sys.platform != "win32" or machine().casefold() != machines[expected]:
+        raise ValueError(f"NuGet consumer requires a native Windows {expected} worker")
+
+
 def package_digest(package, receipt, *, expected=None):
     checksum = file_digest(package)
     if (
@@ -296,14 +318,18 @@ def package_digest(package, receipt, *, expected=None):
     return checksum
 
 
-def consume_package(source, env, sdk_cli, package, *, expected=None):
+def consume_package(source, env, sdk_cli, package, *, expected=None, windows_host=None):
     if not PACKAGE_NAME.fullmatch(package.name) or ".." in package.name:
         raise ValueError("Invalid combined NuGet package name")
     receipt_path = package.with_suffix(".nupkg.json")
     receipt_bytes = read_regular(receipt_path.parent, receipt_path.name)
     receipt = json.loads(receipt_bytes)
     checksum = package_digest(package, receipt, expected=expected)
-    run(source, env, *sdk_cli, "nuget-consumer", str(package))
+    target = ()
+    if windows_host is not None:
+        require_windows_host(windows_host)
+        target = ("--windows-architecture", "x64")
+    run(source, env, *sdk_cli, "nuget-consumer", str(package), *target)
     if (
         file_digest(package) != checksum
         or read_regular(receipt_path.parent, receipt_path.name) != receipt_bytes
@@ -355,10 +381,13 @@ def write_output(**values):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("identity", "pin", *PLATFORMS, *PACKAGE_MODES))
+    parser.add_argument("mode", choices=("identity", "plan", *PLATFORMS, *PACKAGE_MODES))
     parser.add_argument("sdk")
     parser.add_argument("revision")
-    parser.add_argument("--platform", choices=PLATFORMS)
+    parser.add_argument(
+        "--windows-on-arm", action="store_true", help="Require an Arm consumer plan"
+    )
+    parser.add_argument("--windows-host", choices=("x64", "arm64"), help="Require a Windows host")
     parser.add_argument("--tooling", type=Path)
     parser.add_argument("--nuget-artifact", type=Path, help="Combined NuGet artifact directory")
     parser.add_argument("--nuget-sha256", help="Digest of the package accepted on macOS")
@@ -383,8 +412,18 @@ def main(argv=None):
         parser.error("Specify a repository in the tooling owner and its full lowercase Git SHA")
     if args.xcframework_output is not None and args.mode != "macos":
         parser.error("--xcframework-output requires the macos distribution mode")
-    if (args.nuget_artifact is not None) != (args.mode in PACKAGE_MODES):
+    if args.mode in PACKAGE_MODES and args.nuget_artifact is None:
         parser.error("Combined NuGet modes require --nuget-artifact")
+    if (
+        args.nuget_artifact is not None
+        and args.mode not in PACKAGE_MODES
+        and not (args.mode == "macos" and args.xcframework_output is not None)
+    ):
+        parser.error("Packing during macOS distribution requires --xcframework-output")
+    if args.windows_on_arm and args.mode != "plan":
+        parser.error("--windows-on-arm applies only when reading the plan")
+    if args.windows_host is not None and args.mode != "nuget-consume":
+        parser.error("--windows-host applies only when consuming an accepted package")
     if args.mode == "nuget-consume":
         if not SHA256.fullmatch(args.nuget_sha256 or ""):
             parser.error("NuGet consumption requires --nuget-sha256 from macOS acceptance")
@@ -399,19 +438,8 @@ def main(argv=None):
     verify_checkout(source, args.revision, sdk_repository, env, require_main=True)
     plan = distribution_plan(source)
     pin = tooling_revision(source, repository)
-    if args.mode == "pin":
-        if args.platform is None:
-            parser.error("Reading the plan requires --platform")
-        enabled = args.platform in plan
-        dotnet = enabled and args.platform == "windows" and has_dotnet_pin(source)
-        xcframeworks = enabled and builds_xcframeworks(source, args.platform)
-        write_output(
-            revision=pin,
-            enabled=str(enabled).lower(),
-            dotnet=str(dotnet).lower(),
-            xcframeworks=str(xcframeworks).lower(),
-            nuget=str("nuget" in plan).lower(),
-        )
+    if args.mode == "plan":
+        write_output(**workflow_plan(source, plan, pin, windows_on_arm=args.windows_on_arm))
         return
 
     if args.mode not in plan and not (args.mode in PACKAGE_MODES and "nuget" in plan):
@@ -422,7 +450,10 @@ def main(argv=None):
         parser.error("Distribution checks require --tooling with the pinned checkout")
     tooling = args.tooling.resolve(strict=True)
     verify_checkout(tooling, pin, repository, env)
-    if args.mode in PACKAGE_MODES:
+    artifact = None
+    if args.nuget_artifact is not None:
+        if "nuget" not in plan:
+            parser.error("SDK distribution configuration does not declare combined NuGet packages")
         artifact = args.nuget_artifact.absolute()
         if artifact.is_symlink():
             raise ValueError("Combined NuGet artifact must be an ordinary directory")
@@ -431,30 +462,37 @@ def main(argv=None):
         read_regular(tooling, "ci/run_sdk_tooling.py")
         sdk_cli = (sys.executable, "-I", "-B", str(launcher))
         env = check_dotnet_version(source, env)
-        if args.mode == "nuget-pack":
-            checksum = pack_combined_nuget(source, env, sdk_cli, plan["nuget"], artifact)
-            if os.environ.get("GITHUB_OUTPUT"):
-                write_output(sha256=checksum)
-        else:
-            packages = list(artifact.glob("*.nupkg"))
-            if len(packages) != 1:
-                raise ValueError("Combined NuGet artifact must contain exactly one package")
-            [package] = packages
-            consume_package(source, env, sdk_cli, package, expected=args.nuget_sha256)
-        return
-    with tempfile.TemporaryDirectory(
-        dir=env.get("RUNNER_TEMP"), prefix="sdk-distribution-"
-    ) as work:
-        temp = Path(work).resolve()
-        execute(
+    if args.mode == "nuget-consume":
+        packages = list(artifact.glob("*.nupkg"))
+        if len(packages) != 1:
+            raise ValueError("Combined NuGet artifact must contain exactly one package")
+        [package] = packages
+        consume_package(
             source,
-            args.mode,
-            plan[args.mode],
             env,
-            temp,
-            tooling,
-            xcframework_output=args.xcframework_output,
+            sdk_cli,
+            package,
+            expected=args.nuget_sha256,
+            windows_host=args.windows_host,
         )
+        return
+    if args.mode in PLATFORMS:
+        with tempfile.TemporaryDirectory(
+            dir=env.get("RUNNER_TEMP"), prefix="sdk-distribution-"
+        ) as work:
+            execute(
+                source,
+                args.mode,
+                plan[args.mode],
+                env,
+                Path(work).resolve(),
+                tooling,
+                xcframework_output=args.xcframework_output,
+            )
+    if artifact is not None:
+        checksum = pack_combined_nuget(source, env, sdk_cli, plan["nuget"], artifact)
+        if os.environ.get("GITHUB_OUTPUT"):
+            write_output(sha256=checksum)
 
 
 if __name__ == "__main__":
