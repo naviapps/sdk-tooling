@@ -52,6 +52,7 @@ def check_nuget(*, package_id, fixture, work_parent, argv=None, args=None):
     nuget.run_isolated_consumer(
         dotnet,
         packages=[package, *args.dependency],
+        require_all_packages=True,
         references={package_id: values["version"]},
         source=Path(fixture).read_text(encoding="utf-8"),
         work_parent=work_parent,

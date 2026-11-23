@@ -551,6 +551,43 @@ class NuGetTests(unittest.TestCase):
             self.assertEqual([argv[1] for argv, _ in self.calls], ["restore"])
             self.assertFalse(list((self.root / "output").iterdir()))
 
+    def test_required_feed_package_must_be_in_restore_graph(self):
+        primary = self.package()
+        companion = self.package({"Companion.nuspec": "<package/>"}, name="Companion.1.0.0.nupkg")
+        options = {
+            "packages": [primary, companion],
+            "references": {"Example": "1.0.0"},
+            "source": "// fixture",
+            "work_parent": self.root / "output",
+            "env": self.env,
+        }
+
+        def restore_without_companion(argv, **kwargs):
+            result = self.run_command(argv, **kwargs)
+            if argv[1] == "restore":
+                path = Path(kwargs["cwd"]) / "obj/project.assets.json"
+                assets = json.loads(path.read_text(encoding="utf-8"))
+                del assets["libraries"]["Companion/1.0.0"]
+                path.write_text(json.dumps(assets), encoding="utf-8")
+            return result
+
+        with self.assertRaisesRegex(
+            ValueError, r"did not resolve required packages: Companion\.1\.0\.0\.nupkg"
+        ):
+            nuget.run_isolated_consumer(
+                "dotnet", runner=restore_without_companion, require_all_packages=True, **options
+            )
+        self.assertEqual([argv[1] for argv, _ in self.calls], ["restore"])
+        self.assertFalse(list(options["work_parent"].iterdir()))
+
+        nuget.run_isolated_consumer("dotnet", runner=restore_without_companion, **options)
+        nuget.run_isolated_consumer(
+            "dotnet", runner=self.run_command, require_all_packages=True, **options
+        )
+        self.assertEqual(
+            [argv[1] for argv, _ in self.calls], ["restore", "restore", "run", "restore", "run"]
+        )
+
     def test_isolated_consumer_rejects_explicit_external_restore_properties(self):
         with self.assertRaisesRegex(ValueError, "isolated restore settings"):
             nuget.run_isolated_consumer(
@@ -905,6 +942,7 @@ class NativeConsumerTests(unittest.TestCase):
                     result = nuget.run_isolated_consumer(
                         dotnet,
                         packages=[package, dependency],
+                        require_all_packages=True,
                         runner=capture,
                         runtime=runtime,
                         execute=runtime is None,

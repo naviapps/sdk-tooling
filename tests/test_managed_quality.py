@@ -529,6 +529,7 @@ class ManagedQualityTests(unittest.TestCase):
             self.assertEqual(run.call_args.args, (str(dotnet),))
             self.assertEqual(run.call_args.kwargs["runtime"], "win-x64")
             self.assertEqual(run.call_args.kwargs["packages"], [package])
+            self.assertTrue(run.call_args.kwargs["require_all_packages"])
             report.assert_called_once_with(
                 "Windows x64 NuGet fixture passed under emulation on ARM64."
             )

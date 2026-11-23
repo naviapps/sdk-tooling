@@ -675,7 +675,7 @@ def _verify_published_native(publish, sdk_packages):
         raise ValueError("Published native DLLs differ from the supplied SDK packages")
 
 
-def _verify_restored_packages(work, feed, cache, checksums):
+def _verify_restored_packages(work, feed, cache, checksums, required):
     assets = json.loads((work / "obj/project.assets.json").read_text(encoding="utf-8"))
     restore = assets["project"]["restore"]
     if {Path(source).resolve() for source in restore["sources"]} != {feed}:
@@ -687,16 +687,16 @@ def _verify_restored_packages(work, feed, cache, checksums):
     libraries = assets["libraries"]
     if not libraries:
         raise ValueError("Consumer restore did not resolve any SDK packages")
-    installed = set()
+    installed = {}
     for archive in cache.glob("*/*/*.nupkg"):
-        if (
-            archive.resolve() != archive
-            or not archive.is_file()
-            or file_sha256(archive) not in checksums
-        ):
+        checksum = (
+            file_sha256(archive) if archive.resolve() == archive and archive.is_file() else None
+        )
+        if checksum not in checksums:
             name = archive.relative_to(cache).as_posix()
             raise ValueError("Restored package differs from the supplied local packages: " + name)
-        installed.add(archive)
+        installed[archive] = checksum
+    resolved = set()
     for library in libraries.values():
         if library["type"] != "package":
             raise ValueError("Consumer restore resolved a source project instead of a package")
@@ -712,8 +712,15 @@ def _verify_restored_packages(work, feed, cache, checksums):
         ):
             raise ValueError("Consumer restore recorded an invalid cache path")
         package, version = relative.parts
-        if cache / package / version / f"{package}.{version}.nupkg" not in installed:
+        archive = cache / package / version / f"{package}.{version}.nupkg"
+        if archive not in installed:
             raise ValueError("Consumer restore did not retain its package archive: " + name)
+        resolved.add(installed[archive])
+    missing = [package.name for package, checksum in required.items() if checksum not in resolved]
+    if missing:
+        raise ValueError(
+            "Consumer restore did not resolve required packages: " + ", ".join(missing)
+        )
 
 
 def run_isolated_consumer(
@@ -724,6 +731,7 @@ def run_isolated_consumer(
     source,
     work_parent,
     env,
+    require_all_packages=False,
     clear_environment=(),
     exclude_paths=(),
     runtime=None,
@@ -739,6 +747,7 @@ def run_isolated_consumer(
     With execute=False only restore/build run; that is not native acceptance.
     Native AOT publishes and runs a Windows x64 executable after the same local
     SDK package checks. The .NET packs are restored separately from NuGet.org.
+    With require_all_packages, every supplied SDK package must be resolved.
     """
     packages = [Path(package).resolve(strict=True) for package in packages]
     if len({package.name.casefold() for package in packages}) != len(packages):
@@ -756,6 +765,7 @@ def run_isolated_consumer(
         cache = work / "packages"
         feed.mkdir()
         package_hashes = {package: file_sha256(package) for package in packages}
+        required = package_hashes.copy() if require_all_packages else {}
         for package in packages:
             shutil.copyfile(package, feed / package.name)
             if file_sha256(feed / package.name) != package_hashes[package]:
@@ -831,7 +841,7 @@ def run_isolated_consumer(
             env=clean,
             runner=runner,
         )
-        _verify_restored_packages(work, feed, cache, set(package_hashes.values()))
+        _verify_restored_packages(work, feed, cache, set(package_hashes.values()), required)
         if native_aot:
             publish = work / "publish"
             dotnet_tools.run_command(
