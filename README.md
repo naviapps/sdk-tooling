@@ -38,6 +38,10 @@ native .NET SDK, as the CI workflow does. GitHub Actions uses standard macOS
 Arm64 and Windows x64 runners for these checks. See the
 [workflow](.github/workflows/check.yml) for the runtime versions.
 
+After changing a workflow's action dependencies, regenerate its
+`actions.lock` with `gh actions-lock` and review the resolved commits.
+Run `gh actions-lock --verify` to check it.
+
 ### SDK checkouts
 
 Review the SDK's `mise.toml`, select full Xcode, then run its check target:
