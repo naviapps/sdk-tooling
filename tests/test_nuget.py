@@ -735,6 +735,7 @@ class NativeConsumerTests(unittest.TestCase):
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PublishRepositoryUrl>false</PublishRepositoryUrl>
     <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <PathMap>$(MSBuildProjectDirectory)=/timestamp-fixture</PathMap>
   </PropertyGroup>
   <ItemGroup>
     <None Include="README.md;LICENSE" Pack="true" PackagePath="/" />
