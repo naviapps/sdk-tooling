@@ -36,12 +36,22 @@ jobs:
           python-version: "3.15.2"
           architecture: ${{ matrix.architecture }}
       - uses: actions/setup-dotnet@v6.1.0
-        env:
-          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           global-json-file: global.json
           architecture: ${{ matrix.architecture }}
+          check-latest: false
           skip-lts-prepass: true
+      - name: Verify the selected .NET toolchain
+        env:
+          DOTNET_CLI_UI_LANGUAGE: en
+          EXPECTED_DOTNET_ARCHITECTURE: ${{ matrix.architecture }}
+        shell: bash
+        run: |
+          expected=$(python -c 'import json; print(json.load(open("global.json", encoding="utf-8"))["sdk"]["version"])')
+          version=$(dotnet --version | tr -d '\r')
+          printf '.NET SDK %s\n' "$version"
+          test "$version" = "$expected"
+          dotnet --info | grep -Ex " +Architecture: +${EXPECTED_DOTNET_ARCHITECTURE}[[:space:]]*"
       - uses: jdx/mise-action@v5.3.0
         if: runner.os == 'macOS'
         env:
