@@ -12,6 +12,8 @@ import sys
 import tomllib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from . import vm_environment
+
 SOURCE_MANIFEST = ".navi-ci-source-files.json"
 SOURCE_MANIFEST_LIMIT = 16 * 1024 * 1024
 
@@ -35,20 +37,12 @@ EXCLUDED = {
 
 
 def _manifest_files(root):
-    name = os.environ.get("NAVI_CI_SOURCE_FILES")
-    digest = os.environ.get("NAVI_CI_SOURCE_FILES_SHA256")
-    if name is None and digest is None:
+    selected = vm_environment.source_files()
+    if selected is None:
         return None
-    if not name or not digest or not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ValueError("Source selection requires a manifest path and SHA-256")
-    path = Path(name)
+    path, digest = selected
     if (
-        not path.is_absolute()
-        or str(path) != name
-        or name.startswith("//")
-        or ".." in path.parts
-        or any(ord(char) < 32 or ord(char) == 127 for char in name)
-        or path.name != SOURCE_MANIFEST
+        path.name != SOURCE_MANIFEST
         or path.parent.resolve(strict=True) != root
         or path.is_symlink()
         or not path.is_file()

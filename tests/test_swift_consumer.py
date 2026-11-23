@@ -174,25 +174,8 @@ class SwiftConsumerTests(unittest.TestCase):
             self.assertTrue(Path(env[key]).is_relative_to(self.work))
         self.assertEqual(list(self.work.iterdir()), [])
 
-    def test_cli_can_select_swift_build_and_keep_dependency_warnings_nonfatal(self):
-        run = consumers.run_swift_consumer
-
-        def run_with_test_command(**options):
-            run(**options, runner=self.command)
-
-        with (
-            patch.object(consumers.sys, "platform", "darwin"),
-            patch.object(consumers, "run_swift_consumer", side_effect=run_with_test_command),
-        ):
-            consumers.check_swift(
-                root=self.sdk,
-                inputs=self.inputs,
-                fixture=self.fixture,
-                executables=("Fixture",),
-                work_parent=self.work,
-                argv=["--build-system", "swiftbuild", "--allow-warnings"],
-            )
-
+    def test_swift_build_selection_keeps_dependency_warnings_nonfatal(self):
+        self.check(build_system="swiftbuild", warnings_as_errors=False)
         self.assertEqual(len(self.calls), 4)
         for argv, _ in self.calls[:3]:
             backend = argv.index("--build-system")
@@ -205,6 +188,29 @@ class SwiftConsumerTests(unittest.TestCase):
         self.check()
         for _, options in self.calls:
             self.assertNotIn("CFFIXED_USER_HOME", options["env"])
+
+    def test_contributor_runs_the_installed_products_without_dependency_policy(self):
+        self.write(self.sdk, "Package.resolved", b"distribution policy")
+        self.write(self.fixture, "Package.resolved", b"fixture policy")
+        self.write(self.fixture, "test-input", b"not a contributor input")
+        git_config = self.write(self.root, "gitconfig", b"job policy")
+        os.environ["GIT_CONFIG_GLOBAL"] = str(git_config)
+
+        def inspect(argv, **options):
+            self.assertEqual(argv[:3], ["/usr/bin/xcrun", "swift", "run"])
+            self.assertEqual(argv[-1], "Fixture")
+            self.assertNotIn("--force-resolved-versions", argv)
+            installed_fixture = options["cwd"]
+            self.assertEqual(
+                sorted(path.name for path in installed_fixture.iterdir()),
+                ["Package.swift", "Sources"],
+            )
+            self.assertEqual(Path(options["env"]["GIT_CONFIG_GLOBAL"]).read_bytes(), b"")
+            return self.command(argv, **options)
+
+        self.check(runner=inspect, verify_dependencies=False)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(list(self.work.iterdir()), [])
 
     def test_root_pins_and_explicit_mirrors_survive_at_consumer_root_without_rewriting(self):
         pins = b'{"version":3,"pins":[{"revision":"immutable-dependency"}]}\n'
@@ -257,7 +263,10 @@ class SwiftConsumerTests(unittest.TestCase):
             )
             return self.command(argv, **options)
 
-        self.check(runner=inspect, git_config=git_config, mirror_config=mirror)
+        self.check(
+            runner=inspect, verify_dependencies=False, git_config=git_config, mirror_config=mirror
+        )
+        self.assertIn("show-dependencies", self.calls[0][0])
 
     def test_escaping_relative_and_absolute_links_fail_before_any_build(self):
         for target in (

@@ -1,0 +1,3 @@
+[workspace]
+members = ["tools/consumer-identity", "tools/native-dep-info", "tools/template-sync"]
+resolver = "3"

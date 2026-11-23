@@ -1,15 +1,25 @@
 use std::{
     fs,
-    io::Write,
     path::Path,
-    process::{Command, Output, Stdio},
+    process::{Command, Output},
 };
 
 use tempfile::TempDir;
 
-const PIN: &str = "tools/tooling-sources.json";
 const REVISION: &str = "1111111111111111111111111111111111111111";
 const OTHER: &str = "2222222222222222222222222222222222222222";
+
+fn command(revision: &str) -> String {
+    format!("uvx --from git+https://github.com/naviapps/sdk-tooling.git@{revision} sdk-tooling")
+}
+
+fn write_mise(root: &Path, revision: &str) {
+    fs::write(
+        root.join("mise.toml"),
+        format!("[tasks.sdk-tooling]\nrun = '{}'\n", command(revision)),
+    )
+    .unwrap();
+}
 
 fn temporary_sdk() -> TempDir {
     let root = tempfile::Builder::new()
@@ -17,6 +27,7 @@ fn temporary_sdk() -> TempDir {
         .tempdir()
         .unwrap();
     fs::write(root.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+    write_mise(root.path(), REVISION);
     root
 }
 
@@ -38,26 +49,20 @@ fn succeeds(output: Output) {
 }
 
 fn fails(output: Output, error: &str) {
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
     let message = String::from_utf8_lossy(&output.stderr);
     assert!(message.contains(error), "{message}");
 }
 
 #[test]
-fn cli_syncs_and_checks_relative_git_checkouts_from_an_external_directory() {
+fn cli_accepts_relative_checkout_paths_with_spaces_and_leading_hyphens() {
     let working_directory = tempfile::tempdir().unwrap();
     let roots = ["-sdk checkout", "another SDK"];
     for name in roots {
         let checkout = working_directory.path().join(name);
         fs::create_dir(&checkout).unwrap();
         fs::write(checkout.join("Cargo.toml"), "[workspace]\n").unwrap();
-        succeeds(
-            Command::new("git")
-                .args(["init", "--quiet"])
-                .current_dir(checkout)
-                .output()
-                .unwrap(),
-        );
+        write_mise(&checkout, REVISION);
     }
 
     let invoke = |arguments: &[&str]| {
@@ -69,94 +74,40 @@ fn cli_syncs_and_checks_relative_git_checkouts_from_an_external_directory() {
             .output()
             .unwrap()
     };
-    succeeds(invoke(&[
-        "--quality",
-        "--swift-format",
-        "--revision",
-        REVISION,
-    ]));
-
-    let templates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+    succeeds(invoke(&["--swift-format", "--revision", OTHER]));
+    succeeds(invoke(&["--check", "--swift-format", "--revision", OTHER]));
     for name in roots {
         let checkout = working_directory.path().join(name);
-        for (source, destination) in [
-            ("_tooling.py", "tools/_tooling.py"),
-            ("quality.py", "tools/quality.py"),
-            (".swift-format", ".swift-format"),
-        ] {
-            assert_eq!(
-                fs::read(checkout.join(destination)).unwrap(),
-                fs::read(templates.join(source)).unwrap(),
-                "{name}/{destination}"
-            );
-        }
-        let expected_pin = format!("{{\n  \"naviapps/sdk-tooling\": \"{REVISION}\"\n}}\n");
         assert_eq!(
-            fs::read_to_string(checkout.join(PIN)).unwrap(),
-            expected_pin
+            fs::read(checkout.join(".swift-format")).unwrap(),
+            include_bytes!("../../../templates/.swift-format")
         );
+        assert!(!checkout.join("tools").exists());
     }
-
-    let check = |revision| {
-        invoke(&[
-            "--check",
-            "--quality",
-            "--swift-format",
-            "--revision",
-            revision,
-        ])
-    };
-    succeeds(check(REVISION));
-    let mismatch = check(OTHER);
-    assert_eq!(mismatch.status.code(), Some(1));
-    fails(mismatch, "differs from the requested revision");
-
-    let pending = working_directory
-        .path()
-        .join(roots[0])
-        .join("tools/tooling-sources.json.pending");
-    fs::write(&pending, "another publisher").unwrap();
-    let conflict = invoke(&["--revision", OTHER]);
-    assert_eq!(conflict.status.code(), Some(1));
-    fails(conflict, "Cannot stage configuration");
-    assert_eq!(fs::read_to_string(pending).unwrap(), "another publisher");
-    succeeds(check(REVISION));
 }
 
 #[test]
-fn check_detects_drift_without_repairing_files_or_pins() {
+fn check_reports_adopted_policy_drift_without_writing() {
     let root = temporary_sdk();
-    let roots = &[root.path()];
-    succeeds(sync(roots, &["--revision", REVISION]));
-    let pin = root.path().join(PIN);
-    let canonical = format!("{{\n  \"naviapps/sdk-tooling\": \"{REVISION}\"\n}}\n");
-    assert_eq!(fs::read_to_string(&pin).unwrap(), canonical);
+    let path = root.path();
+    let ruff = path.join("ruff.toml");
+    fs::write(&ruff, "line-length = 90\n").unwrap();
+    succeeds(sync(&[path], &["--check"]));
+    fails(sync(&[path], &["--check", "--quality"]), "templates differ");
+    assert_eq!(fs::read_to_string(&ruff).unwrap(), "line-length = 90\n");
 
-    // The original checker accepts a structured JSON document, including
-    // noncanonical whitespace and escaped keys.
-    let equivalent = format!("{{ \"naviapps\\/sdk-tooling\" : \"{REVISION}\" }}");
-    fs::write(&pin, &equivalent).unwrap();
-    succeeds(sync(roots, &["--check"]));
-    succeeds(sync(roots, &["--check", "--revision", REVISION]));
-    fails(
-        sync(roots, &["--check", "--revision", OTHER]),
-        "differs from the requested revision",
+    succeeds(sync(&[path], &["--quality", "--revision", REVISION]));
+    assert_eq!(
+        fs::read(&ruff).unwrap(),
+        include_bytes!("../../../templates/ruff.toml")
     );
-    assert_eq!(fs::read_to_string(&pin).unwrap(), equivalent);
-
-    let loader = root.path().join("tools/_tooling.py");
-    fs::write(&loader, "edited").unwrap();
-    fails(sync(roots, &["--check"]), "templates differ");
-    assert_eq!(fs::read_to_string(&loader).unwrap(), "edited");
-    assert_eq!(fs::read_to_string(&pin).unwrap(), equivalent);
-}
-
-fn modern_command(revision: &str) -> String {
-    format!("uvx --from git+https://github.com/naviapps/sdk-tooling.git@{revision} sdk-tooling")
+    assert!(!path.join(".clang-format").exists());
+    assert!(!path.join("rust-toolchain.toml").exists());
+    assert!(!path.join("tools").exists());
 }
 
 #[test]
-fn modern_sdk_pin_updates_preserve_mise_tasks_and_sdk_owned_policies() {
+fn pin_updates_preserve_mise_tasks_and_sdk_owned_policy() {
     for rust in [true, false] {
         let root = temporary_sdk();
         let path = root.path();
@@ -165,15 +116,15 @@ fn modern_sdk_pin_updates_preserve_mise_tasks_and_sdk_owned_policies() {
             fs::write(path.join("Package.swift"), "// swift-tools-version: 6.3\n").unwrap();
             fs::write(path.join(".editorconfig"), "root = true\n").unwrap();
         }
-        let command = modern_command(REVISION);
+        let previous = command(REVISION);
         let mise = format!(
-            "# Keep {REVISION} in this comment\r\n[tasks.\"sdk-tooling\"]\r\nrun = '{command}' # review\r\n\r\n[tasks.check]\r\nrun = \"make test\"\r\n"
+            "# Keep {REVISION} in this comment\r\n[tasks.\"sdk-tooling\"]\r\nrun = '{previous}' # review\r\n\r\n[tasks.check]\r\nrun = \"make test\"\r\n"
         );
         fs::write(path.join("mise.toml"), &mise).unwrap();
-        for policy in [".gitattributes", ".dprint.json"] {
+        let sdk_policies = [".gitattributes", ".dprint.json"];
+        for policy in sdk_policies {
             fs::write(path.join(policy), "SDK-owned policy\n").unwrap();
         }
-        fs::write(path.join("ruff.toml"), "line-length = 90\n").unwrap();
 
         fails(
             sync(&[path], &["--check", "--revision", OTHER]),
@@ -182,31 +133,23 @@ fn modern_sdk_pin_updates_preserve_mise_tasks_and_sdk_owned_policies() {
         assert_eq!(fs::read_to_string(path.join("mise.toml")).unwrap(), mise);
 
         succeeds(sync(&[path], &["--quality", "--revision", OTHER]));
-        let expected = mise.replacen(&command, &modern_command(OTHER), 1);
+        let expected = mise.replacen(&previous, &command(OTHER), 1);
         assert_eq!(
             fs::read_to_string(path.join("mise.toml")).unwrap(),
             expected
         );
-        for policy in [".gitattributes", ".dprint.json"] {
+        for policy in sdk_policies {
             assert_eq!(
                 fs::read_to_string(path.join(policy)).unwrap(),
                 "SDK-owned policy\n"
             );
         }
-        let templates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
-        assert_eq!(
-            fs::read(path.join("ruff.toml")).unwrap(),
-            fs::read(templates.join("ruff.toml")).unwrap()
-        );
-        assert!(!path.join("tools").exists());
-        assert!(!path.join("rust-toolchain.toml").exists());
         if !rust {
             assert_eq!(
                 fs::read_to_string(path.join(".editorconfig")).unwrap(),
                 "root = true\n"
             );
         }
-        assert!(!path.join(".clang-format").exists());
         succeeds(sync(
             &[path],
             &["--quality", "--check", "--revision", OTHER],
@@ -215,56 +158,66 @@ fn modern_sdk_pin_updates_preserve_mise_tasks_and_sdk_owned_policies() {
 }
 
 #[test]
-fn malformed_modern_task_blocks_writes_and_never_uses_the_legacy_pin() {
+fn malformed_or_legacy_checkouts_block_writes_to_all_selected_paths() {
     let first = temporary_sdk();
-    let later = temporary_sdk();
-    let roots = &[first.path(), later.path()];
-    let mise = later.path().join("mise.toml");
+    let legacy = temporary_sdk();
+    let roots = &[first.path(), legacy.path()];
+    let mise = legacy.path().join("mise.toml");
+    let legacy_tools = legacy.path().join("tools");
+    fs::create_dir(&legacy_tools).unwrap();
+    let legacy_pin = legacy_tools.join("tooling-sources.json");
     fs::write(
-        &mise,
-        format!(
-            "[tasks.sdk-tooling]\nrun = '{cmd}'\n",
-            cmd = modern_command("main")
-        ),
+        &legacy_pin,
+        format!(r#"{{"naviapps/sdk-tooling":"{REVISION}"}}"#),
     )
     .unwrap();
-    fails(
-        sync(roots, &["--revision", REVISION]),
-        "canonical immutable revision",
+    let legacy_contents = fs::read(&legacy_pin).unwrap();
+
+    let update = || sync(roots, &["--swift-format", "--revision", OTHER]);
+    write_mise(legacy.path(), "main");
+    fails(update(), "canonical immutable revision");
+    fs::write(&mise, "[tasks.check]\nrun = 'make test'\n").unwrap();
+    fails(update(), "requires a [tasks.sdk-tooling] run command");
+    fs::remove_file(&mise).unwrap();
+    fails(update(), "requires mise.toml");
+
+    assert!(!first.path().join(".swift-format").exists());
+    assert!(
+        fs::read_to_string(first.path().join("mise.toml"))
+            .unwrap()
+            .contains(REVISION)
     );
-    assert!(!first.path().join("tools").exists());
-    assert!(!later.path().join("tools").exists());
+    assert_eq!(fs::read(&legacy_pin).unwrap(), legacy_contents);
+    assert_eq!(fs::read_dir(&legacy_tools).unwrap().count(), 1);
 }
 
 #[test]
-fn malformed_or_mutable_pins_fail_without_writes() {
-    let root = temporary_sdk();
-    let roots = &[root.path()];
+fn check_accepts_distinct_immutable_pins_unless_a_revision_is_required() {
+    let first = temporary_sdk();
+    let second = temporary_sdk();
+    write_mise(second.path(), OTHER);
+    let roots = &[first.path(), second.path()];
+
+    succeeds(sync(roots, &["--check"]));
+    fails(
+        sync(roots, &["--check", "--revision", REVISION]),
+        "differs from the requested revision",
+    );
     fails(sync(roots, &["--revision", "main"]), "immutable");
     fails(sync(roots, &[]), "immutable");
-    assert!(!root.path().join("tools").exists());
-
-    succeeds(sync(roots, &["--revision", REVISION]));
-    fails(sync(roots, &["--check", "--revision", "main"]), "immutable");
-    let pin = root.path().join(PIN);
-    for invalid in [
-        "null".into(),
-        r#"{"naviapps/sdk-tooling": "main"}"#.into(),
-        r#"{"naviapps/sdk-tooling": 123}"#.into(),
-        format!(r#"{{"naviapps/sdk-tooling": "{REVISION}", "unrelated": "other"}}"#),
-    ] {
-        fs::write(&pin, &invalid).unwrap();
-        fails(sync(roots, &["--check"]), "canonical and immutable");
-        assert_eq!(fs::read_to_string(&pin).unwrap(), invalid);
-    }
+    assert!(
+        fs::read_to_string(second.path().join("mise.toml"))
+            .unwrap()
+            .contains(OTHER)
+    );
 }
 
 #[test]
-fn optional_policies_keep_sdk_choices_and_local_editorconfig_sections() {
+fn adopted_editorconfig_keeps_local_sections_and_swift_format_is_opt_in() {
     let root = temporary_sdk();
-    let roots = &[root.path()];
-    let swift_format = root.path().join(".swift-format");
-    let editorconfig = root.path().join(".editorconfig");
+    let path = root.path();
+    let swift_format = path.join(".swift-format");
+    let editorconfig = path.join(".editorconfig");
     let local = b"[bindings/dotnet/src/Library/**.cs]\r\ndotnet_diagnostic.IDE0005.severity = warning\r\n\r\n[fixtures/*.cs]\r\nindent_size = 4";
     fs::write(&swift_format, "SDK-owned choice").unwrap();
     fs::write(
@@ -272,22 +225,11 @@ fn optional_policies_keep_sdk_choices_and_local_editorconfig_sections() {
         [b"root = true\r\n\r\n", local.as_slice()].concat(),
     )
     .unwrap();
-    succeeds(sync(roots, &["--revision", REVISION]));
+    succeeds(sync(&[path], &["--revision", REVISION]));
     assert_eq!(
         fs::read_to_string(&swift_format).unwrap(),
         "SDK-owned choice"
     );
-    assert!(!root.path().join("tools/quality.py").exists());
-    succeeds(sync(
-        roots,
-        &["--quality", "--swift-format", "--revision", REVISION],
-    ));
-    assert_ne!(
-        fs::read_to_string(&swift_format).unwrap(),
-        "SDK-owned choice"
-    );
-    assert!(root.path().join("tools/quality.py").is_file());
-    assert!(root.path().join("ruff.toml").is_file());
     let merged = fs::read(&editorconfig).unwrap();
     for section in [
         b"[bindings/dotnet/src/Library/**.cs]\r\ndotnet_diagnostic.IDE0005.severity = warning"
@@ -296,72 +238,28 @@ fn optional_policies_keep_sdk_choices_and_local_editorconfig_sections() {
     ] {
         assert!(merged.windows(section.len()).any(|bytes| bytes == section));
     }
-    succeeds(sync(roots, &["--check", "--quality", "--swift-format"]));
-}
 
-fn git_hash(root: &Path, args: &[&str], data: &[u8]) -> Vec<u8> {
-    let mut git = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    git.stdin.take().unwrap().write_all(data).unwrap();
-    let output = git.wait_with_output().unwrap();
-    assert!(output.status.success());
-    output.stdout
-}
-
-#[test]
-fn synced_attributes_keep_sources_canonical_and_retained_bytes_verbatim() {
-    let root = temporary_sdk();
-    succeeds(sync(&[root.path()], &["--revision", REVISION]));
-    succeeds(
-        Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(root.path())
-            .output()
-            .unwrap(),
+    succeeds(sync(&[path], &["--swift-format", "--revision", REVISION]));
+    assert_eq!(
+        fs::read(&swift_format).unwrap(),
+        include_bytes!("../../../templates/.swift-format")
     );
-    let raw = b"first\r\nsecond\r\n";
-    for (path, expected) in [
-        ("crates/core/src/lib.rs", b"first\nsecond\n".as_slice()),
-        ("ThirdParty/dependency/LICENSE", raw.as_slice()),
-        ("Artifacts/runtime.txt", raw.as_slice()),
-    ] {
-        let actual = git_hash(
-            root.path(),
-            &[
-                "-c",
-                "core.autocrlf=true",
-                "hash-object",
-                "--stdin",
-                "--path",
-                path,
-            ],
-            raw,
-        );
-        let expected = git_hash(
-            root.path(),
-            &["hash-object", "--stdin", "--no-filters"],
-            expected,
-        );
-        assert_eq!(actual, expected, "{path}");
-    }
+    succeeds(sync(&[path], &["--check", "--swift-format"]));
 }
 
 #[test]
-fn pin_conflict_preserves_the_previous_pin_and_another_publishers_bytes() {
+fn a_pending_file_preserves_the_current_pin_and_another_publishers_bytes() {
     let root = temporary_sdk();
-    let roots = &[root.path()];
-    succeeds(sync(roots, &["--revision", REVISION]));
-    let pin = root.path().join(PIN);
+    let path = root.path();
+    let pin = path.join("mise.toml");
     let original = fs::read(&pin).unwrap();
-    let pending = root.path().join("tools/tooling-sources.json.pending");
+    let pending = path.join("mise.toml.pending");
     fs::write(&pending, "another publisher").unwrap();
-    let result = sync(roots, &["--revision", OTHER]);
-    assert!(!result.status.success());
+
+    fails(
+        sync(&[path], &["--revision", OTHER]),
+        "Cannot stage configuration",
+    );
     assert_eq!(fs::read(&pin).unwrap(), original);
     assert_eq!(fs::read_to_string(&pending).unwrap(), "another publisher");
 }
@@ -374,14 +272,17 @@ fn linked_configuration_in_a_later_checkout_blocks_writes() {
     let first = temporary_sdk();
     let last = temporary_sdk();
     let external = tempfile::NamedTempFile::new().unwrap();
-    let destination = last.path().join("tools");
-    fs::create_dir(&destination).unwrap();
-    symlink(external.path(), destination.join("tooling-sources.json")).unwrap();
+    let mise = last.path().join("mise.toml");
+    fs::remove_file(&mise).unwrap();
+    symlink(external.path(), &mise).unwrap();
+
     fails(
-        sync(&[first.path(), last.path()], &["--revision", REVISION]),
+        sync(
+            &[first.path(), last.path()],
+            &["--swift-format", "--revision", OTHER],
+        ),
         "linked or non-ordinary SDK configuration",
     );
-    assert!(!first.path().join("tools").exists());
-    assert!(!last.path().join(".editorconfig").exists());
+    assert!(!first.path().join(".swift-format").exists());
     assert!(fs::read(external.path()).unwrap().is_empty());
 }

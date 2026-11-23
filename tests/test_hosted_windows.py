@@ -22,7 +22,11 @@ class HostedWindowsTests(unittest.TestCase):
 
             with (
                 patch.object(hosted_windows.sys, "platform", "win32"),
-                patch.dict(os.environ, env, clear=True),
+                patch.dict(
+                    os.environ,
+                    env | {"NAVI_CI_ARTIFACTS": "legacy stale", "VM_RUNNER_ARTIFACTS_DIR": "stale"},
+                    clear=True,
+                ),
                 patch.object(hosted_windows.shutil, "which", return_value=dotnet),
                 patch.object(hosted_windows.subprocess, "run") as run,
             ):
@@ -31,7 +35,9 @@ class HostedWindowsTests(unittest.TestCase):
             run.assert_called_once_with(
                 adapters.python_command(sdk, *command),
                 cwd=sdk,
-                env=dict(env, DOTNET_BIN=dotnet, NAVI_CI_ARTIFACTS=str(root / "sdk-acceptance")),
+                env=dict(
+                    env, DOTNET_BIN=dotnet, VM_RUNNER_ARTIFACTS_DIR=str(root / "sdk-acceptance")
+                ),
                 check=True,
             )
 

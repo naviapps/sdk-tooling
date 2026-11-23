@@ -901,7 +901,9 @@ class BindingTests(unittest.TestCase):
             )
 
 
-@unittest.skipUnless(os.environ.get("NAVI_TEST_DOTNET") == "1", "Requires the prepared .NET SDK")
+@unittest.skipUnless(
+    os.environ.get("SDK_TOOLING_TEST_DOTNET") == "1", "Requires the prepared .NET SDK"
+)
 class NativeConsumerTests(unittest.TestCase):
     @staticmethod
     def package(folder, name, dependency=None):

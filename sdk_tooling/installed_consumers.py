@@ -14,7 +14,7 @@ import tomllib
 from contextlib import nullcontext
 from pathlib import Path
 
-from . import windows
+from . import vm_environment, windows
 from .artifacts import files, hashes
 
 _REPOSITORY_URL = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\.git")
@@ -226,13 +226,12 @@ def _unique_members(pairs):
 
 
 def _ci_dependency_bundles(pins, verifier):
-    source = os.environ.get("NAVI_CI_SOURCES")
-    if not source:
+    manifest = vm_environment.source_manifest()
+    if manifest is None:
         raise ValueError(
             "Supply the additional SDK Git bundles through CI or --git-dependency-source"
         )
-    manifest = Path(source)
-    if not manifest.is_absolute() or manifest.is_symlink() or not manifest.is_file():
+    if manifest.is_symlink() or not manifest.is_file():
         raise ValueError("The CI source manifest must be an ordinary absolute file")
     rows = json.loads(manifest.read_text(encoding="utf-8"), object_pairs_hook=_unique_members)
     if not isinstance(rows, list):
@@ -925,7 +924,7 @@ def check_installed(
     if args.git_dependency_source:
         if not dependencies or "rust" not in selected:
             raise ValueError("Select the installed Rust consumer and declare its SDK Git sources")
-        if os.environ.get("NAVI_CI_SOURCES"):
+        if vm_environment.source_manifest() is not None:
             raise ValueError("Choose either the CI source manifest or --git-dependency-source")
         rust_options["dependency_sources"] = _local_dependency_sources(
             args.git_dependency_source, _dependency_pins(dependencies)

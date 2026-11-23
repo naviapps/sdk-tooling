@@ -20,10 +20,10 @@ publish_x64 = partial(windows_delivery.publish_x64, receipt_name=RECEIPT)
 class WindowsDeliveryTests(unittest.TestCase):
     def test_captured_source_requires_commit_and_fingerprint(self):
         commit, digest = "a" * 40, "b" * 64
-        values = {"NAVI_CI_SOURCE_COMMIT": commit, "NAVI_CI_SOURCE_FINGERPRINT": digest}
+        values = {"VM_RUNNER_SOURCE_COMMIT": commit, "VM_RUNNER_SOURCE_FINGERPRINT": digest}
         with patch.dict(os.environ, values, clear=True):
             self.assertEqual(windows_delivery.acceptance_source(Path.cwd()), (commit, digest))
-            del os.environ["NAVI_CI_SOURCE_FINGERPRINT"]
+            del os.environ["VM_RUNNER_SOURCE_FINGERPRINT"]
             with self.assertRaisesRegex(ValueError, "workspace SHA-256"):
                 windows_delivery.acceptance_source(Path.cwd())
 

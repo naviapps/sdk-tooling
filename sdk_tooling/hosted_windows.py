@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import vm_environment
 from .adapters import python_command
 
 
@@ -38,10 +39,14 @@ def run(sdk_root, command, *, legacy_candidate=False):
         if not legacy_candidate
         else [sys.executable, "-E", "-S", "-B", *command]
     )
+    env = dict(os.environ, DOTNET_BIN=dotnet)
+    vm_environment.set_value(
+        env, vm_environment.Variable.ARTIFACTS_DIR, temp / "sdk-acceptance", legacy=legacy_candidate
+    )
     subprocess.run(
         argv,
         cwd=sdk_root,
-        env=dict(os.environ, DOTNET_BIN=dotnet, NAVI_CI_ARTIFACTS=str(temp / "sdk-acceptance")),
+        env=env,
         check=True,
     )
 

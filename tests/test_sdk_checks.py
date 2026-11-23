@@ -43,13 +43,36 @@ class SDKChecksTests(unittest.TestCase):
             patch("sys.platform", "darwin"),
             patch("sdk_tooling.consumers.run_swift_consumer") as run,
         ):
-            self.check("swift-consumer", "--distribution")
+            self.check(
+                "swift-consumer",
+                "--distribution",
+                "--build-system",
+                "swiftbuild",
+                "--allow-warnings",
+            )
         run.assert_called_once()
         self.assertEqual(run.call_args.kwargs["root"], self.root)
         self.assertEqual(run.call_args.kwargs["fixture"], fixture)
         self.assertEqual(list(run.call_args.kwargs["inputs"]), ["Package.swift"])
         self.assertEqual(list(run.call_args.kwargs["executables"]), ["SDKConsumer"])
-        self.assertTrue(run.call_args.kwargs["warnings_as_errors"])
+        self.assertTrue(run.call_args.kwargs["verify_dependencies"])
+        self.assertEqual(run.call_args.kwargs["build_system"], "swiftbuild")
+        self.assertFalse(run.call_args.kwargs["warnings_as_errors"])
+
+    def test_swift_dependency_verification_is_opt_in_per_sdk(self):
+        for enabled in (False, True):
+            with self.subTest(verify_dependencies=enabled):
+                self.write(
+                    "sdk-checks.toml",
+                    f'[swift]\nexecutable = "Example"\ninputs = ["Package.swift"]\n'
+                    f"verify_dependencies = {str(enabled).lower()}\n",
+                )
+                with (
+                    patch("sys.platform", "darwin"),
+                    patch("sdk_tooling.consumers.run_swift_consumer") as run,
+                ):
+                    self.check("swift-consumer")
+                self.assertEqual(run.call_args.kwargs["verify_dependencies"], enabled)
 
     def test_docs_find_only_owned_catalogs_and_use_declared_settings(self):
         first = self.write("Sources/First/First.docc/First.md", "First").parent

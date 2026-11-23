@@ -1,0 +1,11 @@
+name: Test Rust on Windows x64
+description: Install the workspace's pinned Rust toolchain and test its locked x64 build.
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Rust
+      shell: pwsh
+      run: rustup install --no-self-update
+    - name: Test x64 Rust workspace
+      shell: pwsh
+      run: cargo test --workspace --locked --target x86_64-pc-windows-msvc

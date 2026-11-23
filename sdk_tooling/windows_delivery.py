@@ -10,28 +10,35 @@ import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 
+from . import vm_environment
+
 
 def _sha256(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def acceptance_source(root, *, match_actions=False):
+def acceptance_source(root, *, match_actions=False, environment=None):
     """Identify the exact clean checkout or captured Windows source snapshot."""
-    commit = os.environ.get("NAVI_CI_SOURCE_COMMIT")
-    fingerprint = os.environ.get("NAVI_CI_SOURCE_FINGERPRINT")
-    if commit is not None or fingerprint is not None:
-        if not re.fullmatch(r"[a-f0-9]{64}", fingerprint or ""):
-            raise ValueError("Captured Windows x64 acceptance requires the workspace SHA-256")
-    else:
+    env = os.environ if environment is None else environment
+    captured = vm_environment.source_identity(env)
+    if captured is None:
         if subprocess.check_output(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=root, text=True
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=root,
+            env=env,
+            text=True,
         ).strip():
             raise ValueError("Windows x64 acceptance requires a clean committed checkout")
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, env=env, text=True
+        ).strip()
+        fingerprint = None
+    else:
+        commit, fingerprint = captured
     if not re.fullmatch(r"[a-f0-9]{40}(?:[a-f0-9]{24})?", commit or ""):
         raise ValueError("Windows x64 acceptance requires the full source commit SHA")
-    if match_actions and os.environ.get("GITHUB_SHA", commit) != commit:
+    if match_actions and env.get("GITHUB_SHA", commit) != commit:
         raise ValueError("Windows x64 acceptance source differs from the Actions revision")
     return commit, fingerprint
 

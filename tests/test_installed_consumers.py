@@ -156,7 +156,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 self.assertFalse(cwd.is_relative_to(root))
                 self.assertEqual(list(cache.iterdir()), [])
                 self.assertEqual(env["GIT_ALLOW_PROTOCOL"], "file")
-                for name in ("GH_TOKEN", "GIT_CONFIG_COUNT", "NAVI_CI_SOURCES"):
+                for name in ("GH_TOKEN", "GIT_CONFIG_COUNT", "VM_RUNNER_SOURCE_MANIFEST"):
                     self.assertNotIn(name, env)
                 for url, pin in ((GIT_URL, producer), (DEPENDENCY_URL, revision)):
                     checkout = cache / pin
@@ -200,7 +200,7 @@ class InstalledConsumersTests(unittest.TestCase):
                     {
                         "GH_TOKEN": "fixture",
                         "GIT_CONFIG_COUNT": "0",
-                        "NAVI_CI_SOURCES": str(manifest) if delivery is None else "",
+                        "VM_RUNNER_SOURCE_MANIFEST": str(manifest) if delivery is None else "",
                     },
                 ),
             ):
@@ -219,7 +219,7 @@ class InstalledConsumersTests(unittest.TestCase):
         manifest = self.work / "manifest.json"
         pin = {"git": DEPENDENCY_URL, "rev": row["revision"]}
         pins = {row["repository"]: pin}
-        with patch.dict(os.environ, {"NAVI_CI_SOURCES": str(manifest)}):
+        with patch.dict(os.environ, {"VM_RUNNER_SOURCE_MANIFEST": str(manifest)}):
             for rows, message in (
                 ([], "Missing or ambiguous"),
                 ([row, dict(row, bundle="1.bundle")], "Missing or ambiguous"),
@@ -324,7 +324,9 @@ class InstalledConsumersTests(unittest.TestCase):
                 evidence = self.work / f"multiple-{uses_ci}.json"
                 with (
                     self.subTest(uses_ci=uses_ci),
-                    patch.dict(os.environ, {"NAVI_CI_SOURCES": str(manifest) if uses_ci else ""}),
+                    patch.dict(
+                        os.environ, {"VM_RUNNER_SOURCE_MANIFEST": str(manifest) if uses_ci else ""}
+                    ),
                 ):
                     self.cli(
                         root,
@@ -353,7 +355,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 manifest.write_text(json.dumps([first_row, second_row | change]), encoding="utf-8")
                 with (
                     self.subTest(change=change),
-                    patch.dict(os.environ, {"NAVI_CI_SOURCES": str(manifest)}),
+                    patch.dict(os.environ, {"VM_RUNNER_SOURCE_MANIFEST": str(manifest)}),
                     self.assertRaisesRegex(ValueError, error),
                 ):
                     self.cli(root, ["--language", "rust"], rust_git_dependencies=dependencies)
@@ -372,14 +374,14 @@ class InstalledConsumersTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with (
-                patch.dict(os.environ, {"NAVI_CI_SOURCES": str(manifest)}),
+                patch.dict(os.environ, {"VM_RUNNER_SOURCE_MANIFEST": str(manifest)}),
                 self.assertRaisesRegex(ValueError, "bundle HEAD differs"),
             ):
                 self.cli(root, ["--language", "rust"], rust_git_dependencies=dependencies)
             self.assertEqual(calls, [])
 
             with (
-                patch.dict(os.environ, {"NAVI_CI_SOURCES": ""}),
+                patch.dict(os.environ, {"VM_RUNNER_SOURCE_MANIFEST": ""}),
                 self.assertRaisesRegex(ValueError, "requires a distinct delivery"),
             ):
                 self.cli(
@@ -709,7 +711,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 self.assertEqual(Path(env["CARGO_TARGET_DIR"]), cwd.parent / "target")
                 self.assertEqual(env["RUSTUP_TOOLCHAIN"], "1.99.1")
                 self.assertEqual(env["GIT_ALLOW_PROTOCOL"], "file")
-                for key in ("RUSTFLAGS", "GITHUB_TOKEN", "NAVI_CI_SOURCES"):
+                for key in ("RUSTFLAGS", "GITHUB_TOKEN", "VM_RUNNER_SOURCE_MANIFEST"):
                     self.assertNotIn(key, env)
                 (cwd / "Cargo.lock").write_bytes(lock)
             if action == "metadata":

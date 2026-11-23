@@ -12,33 +12,22 @@ uv = { version = "0.13.6", os = ["macos", "linux"] }
 "pypi:pyflakes" = { version = "4.1.0", os = ["macos", "linux"], depends = ["uv"] }
 
 [tasks.check]
-description = "Verify shared SDK mechanisms, template sync and GitHub Actions workflow"
+description = "Verify shared SDK mechanisms and contributor tooling"
+depends = ["lint"]
 run = [
-  "mise exec python -- python3 -B -m sdk_tooling quality check",
-  "mise exec python -- python3 -B -m unittest discover -s tests",
-  "cargo fmt --manifest-path tools/template-sync/Cargo.toml -- --check",
-  "cargo clippy --locked --manifest-path tools/template-sync/Cargo.toml --all-targets -- -D warnings",
-  "cargo test --locked --manifest-path tools/template-sync/Cargo.toml",
-  "cargo fmt --manifest-path tools/consumer-identity/Cargo.toml -- --check",
-  "cargo clippy --locked --manifest-path tools/consumer-identity/Cargo.toml --all-targets -- -D warnings",
-  "cargo test --locked --manifest-path tools/consumer-identity/Cargo.toml",
-  "cargo fmt --manifest-path tools/native-dep-info/Cargo.toml -- --check",
-  "cargo clippy --locked --offline --manifest-path tools/native-dep-info/Cargo.toml --all-targets -- -D warnings",
-  "cargo test --locked --offline --manifest-path tools/native-dep-info/Cargo.toml",
+  "python3 -B -m unittest discover -s tests",
+  "cargo clippy --locked --workspace --all-targets -- -D warnings",
+  "cargo test --locked --workspace",
 ]
 
 [tasks.lint]
 run = [
-  "mise exec python -- python3 -B -m sdk_tooling quality check",
-  "cargo fmt --manifest-path tools/template-sync/Cargo.toml -- --check",
-  "cargo fmt --manifest-path tools/consumer-identity/Cargo.toml -- --check",
-  "cargo fmt --manifest-path tools/native-dep-info/Cargo.toml -- --check",
+  "python3 -B -m sdk_tooling quality check --language python --language shell --language data",
+  "cargo fmt --all -- --check",
 ]
 
 [tasks.format]
 run = [
-  "mise exec python -- python3 -B -m sdk_tooling quality format",
-  "cargo fmt --manifest-path tools/template-sync/Cargo.toml",
-  "cargo fmt --manifest-path tools/consumer-identity/Cargo.toml",
-  "cargo fmt --manifest-path tools/native-dep-info/Cargo.toml",
+  "python3 -B -m sdk_tooling quality format --language python --language shell --language data",
+  "cargo fmt --all",
 ]

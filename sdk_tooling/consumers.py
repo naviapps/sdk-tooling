@@ -9,7 +9,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from . import bindings, windows
 from .dotnet import subprocess_environment
@@ -32,7 +32,7 @@ _SWIFT_DEVELOPER_INPUTS = {
     "sdk_tooling",
 }
 _SWIFT_CACHE_DIRECTORIES = {".git", ".build", ".native-build", ".swiftpm", "__pycache__"}
-_SWIFT_BUILD_SYSTEMS = ("native", "swiftbuild")
+SWIFT_BUILD_SYSTEMS = ("native", "swiftbuild")
 
 
 def _swift_copy_ignore(directory, names):
@@ -98,6 +98,48 @@ def _check_swift_dependencies(dependency, allowed_roots):
         _check_swift_dependencies(child, allowed_roots)
 
 
+def _swift_environment(work, git_config):
+    # Keep Xcode's developer home stable and isolate SwiftPM state and tool paths.
+    env = {
+        key: os.environ[key]
+        for key in (
+            "HOME",
+            "CFFIXED_USER_HOME",
+            "DEVELOPER_DIR",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TZ",
+            "TERM",
+            "NO_COLOR",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+        )
+        if key in os.environ
+    }
+    for key, relative in {
+        "XDG_CACHE_HOME": "cache",
+        "XDG_CONFIG_HOME": "config",
+        "TMPDIR": "tmp",
+        "CLANG_MODULE_CACHE_PATH": "module-cache",
+        "SWIFT_MODULECACHE_PATH": "module-cache",
+    }.items():
+        path = work / relative
+        path.mkdir(exist_ok=True)
+        env[key] = str(path)
+    configuration = work / "gitconfig"
+    configuration.write_bytes(Path(git_config).read_bytes() if git_config else b"")
+    return dict(
+        env,
+        PATH="/usr/bin:/bin:/usr/sbin:/sbin",
+        GIT_CONFIG_GLOBAL=str(configuration),
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_TERMINAL_PROMPT="0",
+    )
+
+
 def run_swift_consumer(
     *,
     root,
@@ -105,6 +147,7 @@ def run_swift_consumer(
     fixture,
     executables,
     work_parent=None,
+    verify_dependencies=True,
     git_config=None,
     mirror_config=None,
     build_system=None,
@@ -113,21 +156,33 @@ def run_swift_consumer(
 ):
     """Build/run an SDK-owned external package against a stripped installable tree.
 
-    The fixture's manifest references ../sdk and owns products/platforms; its
-    executables own API/native assertions. This is a fresh source/artifact check,
-    not remote publication evidence. No producer tool is invoked.
+    The fixture owns product selection and assertions. Contributor checks run the
+    selected products. Distribution checks also validate the dependency graph.
     """
     root = Path(root).resolve(strict=True)
     fixture = Path(fixture).resolve(strict=True)
-    if build_system is not None and build_system not in _SWIFT_BUILD_SYSTEMS:
+    if build_system is not None and build_system not in SWIFT_BUILD_SYSTEMS:
         raise ValueError("Unsupported SwiftPM build system: " + str(build_system))
     if mirror_config is not None:
         mirror_config = Path(mirror_config).resolve(strict=True)
+    verify_dependencies = verify_dependencies or git_config is not None or mirror_config is not None
     executables = tuple(executables)
-    if not executables or any(
-        not name or Path(name).name != name or name in {".", ".."} for name in executables
+    if (
+        not executables
+        or any(
+            not isinstance(name, str)
+            or not name
+            or name in {".", ".."}
+            or name.startswith("-")
+            or "/" in name
+            or "\\" in name
+            or PureWindowsPath(name).drive
+            or any(ord(char) < 32 for char in name)
+            for name in executables
+        )
+        or len(executables) != len(set(executables))
     ):
-        raise ValueError("Provide consumer executable names without directory components")
+        raise ValueError("Declare distinct Swift executable names without directory components")
     if work_parent is not None:
         work_parent = Path(work_parent).resolve()
         work_parent.mkdir(parents=True, exist_ok=True)
@@ -138,71 +193,29 @@ def run_swift_consumer(
         sdk.mkdir()
         consumer.mkdir()
         _copy_swift_inputs(root, sdk, inputs)
-        _copy_swift_inputs(
-            fixture,
-            consumer,
-            [path.name for path in fixture.iterdir() if path.name not in _SWIFT_DEVELOPER_INPUTS],
-        )
+        fixture_inputs = ("Package.swift", "Sources")
+        if verify_dependencies:
+            fixture_inputs = tuple(
+                path.name for path in fixture.iterdir() if path.name not in _SWIFT_DEVELOPER_INPUTS
+            )
+        _copy_swift_inputs(fixture, consumer, fixture_inputs)
         if not (sdk / "Package.swift").is_file() or not (consumer / "Package.swift").is_file():
             raise ValueError("Both the installable SDK and consumer need Package.swift")
-        # A dependency's Package.resolved does not control a SwiftPM root package.
-        pinned = _swift_policy_file(
-            [root / "Package.resolved", consumer / "Package.resolved"],
-            consumer / "Package.resolved",
-        )
-        mirrors = Path(".swiftpm/configuration/mirrors.json")
-        _swift_policy_file(
-            [root / mirrors, fixture / mirrors, *([mirror_config] if mirror_config else [])],
-            consumer / mirrors,
-        )
-        # Only Xcode/system tools are available to manifests and runtime fixtures.
-        # Explicit job Git rewrites preserve immutable private dependency mirrors.
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if key
-            in {
-                "HOME",
-                "CFFIXED_USER_HOME",
-                "DEVELOPER_DIR",
-                "LANG",
-                "LC_ALL",
-                "LC_CTYPE",
-                "TZ",
-                "TERM",
-                "NO_COLOR",
-                "HTTPS_PROXY",
-                "HTTP_PROXY",
-                "ALL_PROXY",
-                "NO_PROXY",
-            }
-        }
-        # Xcode manages mounted developer components below the real user home.
-        # Keep that location stable; isolate SwiftPM state with explicit paths.
-        for key, relative in {
-            "XDG_CACHE_HOME": "cache",
-            "XDG_CONFIG_HOME": "config",
-            "TMPDIR": "tmp",
-            "CLANG_MODULE_CACHE_PATH": "module-cache",
-            "SWIFT_MODULECACHE_PATH": "module-cache",
-        }.items():
-            path = work / relative
-            path.mkdir(exist_ok=True)
-            env[key] = str(path)
-        configuration = work / "gitconfig"
-        selected_git = git_config or os.environ.get("GIT_CONFIG_GLOBAL")
-        configuration.write_bytes(Path(selected_git).read_bytes() if selected_git else b"")
-        env.update(
-            PATH="/usr/bin:/bin:/usr/sbin:/sbin",
-            GIT_CONFIG_GLOBAL=str(configuration),
-            GIT_CONFIG_NOSYSTEM="1",
-            GIT_TERMINAL_PROMPT="0",
-        )
+        pinned = False
+        if verify_dependencies:
+            # A dependency's Package.resolved does not control the SwiftPM root.
+            pins = consumer / "Package.resolved"
+            pinned = _swift_policy_file([root / "Package.resolved", pins], pins)
+            mirrors = Path(".swiftpm/configuration/mirrors.json")
+            _swift_policy_file(
+                [root / mirrors, fixture / mirrors, *([mirror_config] if mirror_config else [])],
+                consumer / mirrors,
+            )
+            git_config = git_config or os.environ.get("GIT_CONFIG_GLOBAL")
+        env = _swift_environment(work, git_config)
         scratch = work / "scratch"
-        command = [
-            "/usr/bin/xcrun",
-            "swift",
-            "build",
+        swift = ("/usr/bin/xcrun", "swift")
+        options = [
             "--scratch-path",
             str(scratch),
             "--cache-path",
@@ -220,58 +233,33 @@ def run_swift_consumer(
             *(["-Xswiftc", "-warnings-as-errors"] if warnings_as_errors else []),
             *(["--force-resolved-versions"] if pinned else []),
         ]
+        execution = {"cwd": consumer, "env": env, "check": True}
+        if not verify_dependencies:
+            for name in executables:
+                run([*swift, "run", *options, name], **execution)
+            return
+
         graph = run(
-            [*command[:2], "package", *command[3:], "show-dependencies", "--format", "json"],
-            cwd=consumer,
-            env=env,
-            check=True,
+            [*swift, "package", *options, "show-dependencies", "--format", "json"],
             stdout=subprocess.PIPE,
             text=True,
+            **execution,
         )
         # An absolute .package(path:) would otherwise bypass source-tree isolation.
         _check_swift_dependencies(json.loads(graph.stdout), (consumer, sdk, scratch))
-        run(command, cwd=consumer, env=env, check=True)
+        command = [*swift, "build", *options]
+        run(command, **execution)
         result = run(
             [*command, "--show-bin-path"],
-            cwd=consumer,
-            env=env,
-            check=True,
             stdout=subprocess.PIPE,
             text=True,
+            **execution,
         )
         binary = Path(result.stdout.strip()).resolve(strict=True)
         if not binary.is_relative_to(scratch):
             raise ValueError("Swift consumer binary path must remain inside its fresh scratch tree")
         for name in executables:
-            run([str(binary / name)], cwd=consumer, env=env, check=True)
-
-
-def check_swift(*, root, inputs, fixture, executables, work_parent=None, argv=None):
-    parser = argparse.ArgumentParser(
-        description="Build/run this SDK's external Swift package without its developer tree."
-    )
-    parser.add_argument(
-        "--git-config", type=Path, help="Explicit job-private dependency Git rewrites"
-    )
-    parser.add_argument("--mirror-config", type=Path, help="Explicit SwiftPM mirrors.json")
-    parser.add_argument("--build-system", choices=_SWIFT_BUILD_SYSTEMS, help="SwiftPM build system")
-    parser.add_argument(
-        "--allow-warnings", action="store_true", help="Do not pass -warnings-as-errors to Swift"
-    )
-    args = parser.parse_args(argv)
-    if sys.platform != "darwin":
-        raise ValueError("Swift native consumer acceptance requires macOS")
-    run_swift_consumer(
-        root=root,
-        inputs=inputs,
-        fixture=fixture,
-        executables=executables,
-        work_parent=work_parent,
-        git_config=args.git_config,
-        mirror_config=args.mirror_config,
-        build_system=args.build_system,
-        warnings_as_errors=not args.allow_warnings,
-    )
+            run([str(binary / name)], **execution)
 
 
 def _dotnet_host(env, target):

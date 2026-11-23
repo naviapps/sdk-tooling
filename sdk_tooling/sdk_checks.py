@@ -1,29 +1,13 @@
 """Run consumer and documentation checks from an SDK-owned description."""
 
 import json
-import os
-import subprocess
 import sys
-import tempfile
 import tomllib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from . import consumers, docs, installed_consumers
 
 CONFIGURATION = "sdk-checks.toml"
-_SWIFT_BUILD_SYSTEMS = ("native", "swiftbuild")
-_SWIFT_ENVIRONMENT = (
-    "HOME",
-    "CFFIXED_USER_HOME",
-    "DEVELOPER_DIR",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-)
 
 
 def _table(value, label):
@@ -80,51 +64,6 @@ def _inside(root, value, label):
     return path
 
 
-def _add_swift_arguments(parser):
-    parser.add_argument("--distribution", action="store_true", help="Verify the dependency graph")
-    parser.add_argument("--git-config", type=Path, help="Explicit job-private Git configuration")
-    parser.add_argument("--mirror-config", type=Path, help="Explicit SwiftPM mirrors.json")
-    parser.add_argument("--build-system", choices=_SWIFT_BUILD_SYSTEMS, help="SwiftPM build system")
-    parser.add_argument("--allow-warnings", action="store_true", help="Allow Swift warnings")
-
-
-def _swift_smoke(root, inputs, fixture, executables, *, build_system, warnings_as_errors):
-    with tempfile.TemporaryDirectory(prefix="swift-consumer-") as directory:
-        work = Path(directory).resolve()
-        sdk, client = work / "sdk", work / "consumer"
-        sdk.mkdir()
-        client.mkdir()
-        consumers._copy_swift_inputs(root, sdk, inputs)
-        consumers._copy_swift_inputs(fixture, client, ("Package.swift", "Sources"))
-        if not (sdk / "Package.swift").is_file():
-            raise ValueError("The installable SDK needs Package.swift")
-        env = {key: os.environ[key] for key in _SWIFT_ENVIRONMENT if key in os.environ}
-        env.update(
-            PATH="/usr/bin:/bin:/usr/sbin:/sbin",
-            GIT_CONFIG_GLOBAL=os.devnull,
-            GIT_CONFIG_NOSYSTEM="1",
-            GIT_TERMINAL_PROMPT="0",
-        )
-        command = [
-            "/usr/bin/xcrun",
-            "swift",
-            "run",
-            "--cache-path",
-            str(work / "cache"),
-            "--config-path",
-            str(work / "config"),
-            "--security-path",
-            str(work / "security"),
-            "--disable-dependency-cache",
-            *(["--build-system", build_system] if build_system else []),
-            "-Xswiftc",
-            "-strict-concurrency=complete",
-            *(["-Xswiftc", "-warnings-as-errors"] if warnings_as_errors else []),
-        ]
-        for executable in executables:
-            subprocess.run([*command, executable], cwd=client, env=env, check=True)
-
-
 def swift_command(args, *, root):
     if sys.platform != "darwin":
         raise ValueError("Swift native consumer acceptance requires macOS")
@@ -136,38 +75,22 @@ def swift_command(args, *, root):
     fixture = _inside(root, config.get("fixture", "fixtures/swift-consumer"), "swift.fixture")
     if ("executable" in config) == ("executables" in config):
         raise ValueError("Declare swift.executable or swift.executables")
-    names = config.get("executables", [config.get("executable")])
-    executables = tuple(
-        _relative(name, "swift executable") for name in _strings(names, "swift executable names")
-    )
-    if (
-        not executables
-        or len(executables) != len(set(executables))
-        or any("/" in name or name.startswith("-") for name in executables)
-    ):
-        raise ValueError("Declare distinct Swift executable names without directory components")
-    build_system = args.build_system or config.get("build_system")
-    if build_system is not None and build_system not in _SWIFT_BUILD_SYSTEMS:
-        raise ValueError("swift.build_system must be native or swiftbuild")
-    settings = {
-        "build_system": build_system,
-        "warnings_as_errors": not args.allow_warnings,
-    }
     verify_dependencies = _boolean(
         config.get("verify_dependencies", False), "swift.verify_dependencies"
     )
-    if verify_dependencies or args.distribution or args.git_config or args.mirror_config:
-        consumers.run_swift_consumer(
-            root=root,
-            inputs=inputs,
-            fixture=fixture,
-            executables=executables,
-            git_config=args.git_config,
-            mirror_config=args.mirror_config,
-            **settings,
-        )
-    else:
-        _swift_smoke(root, inputs, fixture, executables, **settings)
+    consumers.run_swift_consumer(
+        root=root,
+        inputs=inputs,
+        fixture=fixture,
+        executables=_strings(
+            config.get("executables", [config.get("executable")]), "swift executable names"
+        ),
+        verify_dependencies=verify_dependencies or args.distribution,
+        git_config=args.git_config,
+        mirror_config=args.mirror_config,
+        build_system=args.build_system or config.get("build_system"),
+        warnings_as_errors=not args.allow_warnings,
+    )
 
 
 def _validate_declaration_docs(source_root, graphs):
@@ -304,7 +227,13 @@ def installed_command(args, *, root):
 
 def add_commands(commands):
     swift = commands.add_parser("swift-consumer", help="Check the SDK's external Swift package")
-    _add_swift_arguments(swift)
+    swift.add_argument("--distribution", action="store_true", help="Verify the dependency graph")
+    swift.add_argument("--git-config", type=Path, help="Explicit job-private Git configuration")
+    swift.add_argument("--mirror-config", type=Path, help="Explicit SwiftPM mirrors.json")
+    swift.add_argument(
+        "--build-system", choices=consumers.SWIFT_BUILD_SYSTEMS, help="SwiftPM build system"
+    )
+    swift.add_argument("--allow-warnings", action="store_true", help="Allow Swift warnings")
     swift.set_defaults(handler=swift_command)
     docc = commands.add_parser("docs", help="Validate SDK DocC catalogs against public symbols")
     docc.add_argument("--output", type=Path, help="Override the SDK documentation output")

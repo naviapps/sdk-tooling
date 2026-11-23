@@ -61,13 +61,13 @@ jobs:
           MISE_DISABLE_TOOLS: python,rust
           MISE_AUTO_INSTALL: "0"
         shell: bash
-        run: mise exec -- python -B -m sdk_tooling quality check
+        run: mise exec -- python -B -m sdk_tooling quality check --language python --language shell --language data
       - name: Select pinned Rust toolchain
         shell: bash
         run: rustup show
       - name: Verify SDK mechanisms and clean NuGet consumers
         env:
-          NAVI_TEST_DOTNET: "1"
+          SDK_TOOLING_TEST_DOTNET: "1"
         shell: python
         run: |
           import subprocess
@@ -75,17 +75,13 @@ jobs:
 
           subprocess.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-v"], check=True)
       - name: Check Rust tooling
-        env:
-          RUST_TARGET: ${{ matrix.target }}
         shell: bash
         run: |
           set -euo pipefail
-          for tool in template-sync consumer-identity native-dep-info; do
-            manifest="tools/$tool/Cargo.toml"
-            if [[ "$RUNNER_OS" == macOS ]]; then
-              cargo fmt --manifest-path "$manifest" -- --check
-            fi
-            cargo fetch --locked --manifest-path "$manifest" --target "$RUST_TARGET"
-            cargo clippy --locked --offline --manifest-path "$manifest" --target "$RUST_TARGET" --all-targets -- -D warnings
-            cargo test --locked --offline --manifest-path "$manifest" --target "$RUST_TARGET"
-          done
+          target='${{ matrix.target }}'
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            cargo fmt --all -- --check
+          fi
+          cargo fetch --locked --target "$target"
+          cargo clippy --locked --offline --workspace --target "$target" --all-targets -- -D warnings
+          cargo test --locked --offline --workspace --target "$target"

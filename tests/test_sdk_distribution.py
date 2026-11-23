@@ -144,7 +144,6 @@ class DistributionTests(unittest.TestCase):
                         "temp": str(path.parent),
                         "credential": "GH_TOKEN" in os.environ,
                     }
-                    assert Path(os.environ["SDK_DISTRIBUTION_TEMP"]) == path.parent
                     if mode == "write":
                         path.write_text(json.dumps(details), encoding="utf-8")
                     else:
@@ -162,7 +161,7 @@ class DistributionTests(unittest.TestCase):
                 "archives": [],
             }
             with patch.dict(os.environ, {"GH_TOKEN": "unrelated token"}):
-                env = DISPATCH["child_environment"](revision, tooling, temp=temp)
+                env = DISPATCH["child_environment"](revision)
                 DISPATCH["execute"](root, "windows", settings, env, temp, tooling)
             self.assertEqual(
                 json.loads((temp / "result.json").read_text(encoding="utf-8")),
@@ -190,12 +189,21 @@ class DistributionTests(unittest.TestCase):
             }
             env = {"PATH": "fixture path"}
             execute = DISPATCH["execute"]
-            for modern in (False, True):
-                with self.subTest(modern=modern), patch.dict(execute.__globals__) as globals_:
+            loader = root / "tools/_tooling.py"
+            loader.parent.mkdir()
+            for pinned_cli, legacy_loader in ((False, True), (True, True), (True, False)):
+                with (
+                    self.subTest(pinned_cli=pinned_cli, legacy_loader=legacy_loader),
+                    patch.dict(execute.__globals__) as globals_,
+                ):
                     config.write_text(
-                        '[tasks.sdk-tooling]\nrun = "uvx ..."\n' if modern else "",
+                        '[tasks.sdk-tooling]\nrun = "uvx ..."\n' if pinned_cli else "",
                         encoding="utf-8",
                     )
+                    if legacy_loader:
+                        loader.touch()
+                    else:
+                        loader.unlink(missing_ok=True)
                     invocations = []
 
                     def run(source, environment, *command):
@@ -223,10 +231,19 @@ class DistributionTests(unittest.TestCase):
                             (*prefix, "make", "SDK_TOOLING=explicit command"),
                         ],
                     )
-                    self.assertEqual([environment for environment, _ in invocations[:3]], [env] * 3)
+                    child = (
+                        dict(env, NAVI_SDK_TOOLING_SOURCE=str(tooling)) if legacy_loader else env
+                    )
+                    self.assertEqual(
+                        [environment for environment, _ in invocations[:3]], [child] * 3
+                    )
                     for environment, _ in invocations[3:]:
-                        self.assertEqual("SDK_TOOLING" in environment, modern)
-                        if modern:
+                        self.assertEqual("SDK_TOOLING" in environment, pinned_cli)
+                        self.assertEqual(
+                            environment.get("NAVI_SDK_TOOLING_SOURCE"),
+                            str(tooling) if legacy_loader else None,
+                        )
+                        if pinned_cli:
                             self.assertIn("shared $$tooling", environment["SDK_TOOLING"])
 
     def test_sdk_child_identity_replaces_workflow_sha_without_credentials(self):
@@ -234,6 +251,14 @@ class DistributionTests(unittest.TestCase):
             "NAVI_CI_SOURCE_COMMIT": "a" * 40,
             "NAVI_CI_SOURCE_FINGERPRINT": "b" * 64,
             "NAVI_CI_SOURCES": "manifest.json",
+            "NAVI_CI_SOURCE_FILES": "outside-selection.json",
+            "navi_ci_source_files_sha256": "d" * 64,
+            "NAVI_CI_ARTIFACTS": "outside-artifacts",
+            "VM_RUNNER_SOURCE_MANIFEST": "another-source.json",
+            "VM_RUNNER_SOURCE_FILES": "another-selection.json",
+            "VM_RUNNER_ARTIFACTS_DIR": "another-output",
+            "vm_runner_tools_root": "another-tools-root",
+            "NAVI_SDK_TOOLING_SOURCE": "unrelated tooling checkout",
             "SDK_TOOLING": "unrelated tool command",
             "GITHUB_SHA": "a" * 40,
             "GITHUB_TOKEN": "test token",
@@ -245,9 +270,8 @@ class DistributionTests(unittest.TestCase):
             "GIT_CONFIG_VALUE_1": "unrelated credential helper",
         }
         with patch.dict(os.environ, environment, clear=True):
-            actual = DISPATCH["child_environment"]("c" * 40, SCRIPT.parent)
+            actual = DISPATCH["child_environment"]("c" * 40)
         self.assertEqual(actual["GITHUB_SHA"], "c" * 40)
-        self.assertEqual(actual["NAVI_SDK_TOOLING_SOURCE"], str(SCRIPT.parent))
         self.assertEqual(actual["GIT_CONFIG_KEY_0"], "credential.helper")
         self.assertEqual(actual["GIT_CONFIG_VALUE_0"], "")
         self.assertFalse(

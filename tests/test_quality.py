@@ -10,14 +10,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sdk_tooling import quality
+from sdk_tooling import quality, vm_environment
 
 
 class QualityTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ))
-        os.environ.pop("NAVI_CI_SOURCE_FILES", None)
-        os.environ.pop("NAVI_CI_SOURCE_FILES_SHA256", None)
+        vm_environment.set_value(os.environ, vm_environment.Variable.SOURCE_FILES, None)
+        vm_environment.set_value(os.environ, vm_environment.Variable.SOURCE_FILES_SHA256, None)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name).resolve()
@@ -328,8 +328,8 @@ class QualityTests(unittest.TestCase):
 class ManifestQualityTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ))
-        os.environ.pop("NAVI_CI_SOURCE_FILES", None)
-        os.environ.pop("NAVI_CI_SOURCE_FILES_SHA256", None)
+        vm_environment.set_value(os.environ, vm_environment.Variable.SOURCE_FILES, None)
+        vm_environment.set_value(os.environ, vm_environment.Variable.SOURCE_FILES_SHA256, None)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name).resolve()
@@ -347,8 +347,8 @@ class ManifestQualityTests(unittest.TestCase):
         path = self.root / ".navi-ci-source-files.json"
         path.write_bytes(data)
         os.environ.update(
-            NAVI_CI_SOURCE_FILES=str(path),
-            NAVI_CI_SOURCE_FILES_SHA256=hashlib.sha256(data).hexdigest(),
+            VM_RUNNER_SOURCE_FILES=str(path),
+            VM_RUNNER_SOURCE_FILES_SHA256=hashlib.sha256(data).hexdigest(),
         )
         return path
 
@@ -462,7 +462,7 @@ class ManifestQualityTests(unittest.TestCase):
             if os.name == "nt" and getattr(error, "winerror", None) == 1314:
                 self.skipTest("Windows denied symlink creation; no privilege changes attempted")
             raise
-        os.environ["NAVI_CI_SOURCE_FILES"] = str(alias / manifest.name)
+        os.environ["VM_RUNNER_SOURCE_FILES"] = str(alias / manifest.name)
         self.assertEqual(quality.source_files(self.root), ["source.py"])
         source.write_text("after\n")
         for operation in ["check", "format"]:
@@ -477,11 +477,11 @@ class ManifestQualityTests(unittest.TestCase):
     def test_manifest_environment_and_hash_fail_without_git_fallback(self):
         self.write("source.py")
         for remove, value in [
-            ("NAVI_CI_SOURCE_FILES", None),
-            ("NAVI_CI_SOURCE_FILES_SHA256", None),
-            ("NAVI_CI_SOURCE_FILES_SHA256", "0" * 64),
-            ("NAVI_CI_SOURCE_FILES_SHA256", "not-a-hash"),
-            ("NAVI_CI_SOURCE_FILES", ""),
+            ("VM_RUNNER_SOURCE_FILES", None),
+            ("VM_RUNNER_SOURCE_FILES_SHA256", None),
+            ("VM_RUNNER_SOURCE_FILES_SHA256", "0" * 64),
+            ("VM_RUNNER_SOURCE_FILES_SHA256", "not-a-hash"),
+            ("VM_RUNNER_SOURCE_FILES", ""),
         ]:
             with self.subTest(environment=remove, value=value):
                 self.manifest(["source.py"])
@@ -560,7 +560,7 @@ class ManifestQualityTests(unittest.TestCase):
             str(self.root) + "/\n" + manifest.name,
         ]:
             with self.subTest(path=path):
-                os.environ["NAVI_CI_SOURCE_FILES"] = path
+                os.environ["VM_RUNNER_SOURCE_FILES"] = path
                 with self.assertRaisesRegex(ValueError, "ordinary workspace manifest"):
                     quality.source_files(self.root)
         self.manifest(["missing.py"])

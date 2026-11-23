@@ -29,8 +29,8 @@ documentation-only changes do not start workers.
 
 ### Source selection
 
-Direct CI workspaces without Git metadata can supply `NAVI_CI_SOURCE_FILES` and
-`NAVI_CI_SOURCE_FILES_SHA256` together. The normalized absolute path must name the ordinary
+Direct CI workspaces without Git metadata can supply `VM_RUNNER_SOURCE_FILES` and
+`VM_RUNNER_SOURCE_FILES_SHA256` together. The normalized absolute path must name the ordinary
 workspace-root `.navi-ci-source-files.json`; its SHA-256 binds the exact UTF-8 JSON bytes, bounded
 to 16 MiB, with shape `{"version":1,"files":["sorted/relative/name.py"]}`.
 Parent directory aliases resolving to that same workspace are accepted, including
@@ -42,6 +42,13 @@ or a mismatched hash fail without falling back to Git. The metadata file itself
 is transport data and cannot be selected as source. Both variables absent retain
 normal Git discovery, including skipped deleted files. Existing pinned consumers
 must adopt a tooling revision with this support before using direct CI selection.
+
+SDK fixtures can use `sdk_tooling.vm_environment` to read `VM_RUNNER_*` settings.
+Use `artifacts_dir` and `source_manifest` for absolute paths, `source_files` for
+the source inventory and digest, and `source_identity` for the captured commit
+and workspace fingerprint. `set_value` replaces or removes both names in a child
+environment. Readers accept the names used by older pinned VM Runner versions
+and fail if both names are present with different values.
 
 The digest binds selection metadata, not source contents. Checks and formatting
 read the current selected file bytes, so formatting and subsequent edits remain
@@ -118,9 +125,9 @@ to adopt. It needs the checkout's pinned Rust and Cargo. On Windows, use a
 Visual Studio developer shell for the selected Rust target.
 
 ```sh
-mise exec -- cargo run --quiet --locked --manifest-path tools/template-sync/Cargo.toml -- \
+mise exec -- cargo run --quiet --locked -p sdk-template-sync -- \
   --revision FULL_COMMIT_SHA -- /absolute/path/to/sdk
-mise exec -- cargo run --quiet --locked --manifest-path tools/template-sync/Cargo.toml -- \
+mise exec -- cargo run --quiet --locked -p sdk-template-sync -- \
   --check -- /absolute/path/to/sdk
 ```
 
@@ -128,22 +135,20 @@ Put tool options before the `--` that introduces the SDK paths. Relative paths
 resolve from the working directory. To use a prepared Cargo cache without
 network access, add `--offline` to the Cargo options.
 
-For SDKs that declare `[tasks.sdk-tooling]` in `mise.toml`, the tool validates
-the pinned `uvx` command and rewrites only its literal commit SHA. It preserves
-the rest of the mise configuration, SDK-specific dprint and Git attributes,
-and SDK-specific EditorConfig sections. For Rust SDKs, it synchronizes adopted
-EditorConfig and Rust toolchain files. Add `--quality` to synchronize existing Ruff,
-SwiftLint and C formatting policies. Select `--swift-format` to opt into the
-shared Swift formatting policy. Swift-only SDKs can use the same command.
+Select a Rust or Swift SDK with a pinned `[tasks.sdk-tooling]` command in
+`mise.toml`. Synchronization replaces its literal commit SHA and preserves
+the rest of the mise configuration. Each SDK owns its dprint configuration
+and Git attributes.
 
-Legacy Rust SDKs without the mise task retain the JSON pin and Python loader
-templates. On those checkouts, `--quality` also replaces the legacy mise and
-static-check templates.
+Rust SDKs receive updates for their existing EditorConfig and Rust toolchain
+files. SDK-specific EditorConfig sections are retained. Use `--quality` to
+update existing Ruff, SwiftLint and C formatting policies. Use
+`--swift-format` to adopt or update the shared Swift formatting file.
 
 The tool validates all selected checkout paths before replacing files and
-writes each updated pin after its templates. Pass `--revision FULL_COMMIT_SHA`
-with `--check` to require that revision. Without a revision, the check accepts
-any canonical immutable pin.
+writes each updated pin after its templates. A check without `--revision`
+accepts any canonical immutable pin. Add `--revision FULL_COMMIT_SHA` to
+require every selected checkout to use that revision.
 
 ### DocC catalog acceptance
 
@@ -326,14 +331,13 @@ See [NuGet packing and recovery](#nuget-package-publication).
 
 ### External SwiftPM consumers
 
-`consumers.check_swift` builds and runs an SDK-owned external Swift package in a
-fresh temporary directory. The SDK supplies `root`, explicit installable `inputs`,
-a `fixture` package directory and its `executables`. The fixture's `Package.swift`
-references the staged SDK at `../sdk` and selects the SDK's products, tools version
-and minimum platform; its Swift sources own the API and native assertions. Tooling
-does not duplicate that policy or rebuild native artifacts. Include every required
-manifest target path, native artifact, resource and retained notice in `inputs`.
-Relative framework symlinks survive, while links outside the staged tree fail.
+Run `mise run sdk-tooling -- swift-consumer` from the SDK checkout. The `[swift]`
+section in `sdk-checks.toml` declares `inputs`, `executable` or `executables`, and
+an optional `fixture` path that defaults to `fixtures/swift-consumer`. Include
+every required target path, native artifact, resource and retained notice in
+`inputs`. The fixture's `Package.swift` selects products from the staged SDK at
+`../sdk`. The fixture owns its platform requirements and API assertions.
+Relative framework symlinks are retained. Links outside the staged tree fail.
 Developer tools, Rust crates and generated output roots are excluded, along with
 recursive `.git`, `.build`, `.native-build`, `.swiftpm` and `__pycache__` directories.
 
@@ -345,16 +349,16 @@ config/security/cache, module cache, temporary and scratch directories, and no
 inherited compiler or native-loader overrides. It preserves the caller's `HOME`
 and existing `CFFIXED_USER_HOME` so Xcode-managed developer components stay outside
 the disposable consumer tree.
-It checks the resolved SwiftPM graph before building and rejects dependencies
-outside the staged SDK, consumer and fresh dependency checkout directories.
-It carries `Package.resolved` from the SDK to the consumer root and enforces those
-pins. SDK/fixture `.swiftpm/configuration/mirrors.json` files are preserved; conflicting policy files
-fail. `--mirror-config` supplies an explicit mirrors file. `--git-config` or the
-job's explicit `GIT_CONFIG_GLOBAL` supplies a self-contained Git configuration, copied
-into the temporary directory so CI's immutable dependency URL rewrites survive.
-User/global Git and SwiftPM settings are otherwise isolated. All temporary state is
-removed after build or runtime failure. Mirror-based execution proves standalone
-source/artifact consumption, separately from remote publication or feed reachability.
+
+The contributor check runs the declared executables with the fixture manifest
+and `Sources`. Select full dependency verification with `--distribution` or set
+`verify_dependencies = true` in `[swift]`. Full verification builds the entire
+fixture, rejects resolved dependencies outside the fresh install, and enforces
+the SDK's `Package.resolved` at the consumer root when present. It retains SDK and
+fixture `.swiftpm/configuration/mirrors.json` files and rejects conflicting policy.
+`--mirror-config` and `--git-config` also select full verification with an
+explicit policy file. Full verification can use the job's `GIT_CONFIG_GLOBAL`
+for dependency URL rewrites. Both checks remove their temporary state when done.
 
 ### Installed Rust and C consumers
 
@@ -385,7 +389,7 @@ An SDK that uses additional private Git packages declares each package's
 canonical URL and full revision through `rust_git_dependencies` and repeats each
 exact pin in the fixture manifest. Packages from the same repository share a
 mirror and must use the same URL and revision. In CI, the Rust verifier selects
-the exact `NAVI_CI_SOURCES` row and its positional bundle. The gate then checks
+the exact `VM_RUNNER_SOURCE_MANIFEST` row and its positional bundle. The gate then checks
 the selected bundle's checksum and advertised HEAD before Cargo starts.
 Outside CI, pass `--git-dependency-source OWNER/REPO=PATH` once per
 repository, using a complete checkout, mirror, or bundle. A single repository

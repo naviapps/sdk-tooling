@@ -31,14 +31,7 @@ CREDENTIAL_VARIABLES = {
     "SSH_ASKPASS",
     "SSH_AUTH_SOCK",
 }
-SOURCE_VARIABLES = {
-    "NAVI_CI_SOURCE_COMMIT",
-    "NAVI_CI_SOURCE_FINGERPRINT",
-    "NAVI_CI_SOURCES",
-    "NAVI_SDK_TOOLING_SOURCE",
-    "SDK_DISTRIBUTION_TEMP",
-    "SDK_TOOLING",
-}
+SOURCE_VARIABLES = {"NAVI_SDK_TOOLING_SOURCE", "SDK_TOOLING"}
 
 
 def run(root, env, *command, stdout=None):
@@ -46,12 +39,12 @@ def run(root, env, *command, stdout=None):
     return subprocess.run(command, cwd=root, env=env, stdout=stdout, text=True, check=True).stdout
 
 
-def child_environment(revision, tooling=None, *, temp=None):
+def child_environment(revision):
     env = {
         key: value
         for key, value in os.environ.items()
         if key.upper() not in CREDENTIAL_VARIABLES | SOURCE_VARIABLES
-        and not key.upper().startswith("GIT_CONFIG_")
+        and not key.upper().startswith(("GIT_CONFIG_", "VM_RUNNER_", "NAVI_CI_"))
     }
     env.update(
         GITHUB_SHA=revision,
@@ -64,10 +57,6 @@ def child_environment(revision, tooling=None, *, temp=None):
         GIT_NO_REPLACE_OBJECTS="1",
         GIT_TERMINAL_PROMPT="0",
     )
-    if tooling is not None:
-        env["NAVI_SDK_TOOLING_SOURCE"] = str(tooling)
-    if temp is not None:
-        env["SDK_DISTRIBUTION_TEMP"] = str(temp)
     return env
 
 
@@ -262,6 +251,9 @@ def install_archive(source, env, temp, index, configuration):
 
 
 def execute(source, platform, settings, env, temp, tooling):
+    pinned_cli = "sdk-tooling" in mise_configuration(source).get("tasks", {})
+    if not pinned_cli or (source / "tools/_tooling.py").is_file():
+        env = dict(env, NAVI_SDK_TOOLING_SOURCE=str(tooling))
     tool_dirs = [
         str(install_archive(source, env, temp, index, archive))
         for index, archive in enumerate(settings["archives"])
@@ -276,7 +268,7 @@ def execute(source, platform, settings, env, temp, tooling):
         run(source, env, "mise", "trust", "mise.toml")
         run(source, env, "mise", "install")
         prefix = ("mise", "exec", "--")
-        if "sdk-tooling" in mise_configuration(source).get("tasks", {}):
+        if pinned_cli:
             # Make expands dollar signs before passing the command to the shell.
             make_env = dict(env, SDK_TOOLING=shlex.join(sdk_cli).replace("$", "$$"))
 
@@ -346,14 +338,7 @@ def main(argv=None):
         dir=env.get("RUNNER_TEMP"), prefix="sdk-distribution-"
     ) as work:
         temp = Path(work).resolve()
-        execute(
-            source,
-            args.mode,
-            plan[args.mode],
-            child_environment(args.revision, tooling, temp=temp),
-            temp,
-            tooling,
-        )
+        execute(source, args.mode, plan[args.mode], env, temp, tooling)
 
 
 if __name__ == "__main__":

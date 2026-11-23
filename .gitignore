@@ -1,6 +1,4 @@
 __pycache__/
 *.py[cod]
 .venv/
-/tools/template-sync/target/
-/tools/consumer-identity/target/
-/tools/native-dep-info/target/
+target/

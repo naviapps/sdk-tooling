@@ -79,23 +79,29 @@ mise run check
 `mise install` may download the pinned tools. `mise run check` selects the pinned
 Python and Rust and tests both command paths without pip dependencies or .NET.
 The template sync crate may fetch its locked public Cargo dependencies on first use.
-The clean NuGet consumer test is skipped unless `NAVI_TEST_DOTNET=1` requires the
-native .NET SDK, as the CI workflow does. GitHub Actions uses standard macOS
-Arm64 and Windows x64 runners for these checks. See the
+Set `SDK_TOOLING_TEST_DOTNET=1` to run the clean NuGet consumer tests with a
+prepared .NET 10 SDK. The CI workflow sets it on standard macOS ARM64 and
+Windows x64 runners. See the
 [workflow](.github/workflows/check.yml) for the runtime versions.
 
 After changing a workflow's action dependencies, regenerate its
 `actions.lock` with `gh actions-lock` and review the resolved commits.
 Run `gh actions-lock --verify` to check it.
 
-Public SDKs run their contributor checks in their own repositories. The shared
+Public SDKs run contributor checks in their own repositories. They can call the
+[Swift matrix](.github/workflows/check-swift.yml) and the
+[Windows x64 Rust step](.github/actions/test-rust-windows/action.yml) at an
+immutable SDK Tooling revision. The Swift matrix runs the SDK's `make test` and
+`make test-consumer` targets on macOS 26 and 27.
+
+The shared
 [SDK distribution checks](.github/workflows/check-sdk-distribution.yml) are run
-by maintainers before publishing a native SDK. Select the SDK and the full
-commit SHA from its `main` branch:
+by maintainers before publishing a native SDK. Run the dispatch from the selected
+SDK checkout at the intended commit on `main`:
 
 ```sh
 gh workflow run check-sdk-distribution.yml --repo naviapps/sdk-tooling \
-  --field sdk=configuration-storage --field revision="$SDK_COMMIT"
+  --field sdk=configuration-storage --field "revision=$(git rev-parse HEAD)"
 ```
 
 The jobs read `sdk-distribution.toml` from a clean SDK checkout at the requested
@@ -133,8 +139,12 @@ run = "uvx --from git+https://github.com/naviapps/sdk-tooling.git@<full-sha> sdk
 
 Repositories without the task can declare an exact revision in
 `tools/tooling-sources.json`. The dispatcher keeps its own checkout so workflow
-changes can ship independently. SDK commands receive the exact selected SDK
-commit and run after the setup steps remove their checkout credentials.
+changes can ship independently. The hosted job sets `GITHUB_SHA` to the selected
+SDK commit and uses Git to select the source files. It clears inherited VM Runner
+snapshot settings and checkout credentials. The Windows fixture launcher supplies
+`DOTNET_BIN` and `VM_RUNNER_ARTIFACTS_DIR` from the runner's x64 tool and temporary
+directory. Older checkouts using a JSON pin or `tools/_tooling.py` still receive
+`NAVI_SDK_TOOLING_SOURCE` for their SDK-owned loaders.
 
 ### SDK checkouts
 
@@ -167,7 +177,7 @@ bundle and local Git mirror supplied by its host.
 
 | Scope               | Tools and version authority                                                                                                                                                                                                                                                   |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repository checks   | The repository's `mise.toml` selects Python and the applicable formatters and linters. The shared Rust SDK template also selects .NET for managed checks; the Swift-only SDK does not require it. `uv` supplies the PyPI tool backend, not an application dependency.         |
+| Repository checks   | Each repository's `mise.toml` selects Python, formatters, linters and .NET where applicable. `uv` supplies the PyPI tool backend.                                                                                                                                             |
 | Rust producers      | `rust-toolchain.toml` selects Rust, rustfmt and Clippy. Install only the standard-library targets needed by the job: both Darwin targets for universal frameworks, the appropriate MSVC target for Windows, or the WebAssembly target for browser bindings.                   |
 | macOS SDKs          | Select full Xcode for Swift, SwiftPM, swift-format, DocC, Clang, `xcodebuild` and Mach-O inspection. Use the macOS signing tools for framework checks. Do not install separate copies of these tools through mise. The pinned C formatter is independent of Xcode's compiler. |
 | Native Windows SDKs | Use target-native Python, Rust, .NET 10 and Visual Studio C++ tools with the Windows SDK. The Windows driver selects the Visual Studio environment and checks the host and target architectures.                                                                              |

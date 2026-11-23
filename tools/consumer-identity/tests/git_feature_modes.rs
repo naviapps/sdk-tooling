@@ -134,14 +134,8 @@ fn preserves_pinned_workspace_packages_across_actual_cargo_feature_modes() {
     );
     fixture.write("client/src/main.rs", "fn main() {}\n");
     let client = fixture.0.join("client");
-    let python = env::var_os("PREPARED_PYTHON").unwrap_or_else(|| {
-        if cfg!(windows) {
-            "python".into()
-        } else {
-            "python3".into()
-        }
-    });
-    run(Command::new(&python).args([
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    run(Command::new(python).args([
         "-B", "-c",
         "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text(f'[url \"{Path(sys.argv[2]).as_uri()}\"]\\n  insteadOf = {sys.argv[3]}\\n', encoding='utf-8')",
     ]).arg(&config).arg(&sdk).arg(ORIGIN));
@@ -187,7 +181,7 @@ fn preserves_pinned_workspace_packages_across_actual_cargo_feature_modes() {
     ];
     for (label, mode, raw) in rendered {
         fs::write(fixture.0.join("evidence"), raw).unwrap();
-        let records = run(Command::new(&python)
+        let records = run(Command::new(python)
             .args(["-B", "-c", include_str!("read_cargo_records.py"), label])
             .arg(fixture.0.join("evidence")));
         let pins = [
