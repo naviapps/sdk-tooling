@@ -479,25 +479,6 @@ class CargoDependencies:
                 flags.append(flag)
         env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
 
-    def _legacy_notices(self, record):
-        """Old SDK manifests recorded archive identity but no notice file hashes."""
-        roots = {
-            Path(p["manifest_path"]).parent.parents[2]
-            for p in self.packages
-            if (p.get("source") or "").startswith(("registry+", "sparse+"))
-        }
-        cargo_home = Path(
-            self.env.get("CARGO_HOME", Path(self.env.get("HOME", Path.home())) / ".cargo")
-        )
-        roots.add(cargo_home / "registry")
-        for root in sorted(roots):
-            for archive in sorted((root / "cache").glob("*/" + record["directory"] + ".crate")):
-                if _hash(_read(archive)) == record["checksum"]:
-                    return _notices(_archive(archive, record["directory"], record["checksum"]))
-        raise RuntimeError(
-            "Cannot verify legacy generated notice ownership without its exact cached archive"
-        )
-
     def registry_notices(self):
         """Read verified notices without mutating the SDK or source caches.
 
@@ -527,8 +508,8 @@ class CargoDependencies:
 
         Return the sorted registry ownership records with a UTF-8/LF index on all
         hosts; upstream notice bytes are never normalized. Existing generated material
-        must still match its recorded file hashes (or its verified legacy archive)
-        before any replacement or prune. Publication rolls back individual owned
+        must still match its recorded file hashes before any replacement or prune.
+        Publication rolls back individual owned
         directories on failure; ThirdParty itself is never replaced.
         """
         selected = self.registry_notices()
@@ -561,14 +542,7 @@ class CargoDependencies:
             if not record.get("source", "").startswith(("registry+", "sparse+")):
                 raise RuntimeError("Invalid generated notice source")
             _source(record["source"])
-            owned.add(name)
-            path = third_party / name
-            if not path.exists() and not path.is_symlink():
-                continue
-            actual = _files(path)
             expected = record.get("files")
-            if expected is None:
-                expected = _hashes(self._legacy_notices(record))
             if (
                 not isinstance(expected, dict)
                 or not expected
@@ -579,8 +553,13 @@ class CargoDependencies:
                 or any(
                     not isinstance(key, str) or _relative(key).as_posix() != key for key in expected
                 )
-                or _hashes(actual) != expected
             ):
+                raise RuntimeError("Invalid generated notice file hashes")
+            owned.add(name)
+            path = third_party / name
+            if not path.exists() and not path.is_symlink():
+                continue
+            if _hashes(_files(path)) != expected:
                 raise RuntimeError("Generated notice ownership changed; preserving existing files")
             allowed_dirs = {
                 parent.as_posix()

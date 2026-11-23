@@ -87,14 +87,13 @@ C uses clang-format. On macOS and Linux, dprint formats owned `.sh` files with a
 checksummed shfmt Wasm plugin. Bash syntax checks and ShellCheck validate the same
 files.
 
-Actionlint checks workflow definitions and runs ShellCheck for inline shell and
-Pyflakes for inline Python when the repository pins them for the current platform.
-Selected `.github/actionlint.yaml` (or `.yml`, with `.yaml` taking precedence) is
-passed explicitly so custom labels work with or without Git metadata.
-The quality gate passes the verified executable paths to actionlint and fails if
-a required linter is missing or has the wrong version. It explicitly disables
-undeclared or out-of-scope integrations. Repositories with embedded Python use the
-Pyflakes hook; ordinary Python files remain with Ruff.
+Jactionlint checks selected workflows and composite actions with its correctness
+profile. It runs ShellCheck for inline shell and Ruff's `F` rules for inline
+Python when the repository pins them for the current platform. The quality gate
+passes the verified executable paths and the selected `.github/jactionlint.yaml`
+(or `.yml`) for runner labels, including in Gitless snapshots. Undeclared or
+out-of-scope integrations are disabled. A missing or mismatched tool fails the
+check.
 
 #### Markdown and structured data
 
@@ -233,8 +232,10 @@ sdk-tooling xcframework-archive --output /absolute/path/to/archives
 The native builder stores the original license/notice bodies verbatim in each
 framework's `Resources/ThirdPartyNotices.txt`. Original `ThirdParty/` files remain
 in the SDK and supply managed packages. Registry retention verifies locked archives
-and the selected normal/build dependency graph; pruning is limited to verified
-previously generated registry notice directories. It preserves manual upstream notices.
+and the selected normal/build dependency graph. It only prunes generated registry
+notice directories whose files match the hashes in `registry-notices.json`.
+Use the tooling pinned by an older SDK revision to verify its historical index.
+Manual upstream notices stay in place.
 Maintainers explicitly provision matching public Rust notices with
 `cargo.retain_runtime_notices(root, env, source=verified_public_source)`.
 Normal native builds validate the retained `ThirdParty/Rust/provenance.json` and

@@ -32,7 +32,6 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-python@v7.1.0
-        id: python
         with:
           python-version: "3.15.1"
           architecture: ${{ matrix.architecture }}
@@ -46,12 +45,10 @@ jobs:
         if: runner.os == 'macOS'
         env:
           MISE_DISABLE_TOOLS: python,rust
-          UV_PYTHON: ${{ steps.python.outputs.python-path }}
-          UV_PYTHON_DOWNLOADS: never
         with:
           version: "2026.11.12"
           cache: false
-          install_args: ruff dprint actionlint shellcheck uv pypi:pyflakes
+          install_args: ruff dprint jactionlint shellcheck
           add_shims_to_path: false
           export_path: false
           env: false
@@ -68,12 +65,8 @@ jobs:
       - name: Verify SDK mechanisms and clean NuGet consumers
         env:
           SDK_TOOLING_TEST_DOTNET: "1"
-        shell: python
-        run: |
-          import subprocess
-          import sys
-
-          subprocess.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-v"], check=True)
+        shell: bash
+        run: python -B -m unittest discover -s tests -v
       - name: Check Rust tooling
         shell: bash
         run: |

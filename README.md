@@ -119,29 +119,27 @@ declare either platform or both. For example:
 commands = [
   ["cargo", "fetch", "--locked"],
   ["make", "check-distribution"],
-  ["sdk-tooling", "swift-consumer", "--distribution"],
 ]
 ```
 
 For a macOS SDK with `native.toml`, the job checks the committed distribution,
-then builds the declared XCFrameworks once with the SDK's pinned tooling. Swift
-tests and the independent SwiftPM consumer exercise the regenerated binaries.
+then builds the declared XCFrameworks once with the SDK's pinned tooling. The
+workflow runs the Swift tests and the independent SwiftPM consumer once against
+the regenerated binaries.
 The job uploads a ZIP for each framework, the build receipts and the checksum
 index as a seven-day Actions artifact. The archives are verification output.
 SDKs that use SwiftPM path-based binary targets continue to supply their
 frameworks in the source checkout.
 
-On macOS the dispatcher runs the commands through the SDK's mise environment
-when it has a `mise.toml`. The `sdk-tooling` command runs the pinned checkout
-with the dispatcher's Python interpreter. For macOS `make` commands, the
-dispatcher also supplies this runner as `SDK_TOOLING` when the SDK declares the
-tooling task in `mise.toml`. An explicit Make argument can override it. On
-Windows, `python` uses the dispatcher's interpreter and `[tools].dotnet`
-selects the x64 .NET SDK. Commands can use `{tooling}` for the pinned tooling
-checkout or `{temp}` for a temporary directory shared across commands. An optional
-`[[macos.archives]]` or `[[windows.archives]]` table provides an HTTPS `url`,
-a verified `sha256` and a directory named by `bin` inside the tar archive to
-prepend to `PATH`.
+On macOS the dispatcher runs the commands through the SDK's mise environment.
+The `sdk-tooling` command runs the pinned checkout with the dispatcher's Python
+interpreter. The dispatcher also supplies this runner as `SDK_TOOLING` to Make,
+including Make launched by a mise task. An explicit Make argument can override
+it. Use task-scoped mise tools for release-only dependencies and pin the checksum
+for downloaded assets. On Windows, `python` uses the dispatcher's interpreter
+and `[tools].dotnet` selects the x64 .NET SDK. Commands can use `{tooling}` for
+the pinned tooling checkout or `{temp}` for a temporary directory shared across
+commands.
 
 The tooling revision comes from the `[tasks.sdk-tooling]` task in the SDK's
 `mise.toml`:
@@ -156,8 +154,9 @@ The hosted job sets `GITHUB_SHA` to the selected SDK commit and uses Git to sele
 the source files. It clears inherited VM Runner snapshot settings and checkout
 credentials. The Windows fixture launcher supplies `DOTNET_BIN` and
 `VM_RUNNER_ARTIFACTS_DIR` from the runner's x64 tool and temporary directory.
-To reproduce checks for an older SDK commit with a different loader layout,
-follow that commit's instructions with its pinned tooling revision.
+To reproduce checks for an older SDK commit, use the dispatcher and producer
+revisions from the original workflow run and follow the SDK's instructions at
+that commit.
 
 ### SDK checkouts
 

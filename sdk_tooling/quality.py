@@ -154,18 +154,19 @@ def resolve_tool(root, name, pin):
 
 
 def workflow_linters(root):
-    """Pass declared linters explicitly; do not let actionlint silently skip them."""
+    """Pass declared script linters without relying on PATH discovery."""
     pins = tool_pins(root)
     host = {"darwin": "macos", "win32": "windows"}.get(sys.platform, sys.platform)
     arguments = []
-    for name, key in (("shellcheck", "shellcheck"), ("pyflakes", "pypi:pyflakes")):
-        pin = pins.get(key)
+    for name in ("shellcheck", "ruff"):
+        pin = pins.get(name)
         platforms = pin.get("os") if isinstance(pin, dict) else None
         path = ""
         if pin is not None and (platforms is None or host in platforms):
             path = Path(resolve_tool(root, name, pin)).absolute()
         # An empty flag disables PATH discovery for undeclared or out-of-scope tools.
-        arguments.append(f"-{name}={path}")
+        arguments.append(f"--{name}={path}")
+    arguments.append("--pyflakes=")
     return arguments
 
 
@@ -286,22 +287,36 @@ def check(root, *, write=False, languages=None, dotnet=False):
                     ],
                 )
     if not write and "data" in chosen:
-        workflows = [
+        definitions = [
             "./" + name
             for name in files
-            if name.startswith(".github/workflows/") and Path(name).suffix in {".yml", ".yaml"}
+            if (name.startswith(".github/workflows/") and Path(name).suffix in {".yml", ".yaml"})
+            or (
+                name.startswith(".github/actions/")
+                and Path(name).name in {"action.yml", "action.yaml"}
+            )
         ]
-        if workflows:
+        if definitions:
             configuration = next(
                 (
                     root / name
-                    for name in (".github/actionlint.yaml", ".github/actionlint.yml")
+                    for name in (".github/jactionlint.yaml", ".github/jactionlint.yml")
                     if name in files
                 ),
-                None,
+                os.devnull,
             )
-            config_args = ["-config-file", configuration] if configuration is not None else []
-            run(root, [tool(root, "actionlint"), *config_args, *workflow_linters(root), *workflows])
+            run(
+                root,
+                [
+                    tool(root, "jactionlint"),
+                    "--profile=correctness",
+                    "--no-online",
+                    "--config-file",
+                    configuration,
+                    *workflow_linters(root),
+                    *definitions,
+                ],
+            )
     return 0
 
 

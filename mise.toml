@@ -4,12 +4,11 @@ activate_aggressive = true
 [tools]
 python = "3.15.1"
 rust = "1.99.1"
-actionlint = "1.7.12"
+jactionlint = "2.6.0"
 shellcheck = { version = "0.11.0", os = ["macos", "linux"] }
 ruff = "0.17.3"
 dprint = "0.64.3"
 uv = { version = "0.13.6", os = ["macos", "linux"] }
-"pypi:pyflakes" = { version = "4.1.0", os = ["macos", "linux"], depends = ["uv"] }
 
 [tasks.check]
 description = "Verify shared SDK mechanisms and contributor tooling"

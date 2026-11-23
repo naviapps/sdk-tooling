@@ -126,23 +126,25 @@ class QualityTests(unittest.TestCase):
 
     def test_workflow_check_passes_pinned_linters_and_disables_out_of_scope_tools(self):
         self.write(".github/workflows/ci.yml")
+        self.write(".github/actions/example/action.yml")
         self.write(
             "mise.toml",
-            '[tools]\nactionlint = "1.7.12"\nshellcheck = "0.11.0"\n'
-            '"pypi:pyflakes" = { version = "4.1.0", os = ["macos", "linux"] }\n',
+            '[tools]\njactionlint = "2.6.0"\nshellcheck = "0.11.0"\n'
+            'ruff = { version = "0.17.3", os = ["macos", "linux"] }\n',
         )
         executables = {
             name: str(self.root / "tool directory" / name)
-            for name in ("actionlint", "shellcheck", "pyflakes")
+            for name in ("jactionlint", "shellcheck", "ruff")
         }
         versions = {
-            executables["actionlint"]: "1.7.12",
+            executables["jactionlint"]: "2.6.0",
             executables["shellcheck"]: "ShellCheck\nversion: 0.11.0",
-            executables["pyflakes"]: "4.1.0 Python 3.15.2 on Darwin",
+            executables["ruff"]: "ruff 0.17.3",
         }
-        for host, pyflakes in (
-            ("darwin", executables["pyflakes"]),
-            ("linux", executables["pyflakes"]),
+        files = quality.source_files(self.root)
+        for host, ruff in (
+            ("darwin", executables["ruff"]),
+            ("linux", executables["ruff"]),
             ("win32", ""),
         ):
             with (
@@ -154,23 +156,29 @@ class QualityTests(unittest.TestCase):
                     "check_output",
                     side_effect=lambda args, **_: versions[args[0]],
                 ) as version,
-                patch.object(quality, "source_files", return_value=[".github/workflows/ci.yml"]),
+                patch.object(quality, "source_files", return_value=files),
                 patch.object(quality, "run") as run,
             ):
                 self.assertEqual(quality.check(self.root, languages=["data"]), 0)
                 run.assert_called_once_with(
                     self.root,
                     [
-                        executables["actionlint"],
-                        f"-shellcheck={executables['shellcheck']}",
-                        f"-pyflakes={pyflakes}",
+                        executables["jactionlint"],
+                        "--profile=correctness",
+                        "--no-online",
+                        "--config-file",
+                        os.devnull,
+                        f"--shellcheck={executables['shellcheck']}",
+                        f"--ruff={ruff}",
+                        "--pyflakes=",
+                        "./.github/actions/example/action.yml",
                         "./.github/workflows/ci.yml",
                     ],
                 )
-                if not pyflakes:
-                    self.assertNotIn("pyflakes", [call.args[0] for call in find.call_args_list])
+                if not ruff:
+                    self.assertNotIn("ruff", [call.args[0] for call in find.call_args_list])
                     self.assertNotIn(
-                        executables["pyflakes"],
+                        executables["ruff"],
                         [call.args[0][0] for call in version.call_args_list],
                     )
 
@@ -178,7 +186,7 @@ class QualityTests(unittest.TestCase):
         self.write(".github/workflows/ci.yml")
         self.write(
             "mise.toml",
-            '[tools]\nactionlint = "1.7.12"\nshellcheck = "0.11.0"\n',
+            '[tools]\njactionlint = "2.6.0"\nshellcheck = "0.11.0"\n',
         )
         for shellcheck, message in (
             (None, "Missing shellcheck"),
@@ -187,10 +195,10 @@ class QualityTests(unittest.TestCase):
             with (
                 self.subTest(shellcheck=shellcheck),
                 patch.object(
-                    quality.shutil, "which", side_effect=["/tools/actionlint", shellcheck]
+                    quality.shutil, "which", side_effect=["/tools/jactionlint", shellcheck]
                 ),
                 patch.object(
-                    quality.subprocess, "check_output", side_effect=["1.7.12", "version: 0.10.0"]
+                    quality.subprocess, "check_output", side_effect=["2.6.0", "version: 0.10.0"]
                 ),
                 patch.object(quality, "source_files", return_value=[".github/workflows/ci.yml"]),
                 patch.object(quality, "run") as run,
@@ -200,9 +208,12 @@ class QualityTests(unittest.TestCase):
                 run.assert_not_called()
 
     def test_undeclared_workflow_linters_are_not_discovered_on_path(self):
-        self.write("mise.toml", '[tools]\nactionlint = "1.7.12"\n')
+        self.write("mise.toml", '[tools]\njactionlint = "2.6.0"\n')
         with patch.object(quality.shutil, "which") as find:
-            self.assertEqual(quality.workflow_linters(self.root), ["-shellcheck=", "-pyflakes="])
+            self.assertEqual(
+                quality.workflow_linters(self.root),
+                ["--shellcheck=", "--ruff=", "--pyflakes="],
+            )
         find.assert_not_called()
 
     @unittest.skipIf(os.name == "nt", "Shell files are not checked on Windows")
@@ -423,15 +434,15 @@ class ManifestQualityTests(unittest.TestCase):
         self.write(".github/workflows/ci.yml", "jobs: {}\n")
         self.write(
             "mise.toml",
-            '[tools]\nactionlint = "1.7.12"\nshellcheck = "0.11.0"\n"pypi:pyflakes" = "4.1.0"\n',
+            '[tools]\njactionlint = "2.6.0"\nshellcheck = "0.11.0"\nruff = "0.17.3"\n',
         )
         executables = {
             name: str(self.root / "tool directory" / name)
-            for name in ("actionlint", "shellcheck", "pyflakes")
+            for name in ("jactionlint", "shellcheck", "ruff")
         }
         for extensions in [("yaml",), ("yml",), ("yaml", "yml")]:
             with self.subTest(extensions=extensions):
-                configs = [".github/actionlint." + extension for extension in extensions]
+                configs = [".github/jactionlint." + extension for extension in extensions]
                 for config in configs:
                     self.write(config, 'self-hosted-runner:\n  labels: ["navi-ci"]\n')
                 self.manifest(sorted([*configs, ".github/workflows/ci.yml", "mise.toml"]))
@@ -447,11 +458,14 @@ class ManifestQualityTests(unittest.TestCase):
                     run.assert_called_once_with(
                         self.root,
                         [
-                            executables["actionlint"],
-                            "-config-file",
+                            executables["jactionlint"],
+                            "--profile=correctness",
+                            "--no-online",
+                            "--config-file",
                             self.root / configs[0],
-                            f"-shellcheck={executables['shellcheck']}",
-                            f"-pyflakes={executables['pyflakes']}",
+                            f"--shellcheck={executables['shellcheck']}",
+                            f"--ruff={executables['ruff']}",
+                            "--pyflakes=",
                             "./.github/workflows/ci.yml",
                         ],
                     )

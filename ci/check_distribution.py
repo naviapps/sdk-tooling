@@ -2,17 +2,14 @@
 """Run distribution commands from a verified SDK checkout."""
 
 import argparse
-import hashlib
 import os
 import re
 import shlex
 import subprocess
 import sys
-import tarfile
 import tempfile
 import tomllib
-from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
+from pathlib import Path
 
 REVISION = re.compile(r"[a-f0-9]{40}")
 REPOSITORY = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
@@ -31,7 +28,6 @@ CREDENTIAL_VARIABLES = {
     "SSH_AUTH_SOCK",
 }
 SOURCE_VARIABLES = {"NAVI_SDK_TOOLING_SOURCE", "SDK_TOOLING"}
-SWIFT_DISTRIBUTION = ["sdk-tooling", "swift-consumer", "--distribution"]
 
 
 def builds_xcframeworks(source, platform):
@@ -158,43 +154,13 @@ def clean_text(value):
     )
 
 
-def archive_entry(value):
-    if (
-        not isinstance(value, dict)
-        or value.keys() != {"url", "sha256", "bin"}
-        or not all(clean_text(item) for item in value.values())
-        or not re.fullmatch(r"[a-f0-9]{64}", value["sha256"])
-    ):
-        raise ValueError("Tool archives require url, sha256 and bin")
-    parsed = urlsplit(value["url"])
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.fragment
-        or any(character.isspace() for character in value["url"])
-    ):
-        raise ValueError("Tool archive URL must use HTTPS without credentials or a fragment")
-    bindir = PurePosixPath(value["bin"])
-    if (
-        not bindir.parts
-        or bindir.is_absolute()
-        or bindir.as_posix() != value["bin"]
-        or ".." in bindir.parts
-        or any(character in value["bin"] for character in "\\:;")
-    ):
-        raise ValueError("Tool archive bin must be a canonical relative directory")
-    return value
-
-
 def distribution_plan(source):
     plan = tomllib.loads(read_regular(source, "sdk-distribution.toml").decode("utf-8"))
     if not plan or not plan.keys() <= set(PLATFORMS):
         raise ValueError("Declare macos or windows distribution commands")
     selected = {}
     for platform, settings in plan.items():
-        if not isinstance(settings, dict) or not settings.keys() <= {"commands", "archives"}:
+        if not isinstance(settings, dict) or not settings.keys() <= {"commands"}:
             raise ValueError(f"Unknown distribution settings for {platform}")
         commands = settings.get("commands")
         if (
@@ -209,75 +175,28 @@ def distribution_plan(source):
             )
         ):
             raise ValueError(f"Distribution commands for {platform} must be nonempty argv arrays")
-        archives = settings.get("archives", [])
-        if not isinstance(archives, list):
-            raise ValueError(f"Tool archives for {platform} must be an array")
-        selected[platform] = {
-            "commands": commands,
-            "archives": [archive_entry(entry) for entry in archives],
-        }
+        selected[platform] = commands
     return selected
 
 
-def install_archive(source, env, temp, index, configuration):
-    root = temp / f"tool-{index}"
-    root.mkdir()
-    archive = root / "tool.tar"
-    run(
-        source,
-        env,
-        "curl",
-        "--proto",
-        "=https",
-        "--proto-redir",
-        "=https",
-        "-fsSL",
-        "--retry",
-        "3",
-        "-o",
-        archive,
-        configuration["url"],
-    )
-    with archive.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != configuration["sha256"]:
-            raise ValueError("Pinned tool archive checksum differs")
-    extracted = root / "contents"
-    with tarfile.open(archive) as package:
-        package.extractall(extracted, filter="data")
-    binary_path = extracted / configuration["bin"]
-    if not binary_path.is_dir() or not binary_path.resolve().is_relative_to(extracted):
-        raise ValueError("Pinned tool archive does not provide the expected bin directory")
-    return binary_path
-
-
-def execute(source, platform, settings, env, temp, tooling, *, xcframework_output=None):
+def execute(source, platform, commands, env, temp, tooling, *, xcframework_output=None):
     if platform == "windows" and env.get("RUNNER_TEMP"):
         # Cargo clones can contain macOS framework paths even on Windows.
         env = dict(env, TMPDIR=env["RUNNER_TEMP"])
-    tool_dirs = [
-        str(install_archive(source, env, temp, index, archive))
-        for index, archive in enumerate(settings["archives"])
-    ]
-    if tool_dirs:
-        env = dict(env, PATH=os.pathsep.join((*tool_dirs, env["PATH"])))
-
     prefix = ()
     launcher = tooling / "ci/run_sdk_tooling.py"
     if not launcher.is_file():
         raise ValueError("Pinned SDK Tooling must provide ci/run_sdk_tooling.py")
     sdk_cli = [sys.executable, "-I", "-B", str(launcher)]
-    make_env = env
     if platform == "macos" and (source / "mise.toml").is_file():
         run(source, env, "mise", "trust", "mise.toml")
         run(source, env, "mise", "install")
         prefix = ("mise", "exec", "--")
         # Make expands dollar signs before passing the command to the shell.
-        make_env = dict(env, SDK_TOOLING=shlex.join(sdk_cli).replace("$", "$$"))
+        # Set it for the run environment so Make still sees it inside mise tasks.
+        env = dict(env, SDK_TOOLING=shlex.join(sdk_cli).replace("$", "$$"))
 
-    for argv in settings["commands"]:
-        # Test the generated Swift dependency instead of testing the committed one twice.
-        if xcframework_output is not None and argv == SWIFT_DISTRIBUTION:
-            continue
+    for argv in commands:
         command = [
             argument.replace("{temp}", str(temp)).replace("{tooling}", str(tooling))
             for argument in argv
@@ -286,7 +205,7 @@ def execute(source, platform, settings, env, temp, tooling, *, xcframework_outpu
             command = [*sdk_cli, *command[1:]]
         elif platform == "windows" and command[0] == "python":
             command[0] = sys.executable
-        run(source, make_env if command[0] == "make" else env, *prefix, *command)
+        run(source, env, *prefix, *command)
 
     if xcframework_output is None:
         return
@@ -303,12 +222,12 @@ def execute(source, platform, settings, env, temp, tooling, *, xcframework_outpu
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
     )
-    if ["cargo", "fetch", "--locked"] not in settings["commands"]:
+    if ["cargo", "fetch", "--locked"] not in commands:
         run(source, env, *prefix, "cargo", "fetch", "--locked")
     run(source, env, *prefix, *sdk_cli, "xcframework")
     if (source / "Package.swift").is_file():
-        run(source, make_env, *prefix, "make", "test")
-        run(source, env, *prefix, *sdk_cli, *SWIFT_DISTRIBUTION[1:])
+        run(source, env, *prefix, "make", "test")
+        run(source, env, *prefix, *sdk_cli, "swift-consumer", "--distribution")
 
     # The dispatcher owns the archive format. Its verifier uses the exact
     # producer revision that generated the framework and receipt.

@@ -708,19 +708,20 @@ class CargoTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Invalid generated"):
             self.dependencies().retain_notices()
 
-    def test_legacy_registry_manifest_is_adopted_only_after_archive_byte_verification(self):
+    def test_registry_manifest_without_file_hashes_preserves_existing_notice(self):
         destination = self.root / "ThirdParty/public-dep-1.2.3"
         destination.mkdir(parents=True)
         (destination / "LICENSE-MIT").write_bytes(b"Exact upstream license\n")
         record = dict(self.locked[-1], directory="public-dep-1.2.3")
         record.pop("name")
         record.pop("version")
-        (destination.parent / "registry-notices.json").write_text(json.dumps([record]))
-        records = self.dependencies().retain_notices()
-        self.assertIn("files", records[0])
-        (destination / "UNOWNED").write_text("preserve")
-        with self.assertRaisesRegex(RuntimeError, "ownership changed"):
+        manifest = destination.parent / "registry-notices.json"
+        original = json.dumps([record]).encode("utf-8")
+        manifest.write_bytes(original)
+        with self.assertRaisesRegex(RuntimeError, "Invalid generated notice file hashes"):
             self.dependencies().retain_notices()
+        self.assertEqual(manifest.read_bytes(), original)
+        self.assertEqual((destination / "LICENSE-MIT").read_bytes(), b"Exact upstream license\n")
 
     def test_sqlite_and_nested_license_file_are_retained_from_verified_sources(self):
         files = {

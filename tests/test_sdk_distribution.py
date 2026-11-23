@@ -22,47 +22,30 @@ class DistributionTests(unittest.TestCase):
             (root / "sdk-distribution.toml").write_text(dedent(content), encoding="utf-8")
             return DISPATCH["distribution_plan"](root)
 
-    def test_distribution_plan_uses_the_projects_commands_and_verified_archives(self):
-        checksum = "a" * 64
+    def test_distribution_plan_uses_the_projects_commands(self):
         plan = self.distribution_plan(
-            f"""
+            """
             [macos]
             commands = [
               ["cargo", "fetch", "--locked"],
-              ["python", "checks/consumer.py", "--artifacts", "{{temp}}/sdk artifacts"],
+              ["python", "checks/consumer.py", "--artifacts", "{temp}/sdk artifacts"],
             ]
-
-            [[macos.archives]]
-            url = "https://example.invalid/helper.tar.gz"
-            sha256 = "{checksum}"
-            bin = "tool/bin"
 
             [windows]
             commands = [["dotnet", "run", "--project", "Windows Fixture.csproj"]]
             """
         )
         self.assertEqual(
-            plan["macos"]["commands"],
+            plan["macos"],
             [
                 ["cargo", "fetch", "--locked"],
                 ["python", "checks/consumer.py", "--artifacts", "{temp}/sdk artifacts"],
             ],
         )
         self.assertEqual(
-            plan["macos"]["archives"],
-            [
-                {
-                    "url": "https://example.invalid/helper.tar.gz",
-                    "sha256": checksum,
-                    "bin": "tool/bin",
-                }
-            ],
-        )
-        self.assertEqual(
-            plan["windows"]["commands"],
+            plan["windows"],
             [["dotnet", "run", "--project", "Windows Fixture.csproj"]],
         )
-        self.assertFalse(plan["windows"]["archives"])
 
     def test_distribution_plan_accepts_a_project_with_only_one_platform(self):
         for platform in ("macos", "windows"):
@@ -87,36 +70,6 @@ class DistributionTests(unittest.TestCase):
         for content in plans:
             with self.subTest(content=content), self.assertRaises(ValueError):
                 self.distribution_plan(content)
-
-    def test_distribution_plan_rejects_unsafe_archive_metadata(self):
-        valid = {
-            "url": "https://example.invalid/helper.tar.gz",
-            "sha256": "a" * 64,
-            "bin": "tool/bin",
-        }
-        invalid = (
-            {"url": "http://example.invalid/helper.tar.gz"},
-            {"url": "https:///helper.tar.gz"},
-            {"url": "https://user:pass@example.invalid/helper.tar.gz"},
-            {"url": "https://example.invalid/helper.tar.gz#fragment"},
-            {"sha256": "A" * 64},
-            {"sha256": "a" * 63},
-            {"bin": "/usr/bin"},
-            {"bin": "C:/Windows"},
-            {"bin": "../bin"},
-            {"bin": "tool/../bin"},
-            {"bin": "tool\\bin"},
-            {"exec": "helper"},
-        )
-        for changed in invalid:
-            with self.subTest(changed=changed), self.assertRaises(ValueError):
-                fields = valid | changed
-                archive = "\n".join(
-                    f"{name} = {json.dumps(value)}" for name, value in fields.items()
-                )
-                self.distribution_plan(
-                    '[macos]\ncommands = [["make", "check"]]\n[[macos.archives]]\n' + archive
-                )
 
     def test_windows_commands_use_literal_arguments_and_share_one_scratch_directory(self):
         revision = "a" * 40
@@ -155,19 +108,16 @@ class DistributionTests(unittest.TestCase):
                 encoding="utf-8",
             )
             arguments = ["{temp}/result.json", "{tooling}", "one argument with spaces & $HOME"]
-            settings = {
-                "commands": [
-                    ["sdk-tooling", "write", *arguments],
-                    ["python", "-B", "{tooling}/ci/run_sdk_tooling.py", "verify", *arguments],
-                ],
-                "archives": [],
-            }
+            commands = [
+                ["sdk-tooling", "write", *arguments],
+                ["python", "-B", "{tooling}/ci/run_sdk_tooling.py", "verify", *arguments],
+            ]
             with patch.dict(
                 os.environ,
                 {"GH_TOKEN": "unrelated token", "RUNNER_TEMP": str(root), "TMPDIR": str(temp)},
             ):
                 env = DISPATCH["child_environment"](revision)
-                DISPATCH["execute"](root, "windows", settings, env, temp, tooling)
+                DISPATCH["execute"](root, "windows", commands, env, temp, tooling)
             self.assertEqual(
                 json.loads((temp / "result.json").read_text(encoding="utf-8")),
                 {
@@ -187,14 +137,11 @@ class DistributionTests(unittest.TestCase):
             launcher = root / "shared $tooling's path" / "ci/run_sdk_tooling.py"
             launcher.parent.mkdir(parents=True)
             launcher.touch()
-            settings = {
-                "commands": [
-                    ["sdk-tooling", "swift-consumer", "--distribution"],
-                    ["make", "check-distribution"],
-                    ["make", "SDK_TOOLING=explicit command"],
-                ],
-                "archives": [],
-            }
+            commands = [
+                ["sdk-tooling", "docs"],
+                ["make", "check-distribution"],
+                ["mise", "run", "check-web-distribution", "--", "SDK_TOOLING=explicit command"],
+            ]
             env = {"PATH": "fixture path"}
             execute = DISPATCH["execute"]
             with patch.dict(execute.__globals__) as globals_:
@@ -205,7 +152,7 @@ class DistributionTests(unittest.TestCase):
                     invocations.append((environment, command))
 
                 globals_["run"] = run
-                execute(root, "macos", settings, env, root, launcher.parents[1])
+                execute(root, "macos", commands, env, root, launcher.parents[1])
 
             prefix = ("mise", "exec", "--")
             self.assertEqual(
@@ -219,15 +166,21 @@ class DistributionTests(unittest.TestCase):
                         "-I",
                         "-B",
                         str(launcher),
-                        "swift-consumer",
-                        "--distribution",
+                        "docs",
                     ),
                     (*prefix, "make", "check-distribution"),
-                    (*prefix, "make", "SDK_TOOLING=explicit command"),
+                    (
+                        *prefix,
+                        "mise",
+                        "run",
+                        "check-web-distribution",
+                        "--",
+                        "SDK_TOOLING=explicit command",
+                    ),
                 ],
             )
-            self.assertEqual([environment for environment, _ in invocations[:3]], [env] * 3)
-            for environment, _ in invocations[3:]:
+            self.assertEqual([environment for environment, _ in invocations[:2]], [env] * 2)
+            for environment, _ in invocations[2:]:
                 self.assertIn("shared $$tooling", environment["SDK_TOOLING"])
 
     def test_missing_pinned_launcher_fails_before_running_commands(self):
@@ -235,7 +188,7 @@ class DistributionTests(unittest.TestCase):
             root = Path(disposable)
             execute = DISPATCH["execute"]
             with self.assertRaisesRegex(ValueError, "must provide ci/run_sdk_tooling.py"):
-                execute(root, "windows", {"archives": []}, {}, root, root / "tooling")
+                execute(root, "windows", [], {}, root, root / "tooling")
 
     def test_native_generation_runs_only_for_macos_with_a_regular_declaration(self):
         with tempfile.TemporaryDirectory() as disposable:
@@ -271,8 +224,7 @@ class DistributionTests(unittest.TestCase):
                     patch.dict(execute.__globals__) as globals_,
                 ):
                     installed = ["make", "test-installed-consumers"]
-                    swift = ["sdk-tooling", "swift-consumer", "--distribution"]
-                    plan = ([fetch] if fetch_in_plan else []) + [installed, swift]
+                    plan = ([fetch] if fetch_in_plan else []) + [installed]
                     invocations = []
 
                     def run(checkout, environment, *command):
@@ -284,7 +236,7 @@ class DistributionTests(unittest.TestCase):
                     execute(
                         source,
                         "macos",
-                        {"commands": plan, "archives": []},
+                        plan,
                         env,
                         root,
                         tooling,
@@ -305,7 +257,7 @@ class DistributionTests(unittest.TestCase):
                             *expected,
                             (*pinned_cli, "xcframework"),
                             ("make", "test"),
-                            (*pinned_cli, *swift[1:]),
+                            (*pinned_cli, "swift-consumer", "--distribution"),
                             (
                                 sys.executable,
                                 "-I",
