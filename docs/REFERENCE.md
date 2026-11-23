@@ -257,6 +257,13 @@ requires the pinned ARM64 Rust compiler and installed x64 standard library, and
 records their host and target triples in `toolchain`. Runtime acceptance remains
 the SDK's responsibility. SDK entry points use the host architecture by default.
 
+For hosted Windows checks, the SDK's tooling loader verifies the pinned checkout
+and calls `hosted_windows` with the SDK's acceptance command. The launcher gives
+the command the verified tooling checkout and revision, the .NET executable on
+`PATH`, and an evidence directory under `RUNNER_TEMP`. The workflow selects the
+Python, Rust and .NET versions, and the SDK's command verifies the architecture
+and artifacts.
+
 ### NuGet package publication
 
 `bindings.pack_native` also owns the shared receipt-checked NuGet packing command;

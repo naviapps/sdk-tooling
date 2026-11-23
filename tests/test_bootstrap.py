@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import importlib.util
 import json
@@ -24,6 +25,13 @@ class BootstrapTests(unittest.TestCase):
         (self.tool / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
         (self.tool / "sdk_tooling/__init__.py").write_bytes(b'"""Fixture tooling."""\n')
         (self.tool / "sdk_tooling/probe.py").write_bytes(b'value = "pinned"\n')
+        (self.tool / "sdk_tooling/hosted_windows.py").write_bytes(
+            b"import json\n"
+            b"\n"
+            b"def main(root, argv):\n"
+            b"    print(json.dumps([str(root), argv]))\n"
+            b"    return 7\n"
+        )
         self.git(self.tool, "init", "--quiet")
         self.git(self.tool, "add", ".")
         self.git(
@@ -114,6 +122,20 @@ class BootstrapTests(unittest.TestCase):
             self.module.source()
         git.assert_not_called()
 
+    def test_public_fetch_bypasses_configured_credential_helpers(self):
+        os.environ["NAVI_SDK_TOOLING_OFFLINE"] = "0"
+        original_git = self.module.git
+
+        def local_fetch(root, *args):
+            if "fetch" in args:
+                self.assertEqual(args[:3], ("-c", "credential.helper=", "fetch"))
+                self.assertEqual(args[-2:], (self.module.URL, self.revision))
+                args = (*args[:-2], self.tool.as_uri(), self.revision)
+            return original_git(root, *args)
+
+        with patch.object(self.module, "git", side_effect=local_fetch):
+            self.assertEqual(self.module.source().name, self.revision)
+
     def test_local_source_bundle_populates_one_reusable_verified_cache(self):
         self.bundle()
         normal = self.module.git
@@ -186,6 +208,31 @@ class BootstrapTests(unittest.TestCase):
         result = subprocess.check_output([sys.executable, "-I", "-B", "-c", code], text=True)
         self.assertEqual(result.strip(), "pinned")
         self.assertFalse(list(self.tool.rglob("*.pyc")))
+
+    def test_candidate_forwards_verified_source_and_rechecks_bytes(self):
+        parser = argparse.ArgumentParser()
+        self.module.add_candidate_options(parser)
+        self.assertEqual(self.module.select_candidate(parser, parser.parse_args([])), [])
+        self.assertFalse(self.module.candidate_selected())
+        options = ["--tooling-source", str(self.tool), "--tooling-revision", self.revision]
+        args = parser.parse_args(options)
+        self.assertEqual(self.module.select_candidate(parser, args, absolute=True), options)
+        self.assertTrue(self.module.candidate_selected())
+        self.module.verify_candidate()
+        (self.tool / "sdk_tooling/probe.py").write_bytes(b'value = "changed"\n')
+        with self.assertRaisesRegex(ValueError, "local changes"):
+            self.module.verify_candidate()
+
+    def test_entrypoint_passes_sdk_root_and_arguments_to_verified_driver(self):
+        os.environ["NAVI_SDK_TOOLING_SOURCE"] = str(self.tool)
+        args = ["-m", "tools.native_host", "--architecture", "x86_64"]
+        result = subprocess.run(
+            [sys.executable, "-E", "-S", "-B", str(self.bootstrap), *args],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [str(self.sdk), args])
 
 
 if __name__ == "__main__":
