@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from contextlib import chdir
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from sdk_tooling import nuget, workspaces
@@ -719,6 +720,66 @@ class NativeConsumerTests(unittest.TestCase):
             )
             archive.writestr("lib/net10.0/_._", "")
         return package
+
+    def test_native_package_is_reproducible_when_input_timestamps_change(self):
+        with tempfile.TemporaryDirectory(prefix="native-package-timestamp-") as directory:
+            root = Path(directory).resolve()
+            self.select_sdk(root)
+            project = root / "TimestampFixture.csproj"
+            project.write_text(
+                """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PublishRepositoryUrl>false</PublishRepositoryUrl>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md;LICENSE" Pack="true" PackagePath="/" />
+    <None Include="$(SdkNativeRuntimeAssets)/**/*" Pack="true"
+          PackagePath="runtimes/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
+""",
+                encoding="utf-8",
+            )
+            package_files = {name: root / name for name in ("README.md", "LICENSE")}
+            for name, path in package_files.items():
+                path.write_text(name, encoding="utf-8")
+            config = root / "NuGet.Config"
+            config.write_text(
+                "<configuration><packageSources><clear /></packageSources></configuration>"
+            )
+            native_dir = root / ".native-build/windows/win-x64"
+            native_dir.mkdir(parents=True)
+            library = native_dir / "fixture.dll"
+            library.write_bytes(b"unchanged native fixture")
+            record = {"outputs": {library.name: hashlib.sha256(library.read_bytes()).hexdigest()}}
+            (native_dir / "native-build.json").write_text(json.dumps(record), encoding="utf-8")
+            native = SimpleNamespace(
+                root=root, version="1.2.3", library="fixture", build_sources=dict
+            )
+            with mock.patch.object(
+                nuget.windows, "verify_artifact", return_value=(native_dir, record)
+            ):
+                arguments = dict(
+                    project=project,
+                    package_files=package_files,
+                    nuget_config=config,
+                    runtimes=["win-x64"],
+                )
+                package = nuget.pack_native(native, **arguments)
+                first = hashlib.sha256(package.read_bytes()).hexdigest()
+                for path in [library, *package_files.values()]:
+                    os.utime(path, (1700000000, 1700000000))
+                package = nuget.pack_native(native, **arguments)
+            self.assertEqual(hashlib.sha256(package.read_bytes()).hexdigest(), first)
+            with zipfile.ZipFile(package) as archive:
+                self.assertEqual(
+                    {entry.date_time for entry in archive.infolist()}, {(1980, 1, 1, 0, 0, 0)}
+                )
 
     def test_parent_build_settings_do_not_change_a_clean_consumer(self):
         env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")

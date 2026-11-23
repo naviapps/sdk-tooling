@@ -500,7 +500,8 @@ def pack_native(
             env=env,
             cwd=root,
             no_build=True,
-            properties=properties,
+            properties=properties
+            | {"Deterministic": "true", "DeterministicTimestamp": "1980-01-01T00:00:00Z"},
         )
         archive = stage / f"{package_id}.{version}.nupkg"
         if list(stage.glob("*.nupkg")) != [archive]:

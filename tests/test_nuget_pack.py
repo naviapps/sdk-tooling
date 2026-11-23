@@ -176,6 +176,11 @@ class NativePackageTests(unittest.TestCase):
             self.assertEqual(dependency.attrib, {"id": "Example.Dependency", "version": "[2.0.0]"})
         self.assertEqual(self.build.call_args.kwargs["sources"], ["owned local feed"])
         self.assertTrue(self.build.call_args.kwargs["verify_style"])
+        self.assertEqual(
+            self.pack.call_args.kwargs["properties"],
+            self.build.call_args.kwargs["properties"]
+            | {"Deterministic": "true", "DeterministicTimestamp": "1980-01-01T00:00:00Z"},
+        )
         receipt = json.loads(self.previous_record.read_text())
         self.assertEqual(receipt["sha256"], hashlib.sha256(result.read_bytes()).hexdigest())
         self.assertEqual(receipt["runtimes"], ["osx-arm64", "osx-x64"])

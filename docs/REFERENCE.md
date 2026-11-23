@@ -317,6 +317,9 @@ MSBuild Pack target. SDK entry points select the project, runtimes and exact
 notice/file set. The project owns package metadata and layout. The packer
 compares its emitted dependency requirements to the evaluated project.
 It preserves private feed selection and rejects input changes before publication.
+MSBuild writes new packages with a fixed ZIP timestamp. Identical native and
+managed inputs under the same packaging toolchain can reproduce the unsigned
+archive bytes.
 The native producer lock covers receipt capture and verification. Staging checks
 the library digest from that receipt. On macOS the packer extracts the selected
 runtime's slice from the staged universal library, ad-hoc signs the standalone
