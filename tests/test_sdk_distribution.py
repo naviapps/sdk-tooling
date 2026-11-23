@@ -138,6 +138,7 @@ class DistributionTests(unittest.TestCase):
             launcher.parent.mkdir(parents=True)
             launcher.touch()
             framework, package = root / "framework", root / "package"
+            dotnet = root / "dotnet-x64/dotnet"
             log = []
 
             def execute(source, platform, commands, env, temp, tooling, *, xcframework_output):
@@ -146,9 +147,15 @@ class DistributionTests(unittest.TestCase):
                 self.assertEqual(platform, "macos")
                 log.append("rebuild")
 
-            def pack(source, env, cli, script, output):
+            def macos_x64_environment(checkout, env, selected):
+                self.assertEqual(checkout, source)
+                self.assertEqual(selected, dotnet)
+                return {"DOTNET_BIN": str(dotnet)}
+
+            def pack(source, env, cli, script, output, *, macos_x64_env):
                 self.assertEqual(script, "distribution/pack.py")
                 self.assertEqual(output, package)
+                self.assertEqual(macos_x64_env, {"DOTNET_BIN": str(dotnet)})
                 log.append("pack")
                 return "b" * 64
 
@@ -163,6 +170,8 @@ class DistributionTests(unittest.TestCase):
                     distribution_plan=lambda _: {"macos": [], "nuget": "distribution/pack.py"},
                     execute=execute,
                     check_dotnet_version=lambda _source, env: env,
+                    require_macos_dotnet_rid=lambda _source, _env, rid: log.append(rid),
+                    macos_x64_environment=macos_x64_environment,
                     pack_combined_nuget=pack,
                     write_output=lambda **values: log.append(values),
                 ),
@@ -181,9 +190,13 @@ class DistributionTests(unittest.TestCase):
                         str(framework),
                         "--nuget-artifact",
                         str(package),
+                        "--macos-x64-dotnet",
+                        str(dotnet),
                     ]
                 )
-            self.assertEqual(log, ["verify", "verify", "rebuild", "pack", {"sha256": "b" * 64}])
+            self.assertEqual(
+                log, ["verify", "verify", "osx-arm64", "rebuild", "pack", {"sha256": "b" * 64}]
+            )
 
     def test_combined_nuget_consumers_receive_one_byte_identical_package(self):
         with tempfile.TemporaryDirectory() as disposable:
@@ -197,7 +210,7 @@ class DistributionTests(unittest.TestCase):
             cli = ("verified-tooling",)
             script = "distribution/pack.py"
             package_name = "Example.Sdk.0.1.0.nupkg"
-            package_bytes = b"the same native package on both workers"
+            package_bytes = b"the same native package for all consumers"
             checksum = hashlib.sha256(package_bytes).hexdigest()
             receipt = {
                 "package": package_name,
@@ -206,12 +219,13 @@ class DistributionTests(unittest.TestCase):
             }
             seen = []
             hosts = []
+            x64_env = {"DOTNET_BIN": "/opt/dotnet-x64/dotnet"}
 
             def run(checkout, env, *argv):
                 self.assertEqual(checkout, source)
-                self.assertEqual(env, {})
                 self.assertEqual(argv[0], cli[0])
                 if argv[1] == "python":
+                    self.assertEqual(env, {})
                     self.assertEqual(
                         argv[2:-1],
                         (
@@ -232,10 +246,12 @@ class DistributionTests(unittest.TestCase):
                     Path(argv[-1]).write_text(package_name, encoding="utf-8")
                 else:
                     self.assertEqual(argv[1], "nuget-consumer")
-                    seen.append((Path(argv[2]).read_bytes(), argv[3:]))
+                    seen.append((env, Path(argv[2]).read_bytes(), argv[3:]))
 
             with patch.dict(pack.__globals__, run=run, require_windows_host=hosts.append):
-                self.assertEqual(pack(source, {}, cli, script, output), checksum)
+                self.assertEqual(
+                    pack(source, {}, cli, script, output, macos_x64_env=x64_env), checksum
+                )
                 artifact = output / package_name
                 for host in ("x64", "arm64"):
                     self.assertEqual(
@@ -248,11 +264,49 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(hosts, ["x64", "arm64"])
             self.assertEqual(
                 seen,
-                [(package_bytes, ()), *[(package_bytes, ("--windows-architecture", "x64"))] * 2],
+                [
+                    ({}, package_bytes, ()),
+                    (x64_env, package_bytes, ()),
+                    *[({}, package_bytes, ("--windows-architecture", "x64"))] * 2,
+                ],
             )
             self.assertEqual(
                 {path.name for path in output.iterdir()}, {package_name, f"{package_name}.json"}
             )
+
+    def test_macos_x64_consumer_checks_the_exact_host_version_and_rid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            dotnet = root / "x64/dotnet"
+            dotnet.parent.mkdir()
+            dotnet.touch()
+            (root / "global.json").write_text(
+                '{"sdk":{"version":"10.0.403","rollForward":"disable"}}', encoding="utf-8"
+            )
+            select = DISPATCH["macos_x64_environment"]
+            architecture = "x64"
+            version = "10.0.403"
+
+            def run(checkout, env, executable, option, *, stdout):
+                self.assertEqual(checkout, root)
+                self.assertEqual(Path(executable), dotnet)
+                self.assertEqual(env["DOTNET_ROOT"], str(dotnet.parent))
+                self.assertEqual(env["DOTNET_ROOT_X64"], str(dotnet.parent))
+                self.assertEqual(env["DOTNET_HOST_PATH"], str(dotnet))
+                return version if option == "--version" else f"\n RID:         osx-{architecture}\n"
+
+            with (
+                patch.object(sys, "platform", "darwin"),
+                patch.dict(select.__globals__, run=run),
+            ):
+                env = select(root, {"DOTNET_BIN": "/arm64/dotnet", "DOTNET_ROOT": "/arm64"}, dotnet)
+                self.assertEqual(env["DOTNET_BIN"], str(dotnet))
+                architecture = "arm64"
+                with self.assertRaisesRegex(ValueError, "must report osx-x64"):
+                    select(root, {}, dotnet)
+                version = "10.0.404"
+                with self.assertRaisesRegex(ValueError, "exact .NET version"):
+                    select(root, {}, dotnet)
 
     def test_windows_consumer_refuses_an_unexpected_runner_architecture(self):
         require = DISPATCH["require_windows_host"]

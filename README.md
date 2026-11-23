@@ -140,13 +140,23 @@ index as a seven-day Actions artifact. The archives are verification output.
 SDKs that use SwiftPM path-based binary targets continue to supply their
 frameworks in the source checkout.
 
+For a Windows-only NuGet build, the job uploads accepted packages and their
+package receipts from the SDK's hosted acceptance output when the driver
+exports them. These seven-day Actions artifacts let maintainers recover the
+exact packages used by the independent consumer. For example:
+
+```sh
+gh run download RUN_ID --repo naviapps/sdk-tooling --pattern 'desktop-actions-nuget-windows-*'
+```
+
 To verify one cross-platform NuGet package, add `[nuget]` with a
 `pack = "distribution/pack_nuget.py"` entry. Both platform plans must be
 present. The Windows plan exports its accepted native build at
 `sdk-windows/win-x64`. The packer accepts repeated `--runtime` options and
 reports the generated package filename to `--result`. The macOS distribution
 job combines the accepted Windows build and the regenerated macOS framework
-into one package and tests it. Each Windows consumer verifies the same bytes
+into one package and runs it with arm64 .NET and a separate x64 .NET under
+Rosetta. Each macOS and Windows consumer verifies the same bytes
 before and after running. Use `--field windows-on-arm=true` at dispatch to run
 the x64 package with x64 .NET on GitHub's Windows on Arm runner too.
 

@@ -317,9 +317,11 @@ MSBuild Pack target. SDK entry points select the project, runtimes and exact
 notice/file set. The project owns package metadata and layout. The packer
 compares its emitted dependency requirements to the evaluated project.
 It preserves private feed selection and rejects input changes before publication.
-The native producer lock covers receipt capture and verification. Staging uses
-the library digest from that receipt, and the package audit checks each selected
-member against its staged digest before publication.
+The native producer lock covers receipt capture and verification. Staging checks
+the library digest from that receipt. On macOS the packer ad-hoc signs each staged
+dylib for standalone loading and verifies the signature on all architectures.
+The package receipt records both the verified native source digest and the digest
+of each delivered member, and the package audit checks those delivered bytes.
 The package and its JSON receipt are staged before replacement; a failed
 replacement restores both previous files. If restoration itself fails, the error
 identifies a retained rollback directory beside the package. Preserve that directory

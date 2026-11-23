@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -358,6 +359,20 @@ def _managed_package_inputs(dotnet, project, *, root, env, properties):
     return package_id, inputs, dependencies
 
 
+def _sign_detached_macos_library(path):
+    """Replace the framework-scoped signature on a staged standalone dylib."""
+    if sys.platform != "darwin":
+        raise ValueError("Package macOS native assets on macOS to sign detached libraries")
+    subprocess.run(
+        ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(path)],
+        check=True,
+    )
+    subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--strict", "--all-architectures", str(path)],
+        check=True,
+    )
+
+
 def pack_native(
     native,
     *,
@@ -437,9 +452,13 @@ def pack_native(
         runtime_files, accepted_bytes = {}, {}
         for rid, (library, filename, digest) in libraries.items():
             member = f"runtimes/{rid}/native/{filename}"
-            if stage_file(library, stage / member) != digest:
+            staged = stage / member
+            if stage_file(library, staged) != digest:
                 raise ValueError("Native library differs from its verified receipt")
-            runtime_files[member] = library
+            if rid.startswith("osx-"):
+                _sign_detached_macos_library(staged)
+                digest = file_sha256(staged)
+            runtime_files[member] = staged
             accepted_bytes[member] = digest
         dotnet_tools.build_managed(
             dotnet,
@@ -482,6 +501,8 @@ def pack_native(
             raise ValueError(
                 "Accepted package inputs changed while packing; no package was replaced."
             )
+        if any(file_sha256(path) != digest for path, _, digest in libraries.values()):
+            raise ValueError("Native library bytes differ from its verified receipt")
         if any(
             hashlib.sha256(_native_receipt_bytes(path)).hexdigest() != digest
             for path, digest in receipt_hashes.items()
@@ -507,6 +528,7 @@ def pack_native(
                 "nativeReceipts": {
                     rid: receipt_hashes[path] for rid, path in receipt_paths.items()
                 },
+                "nativeSources": {rid: digest for rid, (_, _, digest) in libraries.items()},
                 "managedInputs": managed_inputs,
                 "packagingToolInputs": tool_inputs,
                 "files": accepted_bytes,

@@ -262,7 +262,8 @@ class ManagedQualityTests(unittest.TestCase):
                 "<package><metadata><id>Fixture</id><version>1.0.0</version></metadata></package>",
             )
         fixture = self.root / "Program.cs"
-        fixture.write_text("Console.WriteLine(42);\n", encoding="utf-8")
+        source = "static class Program { static void Main() { Console.WriteLine(42); } }\n"
+        fixture.write_text(source, encoding="utf-8")
         env = {"DOTNET_BIN": "selected-dotnet", "DOTNET_CLI_UI_LANGUAGE": "en"}
         arguments = dict(
             package_id="Fixture", fixture=fixture, work_parent=self.root, argv=[str(package)]
@@ -290,6 +291,7 @@ class ManagedQualityTests(unittest.TestCase):
                     run.assert_called_once()
                     self.assertEqual(run.call_args.args, ("selected-dotnet",))
                     self.assertEqual(run.call_args.kwargs["packages"], [package])
+                    self.assertEqual(run.call_args.kwargs["source"], source)
                 else:
                     with self.assertRaisesRegex(ValueError, "target-native .NET 10 SDK"):
                         nuget_consumer.check_nuget(**arguments)

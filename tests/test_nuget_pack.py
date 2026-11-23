@@ -75,6 +75,9 @@ class NativePackageTests(unittest.TestCase):
         ).start()
         self.build = patch.object(dotnet, "build_managed", side_effect=self.build_managed).start()
         self.pack = patch.object(dotnet, "pack_project", side_effect=self.pack_project).start()
+        self.sign = patch.object(
+            nuget, "_sign_detached_macos_library", side_effect=self.sign_detached_library
+        ).start()
         self.addCleanup(patch.stopall)
 
     def file(self, relative, data=b"owned bytes"):
@@ -86,6 +89,10 @@ class NativePackageTests(unittest.TestCase):
     def build_managed(self, *args, **options):
         for member, source in self.managed_outputs.items():
             self.file(source.relative_to(self.root), f"managed {member}".encode())
+
+    def sign_detached_library(self, path):
+        self.assertTrue(path.is_relative_to(self.output.parent))
+        path.write_bytes(path.read_bytes() + b" detached signature")
 
     def evaluate_project(self, command, **options):
         self.assertIn("-getProperty:TargetFramework,PackageId", command)
@@ -157,7 +164,9 @@ class NativePackageTests(unittest.TestCase):
             }
             self.assertEqual({n for n in archive.namelist() if n.startswith("runtimes/")}, expected)
             for member in expected:
-                self.assertEqual(archive.read(member), self.library.read_bytes())
+                self.assertEqual(
+                    archive.read(member), self.library.read_bytes() + b" detached signature"
+                )
             for member, source in self.selected.items():
                 self.assertEqual(archive.read(member), source.read_bytes())
             metadata = ET.fromstring(archive.read("Example.nuspec"))
@@ -180,6 +189,9 @@ class NativePackageTests(unittest.TestCase):
             )
         digest = hashlib.sha256(self.native.receipt.read_bytes()).hexdigest()
         self.assertEqual(receipt["nativeReceipts"], {"osx-arm64": digest, "osx-x64": digest})
+        original = next(iter(self.mac_outputs.values()))
+        self.assertEqual(receipt["nativeSources"], {"osx-arm64": original, "osx-x64": original})
+        self.assertEqual(original, hashlib.sha256(self.library.read_bytes()).hexdigest())
         self.assertEqual(
             set(receipt["packagingToolInputs"]), {"artifacts.py", "dotnet.py", "nuget.py"}
         )
@@ -192,6 +204,7 @@ class NativePackageTests(unittest.TestCase):
             result = self.invoke(runtimes=["win-arm64"])
         verify.assert_called_once_with(self.native, architecture="arm64")
         self.native.verify.assert_not_called()
+        self.sign.assert_not_called()
         with zipfile.ZipFile(result) as archive:
             self.assertEqual(
                 archive.read("runtimes/win-arm64/native/example.dll"), dll.read_bytes()
@@ -271,7 +284,8 @@ class NativePackageTests(unittest.TestCase):
         result = self.invoke()
         with zipfile.ZipFile(result) as package:
             self.assertEqual(
-                package.read("runtimes/osx-arm64/native/libexample.dylib"), terminal.read_bytes()
+                package.read("runtimes/osx-arm64/native/libexample.dylib"),
+                terminal.read_bytes() + b" detached signature",
             )
         actual = self.output.read_bytes()
         record = self.previous_record.read_bytes()
@@ -358,6 +372,13 @@ class NativePackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bytes differ"):
             self.invoke(runtimes=["osx-arm64", "osx-x64"])
         self.assert_previous()
+
+    def test_detached_signature_failure_keeps_previous_package(self):
+        self.sign.side_effect = ValueError("Invalid detached signature")
+        with self.assertRaisesRegex(ValueError, "Invalid detached signature"):
+            self.invoke()
+        self.assert_previous()
+        self.build.assert_not_called()
 
     def test_generated_trees_are_skipped_but_explicit_inputs_still_detect_drift(self):
         generated = self.file("bindings/src/Feature/obj/Debug/Generated.cs")

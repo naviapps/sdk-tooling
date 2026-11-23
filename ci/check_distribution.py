@@ -286,9 +286,9 @@ def execute(source, platform, commands, env, temp, tooling, *, xcframework_outpu
     )
 
 
-def check_dotnet_version(source, env):
+def check_dotnet_version(source, env, *, dotnet=None):
     settings = json.loads(read_regular(source, "global.json"))["sdk"]
-    dotnet = shutil.which("dotnet", path=env.get("PATH"))
+    dotnet = dotnet or shutil.which("dotnet", path=env.get("PATH"))
     if (
         not dotnet
         or settings.get("rollForward") != "disable"
@@ -297,6 +297,28 @@ def check_dotnet_version(source, env):
     ):
         raise ValueError("Install the SDK's exact .NET version before checking its package")
     return dict(env, DOTNET_BIN=dotnet)
+
+
+def require_macos_dotnet_rid(source, env, rid):
+    env = dict(env, DOTNET_CLI_UI_LANGUAGE="en")
+    info = run(source, env, env["DOTNET_BIN"], "--info", stdout=subprocess.PIPE)
+    if not re.search(r"(?m)^ +RID: +" + re.escape(rid) + r" *$", info):
+        raise ValueError(f"The selected .NET executable must report {rid}")
+
+
+def macos_x64_environment(source, env, dotnet):
+    if sys.platform != "darwin" or not dotnet.is_absolute() or not dotnet.is_file():
+        raise ValueError("Select a separate absolute macOS x64 .NET executable")
+    dotnet = dotnet.resolve(strict=True)
+    env = dict(
+        env,
+        DOTNET_ROOT=str(dotnet.parent),
+        DOTNET_ROOT_X64=str(dotnet.parent),
+        DOTNET_HOST_PATH=str(dotnet),
+    )
+    env = check_dotnet_version(source, env, dotnet=str(dotnet))
+    require_macos_dotnet_rid(source, env, "osx-x64")
+    return env
 
 
 def require_windows_host(expected):
@@ -339,7 +361,7 @@ def consume_package(source, env, sdk_cli, package, *, expected=None, windows_hos
     return checksum
 
 
-def pack_combined_nuget(source, env, sdk_cli, script, output):
+def pack_combined_nuget(source, env, sdk_cli, script, output, *, macos_x64_env=None):
     if output.exists() or output.is_symlink() or output.is_relative_to(source):
         raise ValueError("NuGet artifact output must be a new directory outside the SDK checkout")
     with tempfile.TemporaryDirectory(dir=output.parent, prefix="nuget-candidate-") as directory:
@@ -367,6 +389,9 @@ def pack_combined_nuget(source, env, sdk_cli, script, output):
         shutil.copyfile(built, candidate)
         candidate.with_suffix(".nupkg.json").write_bytes(read_regular(receipt.parent, receipt.name))
         consume_package(source, env, sdk_cli, candidate, expected=checksum)
+        if macos_x64_env is not None:
+            print("Check the same NuGet package with macOS x64 .NET", flush=True)
+            consume_package(source, macos_x64_env, sdk_cli, candidate, expected=checksum)
         if output.exists() or output.is_symlink():
             raise ValueError("Combined NuGet artifact output appeared during consumer acceptance")
         stage.rename(output)
@@ -391,6 +416,11 @@ def main(argv=None):
     parser.add_argument("--tooling", type=Path)
     parser.add_argument("--nuget-artifact", type=Path, help="Combined NuGet artifact directory")
     parser.add_argument("--nuget-sha256", help="Digest of the package accepted on macOS")
+    parser.add_argument(
+        "--macos-x64-dotnet",
+        type=Path,
+        help="Also verify the package with a separate macOS x64 .NET",
+    )
     parser.add_argument(
         "--xcframework-output",
         type=Path,
@@ -429,6 +459,10 @@ def main(argv=None):
             parser.error("NuGet consumption requires --nuget-sha256 from macOS acceptance")
     elif args.nuget_sha256 is not None:
         parser.error("--nuget-sha256 applies only when consuming an accepted package")
+    if args.macos_x64_dotnet is not None and (
+        args.nuget_artifact is None or args.mode not in ("macos", "nuget-pack")
+    ):
+        parser.error("--macos-x64-dotnet requires macOS NuGet packing")
     if args.mode == "identity":
         write_output(repository=sdk_repository)
         return
@@ -451,6 +485,7 @@ def main(argv=None):
     tooling = args.tooling.resolve(strict=True)
     verify_checkout(tooling, pin, repository, env)
     artifact = None
+    macos_x64_env = None
     if args.nuget_artifact is not None:
         if "nuget" not in plan:
             parser.error("SDK distribution configuration does not declare combined NuGet packages")
@@ -462,6 +497,9 @@ def main(argv=None):
         read_regular(tooling, "ci/run_sdk_tooling.py")
         sdk_cli = (sys.executable, "-I", "-B", str(launcher))
         env = check_dotnet_version(source, env)
+        if args.macos_x64_dotnet is not None:
+            require_macos_dotnet_rid(source, env, "osx-arm64")
+            macos_x64_env = macos_x64_environment(source, env, args.macos_x64_dotnet)
     if args.mode == "nuget-consume":
         packages = list(artifact.glob("*.nupkg"))
         if len(packages) != 1:
@@ -490,7 +528,9 @@ def main(argv=None):
                 xcframework_output=args.xcframework_output,
             )
     if artifact is not None:
-        checksum = pack_combined_nuget(source, env, sdk_cli, plan["nuget"], artifact)
+        checksum = pack_combined_nuget(
+            source, env, sdk_cli, plan["nuget"], artifact, macos_x64_env=macos_x64_env
+        )
         if os.environ.get("GITHUB_OUTPUT"):
             write_output(sha256=checksum)
 

@@ -49,15 +49,11 @@ def check_nuget(*, package_id, fixture, work_parent, argv=None, args=None):
     env = subprocess_environment()
     env["DOTNET_CLI_UI_LANGUAGE"] = "en"
     dotnet, architecture, emulated = select_dotnet_host(env, args.windows_architecture)
-    source = (
-        Path(fixture).read_text()
-        + '\nConsole.WriteLine("Fresh NuGet consumer loaded the packaged native SDK and dependencies.");\n'
-    )
     nuget.run_isolated_consumer(
         dotnet,
         packages=[package, *args.dependency],
         references={package_id: values["version"]},
-        source=source,
+        source=Path(fixture).read_text(encoding="utf-8"),
         work_parent=work_parent,
         env=env,
         runtime=f"win-{architecture}" if args.windows_architecture is not None else None,
@@ -69,3 +65,5 @@ def check_nuget(*, package_id, fixture, work_parent, argv=None, args=None):
     )
     if emulated:
         print("Windows x64 NuGet fixture passed under emulation on ARM64.")
+    else:
+        print("Fresh NuGet consumer fixture passed.")
