@@ -26,17 +26,18 @@ runs:
       run: cargo test --workspace --locked --target $env:CARGO_BUILD_TARGET
     - name: Install pinned x64 .NET SDK
       if: inputs.dotnet == 'true' || inputs.test-bindings == 'true'
-      uses: actions/setup-dotnet@v6.0.0
+      uses: actions/setup-dotnet@v6.1.0
       env:
         DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
       with:
         global-json-file: global.json
         architecture: x64
+        skip-lts-prepass: true
     - name: Install SDK Tooling Python
       if: inputs.test-bindings == 'true'
       uses: actions/setup-python@v7.1.0
       with:
-        python-version: "3.15.1"
+        python-version: "3.15.2"
         architecture: x64
     - name: Test .NET bindings
       if: inputs.test-bindings == 'true'

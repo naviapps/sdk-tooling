@@ -70,7 +70,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
           architecture: ${{ inputs.platform == 'macos' && 'arm64' || 'x64' }}
       - name: Check out the candidate SDK
         uses: actions/checkout@v6.1.0
@@ -97,12 +97,13 @@ jobs:
           add_shims_to_path: false
       - name: Install pinned macOS x64 .NET
         if: inputs.combined-nuget && inputs.platform == 'macos'
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@v6.1.0
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-x64
         with:
           global-json-file: sdk/global.json
           architecture: x64
+          skip-lts-prepass: true
       - name: Record the installed macOS x64 executable
         id: dotnet-x64
         if: inputs.combined-nuget && inputs.platform == 'macos'
@@ -111,12 +112,13 @@ jobs:
           printf 'path=%s/dotnet\n' "$DOTNET_ROOT" >> "$GITHUB_OUTPUT"
       - name: Install pinned runner-native .NET
         if: inputs.dotnet
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@v6.1.0
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           global-json-file: sdk/global.json
           architecture: ${{ inputs.platform == 'macos' && 'arm64' || 'x64' }}
+          skip-lts-prepass: true
       - name: Require the accepted Windows native build
         if: inputs.combined-nuget && inputs.platform == 'macos'
         env:

@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
       - name: Validate the requested source identity
         id: source
         run: python -I -B dispatcher/ci/check_distribution.py identity "$SDK_NAME" "$SDK_REVISION"
@@ -152,15 +152,16 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v7.1.0
         with:
-          python-version: "3.15.1"
+          python-version: "3.15.2"
           architecture: ${{ matrix.architecture }}
       - name: Install pinned x64 .NET
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@v6.1.0
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           global-json-file: sdk/global.json
           architecture: x64
+          skip-lts-prepass: true
       - name: Require the macOS-tested NuGet package
         env:
           NUGET_ID: ${{ needs.combined.outputs.nuget-id }}
