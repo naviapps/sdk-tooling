@@ -75,8 +75,8 @@ class NativePackageTests(unittest.TestCase):
         ).start()
         self.build = patch.object(dotnet, "build_managed", side_effect=self.build_managed).start()
         self.pack = patch.object(dotnet, "pack_project", side_effect=self.pack_project).start()
-        self.sign = patch.object(
-            nuget, "_sign_detached_macos_library", side_effect=self.sign_detached_library
+        self.prepare_macos = patch.object(
+            nuget, "_prepare_macos_library", side_effect=self.prepare_macos_library
         ).start()
         self.addCleanup(patch.stopall)
 
@@ -90,9 +90,10 @@ class NativePackageTests(unittest.TestCase):
         for member, source in self.managed_outputs.items():
             self.file(source.relative_to(self.root), f"managed {member}".encode())
 
-    def sign_detached_library(self, path):
+    def prepare_macos_library(self, path, rid):
         self.assertTrue(path.is_relative_to(self.output.parent))
-        path.write_bytes(path.read_bytes() + b" detached signature")
+        self.assertEqual(path.read_bytes(), self.library.read_bytes())
+        path.write_bytes(f"{rid} detached signature".encode())
 
     def evaluate_project(self, command, **options):
         self.assertIn("-getProperty:TargetFramework,PackageId", command)
@@ -164,9 +165,8 @@ class NativePackageTests(unittest.TestCase):
             }
             self.assertEqual({n for n in archive.namelist() if n.startswith("runtimes/")}, expected)
             for member in expected:
-                self.assertEqual(
-                    archive.read(member), self.library.read_bytes() + b" detached signature"
-                )
+                rid = member.split("/")[1]
+                self.assertEqual(archive.read(member), f"{rid} detached signature".encode())
             for member, source in self.selected.items():
                 self.assertEqual(archive.read(member), source.read_bytes())
             metadata = ET.fromstring(archive.read("Example.nuspec"))
@@ -204,7 +204,7 @@ class NativePackageTests(unittest.TestCase):
             result = self.invoke(runtimes=["win-arm64"])
         verify.assert_called_once_with(self.native, architecture="arm64")
         self.native.verify.assert_not_called()
-        self.sign.assert_not_called()
+        self.prepare_macos.assert_not_called()
         with zipfile.ZipFile(result) as archive:
             self.assertEqual(
                 archive.read("runtimes/win-arm64/native/example.dll"), dll.read_bytes()
@@ -285,7 +285,7 @@ class NativePackageTests(unittest.TestCase):
         with zipfile.ZipFile(result) as package:
             self.assertEqual(
                 package.read("runtimes/osx-arm64/native/libexample.dylib"),
-                terminal.read_bytes() + b" detached signature",
+                b"osx-arm64 detached signature",
             )
         actual = self.output.read_bytes()
         record = self.previous_record.read_bytes()
@@ -373,8 +373,8 @@ class NativePackageTests(unittest.TestCase):
             self.invoke(runtimes=["osx-arm64", "osx-x64"])
         self.assert_previous()
 
-    def test_detached_signature_failure_keeps_previous_package(self):
-        self.sign.side_effect = ValueError("Invalid detached signature")
+    def test_macos_preparation_failure_keeps_previous_package(self):
+        self.prepare_macos.side_effect = ValueError("Invalid detached signature")
         with self.assertRaisesRegex(ValueError, "Invalid detached signature"):
             self.invoke()
         self.assert_previous()

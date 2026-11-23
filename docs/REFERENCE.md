@@ -318,8 +318,9 @@ notice/file set. The project owns package metadata and layout. The packer
 compares its emitted dependency requirements to the evaluated project.
 It preserves private feed selection and rejects input changes before publication.
 The native producer lock covers receipt capture and verification. Staging checks
-the library digest from that receipt. On macOS the packer ad-hoc signs each staged
-dylib for standalone loading and verifies the signature on all architectures.
+the library digest from that receipt. On macOS the packer extracts the selected
+runtime's slice from the staged universal library, ad-hoc signs the standalone
+dylib and verifies its architecture and signature.
 The package receipt records both the verified native source digest and the digest
 of each delivered member, and the package audit checks those delivered bytes.
 The package and its JSON receipt are staged before replacement; a failed

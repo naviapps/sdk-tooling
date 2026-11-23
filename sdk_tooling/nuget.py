@@ -359,10 +359,15 @@ def _managed_package_inputs(dotnet, project, *, root, env, properties):
     return package_id, inputs, dependencies
 
 
-def _sign_detached_macos_library(path):
-    """Replace the framework-scoped signature on a staged standalone dylib."""
+def _prepare_macos_library(path, rid):
+    """Select a single architecture and sign its staged standalone dylib."""
     if sys.platform != "darwin":
         raise ValueError("Package macOS native assets on macOS to sign detached libraries")
+    architecture = {"osx-arm64": "arm64", "osx-x64": "x86_64"}[rid]
+    thin = path.with_suffix(".thin")
+    lipo = ["/usr/bin/xcrun", "lipo"]
+    subprocess.run([*lipo, str(path), "-thin", architecture, "-o", str(thin)], check=True)
+    thin.replace(path)
     subprocess.run(
         ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(path)],
         check=True,
@@ -371,6 +376,8 @@ def _sign_detached_macos_library(path):
         ["/usr/bin/codesign", "--verify", "--strict", "--all-architectures", str(path)],
         check=True,
     )
+    if subprocess.check_output([*lipo, "-archs", str(path)], text=True).split() != [architecture]:
+        raise ValueError(f"Staged macOS library must contain only the {architecture} slice")
 
 
 def pack_native(
@@ -456,7 +463,7 @@ def pack_native(
             if stage_file(library, staged) != digest:
                 raise ValueError("Native library differs from its verified receipt")
             if rid.startswith("osx-"):
-                _sign_detached_macos_library(staged)
+                _prepare_macos_library(staged, rid)
                 digest = file_sha256(staged)
             runtime_files[member] = staged
             accepted_bytes[member] = digest
