@@ -103,6 +103,12 @@ jobs:
         with:
           global-json-file: sdk/global.json
           architecture: x64
+      - name: Record the installed macOS x64 executable
+        id: dotnet-x64
+        if: inputs.combined-nuget && inputs.platform == 'macos'
+        run: |
+          test -x "$DOTNET_ROOT/dotnet"
+          printf 'path=%s/dotnet\n' "$DOTNET_ROOT" >> "$GITHUB_OUTPUT"
       - name: Install pinned runner-native .NET
         if: inputs.dotnet
         uses: actions/setup-dotnet@v6.0.0
@@ -127,13 +133,14 @@ jobs:
         env:
           SDK_XCFRAMEWORK_OUTPUT: ${{ inputs.xcframeworks && format('{0}/sdk-xcframeworks', runner.temp) || '' }}
           SDK_NUGET_OUTPUT: ${{ inputs.combined-nuget && inputs.platform == 'macos' && format('{0}/sdk-nuget', runner.temp) || '' }}
+          MACOS_X64_DOTNET: ${{ steps.dotnet-x64.outputs.path }}
         run: |
           options=()
           if [[ -n "$SDK_XCFRAMEWORK_OUTPUT" ]]; then
             options+=(--xcframework-output "$SDK_XCFRAMEWORK_OUTPUT")
           fi
           if [[ -n "$SDK_NUGET_OUTPUT" ]]; then
-            options+=(--nuget-artifact "$SDK_NUGET_OUTPUT" --macos-x64-dotnet "$RUNNER_TEMP/dotnet-x64/dotnet")
+            options+=(--nuget-artifact "$SDK_NUGET_OUTPUT" --macos-x64-dotnet "$MACOS_X64_DOTNET")
           fi
           python -I -B ../dispatcher/ci/check_distribution.py "$SDK_PLATFORM" "$SDK_NAME" "$SDK_REVISION" \
             --tooling ../sdk-tooling "${options[@]}"
