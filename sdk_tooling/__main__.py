@@ -34,7 +34,7 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    from . import binding_checks, quality, sdk_checks
+    from . import binding_checks, quality, sdk_checks, xcframework_archive
 
     command = commands.add_parser(
         "quality", help="Check or format first-party source without building the product"
@@ -48,6 +48,13 @@ def main(argv=None):
     command.add_argument("--product", help="Select one product in native.toml")
     command.add_argument("--verify", action="store_true")
     command.set_defaults(handler=_xcframework)
+    command = commands.add_parser(
+        "xcframework-archive", help="Archive verified XCFrameworks and native build receipts"
+    )
+    command.add_argument("--output", type=Path, required=True, help="New directory outside the SDK")
+    command.add_argument("--revision", help="Exact SDK commit; defaults to HEAD")
+    command.add_argument("--producer", type=Path, help="Pinned SDK Tooling producer checkout")
+    command.set_defaults(handler=xcframework_archive.archive_command)
     sdk_checks.add_commands(commands)
     binding_checks.add_commands(commands)
     commands.add_parser("windows", help="Run an SDK-owned Windows x64 validation command")

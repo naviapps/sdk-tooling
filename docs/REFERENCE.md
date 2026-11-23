@@ -209,6 +209,25 @@ revision alone does not invalidate native output when its actual build modules
 are unchanged. Production and build-tool hashes remain recorded separately from
 the tooling revision so a test/package-driver update need not rebuild frameworks.
 
+### Archive regenerated XCFrameworks
+
+The macOS distribution workflow uses the CLI to archive verified framework
+outputs and their receipts. Each ZIP includes the named XCFramework at its root
+and retains its internal framework symlinks and executable permissions.
+`xcframeworks.json` records the SDK revision and the size and SHA-256 digest of
+each ZIP and receipt. Download the verification output from the completed run:
+
+```sh
+gh run download RUN_ID --repo naviapps/sdk-tooling --pattern '*-xcframeworks-*'
+```
+
+For a local run, rebuild the native artifacts with the SDK's pinned tooling and
+give the archive command a new destination outside the SDK checkout:
+
+```sh
+sdk-tooling xcframework-archive --output /absolute/path/to/archives
+```
+
 ### Upstream notices
 
 The native builder stores the original license/notice bodies verbatim in each

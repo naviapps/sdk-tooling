@@ -115,6 +115,14 @@ commands = [
 ]
 ```
 
+For a macOS SDK with `native.toml`, the job checks the committed distribution,
+then builds the declared XCFrameworks once with the SDK's pinned tooling. Swift
+tests and the independent SwiftPM consumer exercise the regenerated binaries.
+The job uploads a ZIP for each framework, the build receipts and the checksum
+index as a seven-day Actions artifact. The archives are verification output.
+SDKs that use SwiftPM path-based binary targets continue to supply their
+frameworks in the source checkout.
+
 On macOS the dispatcher runs the commands through the SDK's mise environment
 when it has a `mise.toml`. The `sdk-tooling` command runs the pinned checkout
 with the dispatcher's Python interpreter. For macOS `make` commands, the

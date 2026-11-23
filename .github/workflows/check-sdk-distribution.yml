@@ -108,4 +108,21 @@ jobs:
       - name: Run SDK distribution checks
         if: steps.plan.outputs.enabled == 'true'
         working-directory: sdk
-        run: python -I -B ../dispatcher/ci/check_distribution.py "$SDK_PLATFORM" "$SDK_NAME" "$SDK_REVISION" --tooling ../sdk-tooling
+        env:
+          SDK_XCFRAMEWORK_OUTPUT: ${{ steps.plan.outputs.xcframeworks == 'true' && format('{0}/sdk-xcframeworks', runner.temp) || '' }}
+        run: |
+          options=()
+          if [[ -n "$SDK_XCFRAMEWORK_OUTPUT" ]]; then
+            options+=(--xcframework-output "$SDK_XCFRAMEWORK_OUTPUT")
+          fi
+          python -I -B ../dispatcher/ci/check_distribution.py "$SDK_PLATFORM" "$SDK_NAME" "$SDK_REVISION" \
+            --tooling ../sdk-tooling "${options[@]}"
+      - name: Upload verified XCFramework archives
+        if: steps.plan.outputs.xcframeworks == 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ inputs.sdk }}-xcframeworks-${{ inputs.revision }}
+          path: ${{ runner.temp }}/sdk-xcframeworks
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

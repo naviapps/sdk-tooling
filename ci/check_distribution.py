@@ -32,6 +32,15 @@ CREDENTIAL_VARIABLES = {
     "SSH_AUTH_SOCK",
 }
 SOURCE_VARIABLES = {"NAVI_SDK_TOOLING_SOURCE", "SDK_TOOLING"}
+SWIFT_DISTRIBUTION = ["sdk-tooling", "swift-consumer", "--distribution"]
+
+
+def builds_xcframeworks(source, platform):
+    declaration = source / "native.toml"
+    if platform != "macos" or not (declaration.exists() or declaration.is_symlink()):
+        return False
+    read_regular(source, "native.toml")
+    return True
 
 
 def run(root, env, *command, stdout=None):
@@ -250,7 +259,7 @@ def install_archive(source, env, temp, index, configuration):
     return binary_path
 
 
-def execute(source, platform, settings, env, temp, tooling):
+def execute(source, platform, settings, env, temp, tooling, *, xcframework_output=None):
     pinned_cli = "sdk-tooling" in mise_configuration(source).get("tasks", {})
     if not pinned_cli or (source / "tools/_tooling.py").is_file():
         env = dict(env, NAVI_SDK_TOOLING_SOURCE=str(tooling))
@@ -277,6 +286,9 @@ def execute(source, platform, settings, env, temp, tooling):
             make_env = dict(env, SDK_TOOLING=shlex.join(sdk_cli).replace("$", "$$"))
 
     for argv in settings["commands"]:
+        # Test the generated Swift dependency instead of testing the committed one twice.
+        if xcframework_output is not None and argv == SWIFT_DISTRIBUTION:
+            continue
         command = [
             argument.replace("{temp}", str(temp)).replace("{tooling}", str(tooling))
             for argument in argv
@@ -286,6 +298,48 @@ def execute(source, platform, settings, env, temp, tooling):
         elif platform == "windows" and command[0] == "python":
             command[0] = sys.executable
         run(source, make_env if command[0] == "make" else env, *prefix, *command)
+
+    if xcframework_output is None:
+        return
+
+    # Installed Rust and C fixture checks above require the exact committed
+    # source tree. Rebuild only after those checks finish in the CI checkout.
+    run(
+        source,
+        env,
+        *prefix,
+        "rustup",
+        "target",
+        "add",
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+    )
+    if ["cargo", "fetch", "--locked"] not in settings["commands"]:
+        run(source, env, *prefix, "cargo", "fetch", "--locked")
+    run(source, env, *prefix, *sdk_cli, "xcframework")
+    if (source / "Package.swift").is_file():
+        run(source, make_env, *prefix, "make", "test")
+        run(source, env, *prefix, *sdk_cli, *SWIFT_DISTRIBUTION[1:])
+
+    # The dispatcher owns the archive format. Its verifier uses the exact
+    # producer revision that generated the framework and receipt.
+    dispatcher = Path(__file__).resolve().with_name("run_sdk_tooling.py")
+    run(
+        source,
+        env,
+        *prefix,
+        sys.executable,
+        "-I",
+        "-B",
+        str(dispatcher),
+        "xcframework-archive",
+        "--output",
+        str(xcframework_output),
+        "--revision",
+        env["GITHUB_SHA"],
+        "--producer",
+        str(tooling),
+    )
 
 
 def write_output(**values):
@@ -301,6 +355,11 @@ def main(argv=None):
     parser.add_argument("revision")
     parser.add_argument("--platform", choices=PLATFORMS)
     parser.add_argument("--tooling", type=Path)
+    parser.add_argument(
+        "--xcframework-output",
+        type=Path,
+        help="Build, check and archive XCFrameworks from the disposable macOS SDK checkout",
+    )
     parser.add_argument("--tooling-repository", default=os.environ.get("GITHUB_REPOSITORY"))
     args = parser.parse_args(argv)
     repository = args.tooling_repository or ""
@@ -315,6 +374,8 @@ def main(argv=None):
         or repository.casefold() == sdk_repository.casefold()
     ):
         parser.error("Specify a repository in the tooling owner and its full lowercase Git SHA")
+    if args.xcframework_output is not None and args.mode != "macos":
+        parser.error("--xcframework-output requires the macos distribution mode")
     if args.mode == "identity":
         write_output(repository=sdk_repository)
         return
@@ -329,11 +390,19 @@ def main(argv=None):
             parser.error("Reading the plan requires --platform")
         enabled = args.platform in plan
         dotnet = windows_dotnet_version(source) if enabled and args.platform == "windows" else ""
-        write_output(revision=pin, enabled=str(enabled).lower(), dotnet=dotnet)
+        xcframeworks = enabled and builds_xcframeworks(source, args.platform)
+        write_output(
+            revision=pin,
+            enabled=str(enabled).lower(),
+            dotnet=dotnet,
+            xcframeworks=str(xcframeworks).lower(),
+        )
         return
 
     if args.mode not in plan:
         parser.error("SDK distribution configuration does not declare this platform")
+    if args.xcframework_output is not None and not builds_xcframeworks(source, args.mode):
+        parser.error("--xcframework-output requires an SDK with native.toml")
     if args.tooling is None:
         parser.error("Distribution checks require --tooling with the pinned checkout")
     tooling = args.tooling.resolve(strict=True)
@@ -342,7 +411,15 @@ def main(argv=None):
         dir=env.get("RUNNER_TEMP"), prefix="sdk-distribution-"
     ) as work:
         temp = Path(work).resolve()
-        execute(source, args.mode, plan[args.mode], env, temp, tooling)
+        execute(
+            source,
+            args.mode,
+            plan[args.mode],
+            env,
+            temp,
+            tooling,
+            xcframework_output=args.xcframework_output,
+        )
 
 
 if __name__ == "__main__":

@@ -249,6 +249,91 @@ class DistributionTests(unittest.TestCase):
                         if pinned_cli:
                             self.assertIn("shared $$tooling", environment["SDK_TOOLING"])
 
+    def test_native_generation_runs_only_for_macos_with_a_regular_declaration(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            root = Path(disposable).resolve()
+            select = DISPATCH["builds_xcframeworks"]
+            self.assertFalse(select(root, "macos"))
+            specification = root / "native.toml"
+            specification.touch()
+            self.assertTrue(select(root, "macos"))
+            self.assertFalse(select(root, "windows"))
+            specification.unlink()
+            specification.mkdir()
+            with self.assertRaisesRegex(ValueError, "ordinary SDK file: native.toml"):
+                select(root, "macos")
+
+    def test_native_generation_follows_pristine_checks_and_archives_the_verified_build(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            root = Path(disposable).resolve()
+            source = root / "sdk"
+            source.mkdir()
+            (source / "Package.swift").touch()
+            tooling = root / "pinned tooling"
+            runner = tooling / "ci/run_sdk_tooling.py"
+            runner.parent.mkdir(parents=True)
+            runner.touch()
+            output = root / "generated archive"
+            env = {"GITHUB_SHA": "a" * 40}
+            execute = DISPATCH["execute"]
+            fetch = ["cargo", "fetch", "--locked"]
+            for fetch_in_plan in (False, True):
+                with (
+                    self.subTest(fetch_in_plan=fetch_in_plan),
+                    patch.dict(execute.__globals__) as globals_,
+                ):
+                    installed = ["make", "test-installed-consumers"]
+                    swift = ["sdk-tooling", "swift-consumer", "--distribution"]
+                    plan = ([fetch] if fetch_in_plan else []) + [installed, swift]
+                    invocations = []
+
+                    def run(checkout, environment, *command):
+                        self.assertEqual(checkout, source)
+                        self.assertEqual(environment["GITHUB_SHA"], env["GITHUB_SHA"])
+                        invocations.append(command)
+
+                    globals_["run"] = run
+                    execute(
+                        source,
+                        "macos",
+                        {"commands": plan, "archives": []},
+                        env,
+                        root,
+                        tooling,
+                        xcframework_output=output,
+                    )
+                    pinned_cli = (sys.executable, "-I", "-B", str(runner))
+                    expected = [
+                        tuple(installed),
+                        ("rustup", "target", "add", "aarch64-apple-darwin", "x86_64-apple-darwin"),
+                    ]
+                    if fetch_in_plan:
+                        expected.insert(0, tuple(fetch))
+                    else:
+                        expected.append(tuple(fetch))
+                    self.assertEqual(
+                        invocations,
+                        [
+                            *expected,
+                            (*pinned_cli, "xcframework"),
+                            ("make", "test"),
+                            (*pinned_cli, *swift[1:]),
+                            (
+                                sys.executable,
+                                "-I",
+                                "-B",
+                                str(SCRIPT.with_name("run_sdk_tooling.py")),
+                                "xcframework-archive",
+                                "--output",
+                                str(output),
+                                "--revision",
+                                env["GITHUB_SHA"],
+                                "--producer",
+                                str(tooling),
+                            ),
+                        ],
+                    )
+
     def test_sdk_child_identity_replaces_workflow_sha_without_credentials(self):
         environment = {
             "NAVI_CI_SOURCE_COMMIT": "a" * 40,
