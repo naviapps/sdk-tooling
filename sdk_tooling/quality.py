@@ -308,7 +308,7 @@ def check(root, *, write=False, languages=None, dotnet=False):
 
 
 def add_arguments(parser):
-    parser.add_argument("operation", choices=["check", "format", "prepared-mise"])
+    parser.add_argument("operation", choices=["check", "format"])
     parser.add_argument(
         "--language", action="append", choices=["python", "swift", "rust", "c", "shell", "data"]
     )
@@ -320,12 +320,6 @@ def add_arguments(parser):
 
 
 def run_operation(args, *, root):
-    if args.operation == "prepared-mise":
-        if args.language or args.dotnet:
-            raise SystemExit("prepared-mise does not accept check or format options.")
-        from . import prepared_mise
-
-        return prepared_mise.main()
     return check(
         root,
         write=args.operation == "format",

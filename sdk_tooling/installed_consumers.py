@@ -4,8 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import plistlib
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -22,6 +22,7 @@ _REVISION = re.compile(r"[a-f0-9]{40}")
 _PUBLIC_REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 _C_FIXTURE = "fixtures/c-consumer/main.c"
 _C_RECEIPT = "Artifacts/native-build.json"
+_C_DEPENDENCY_TARGET = "sdk-consumer"
 
 
 def _run(command, *, cwd, env):
@@ -705,6 +706,10 @@ def _c_file(root, name, suffix, *, directory=".", tracked=False):
 def _stage_c(root, work, framework, *, c_receipt=_C_RECEIPT):
     path = _c_file(root, c_receipt, ".json", directory="Artifacts")
     receipt = json.loads(path.read_text(encoding="utf-8"))
+    configuration = receipt.get("configuration")
+    minimum_macos = configuration.get("minimumMacOS") if isinstance(configuration, dict) else None
+    if not isinstance(minimum_macos, str) or not re.fullmatch(r"[0-9]+\.[0-9]+", minimum_macos):
+        raise ValueError("The native receipt must declare a minimum macOS version")
     for group in ("inputs", "outputs"):
         expected = receipt[group]
         if not expected or hashes([root / _relative(name) for name in expected], root) != expected:
@@ -737,7 +742,26 @@ def _stage_c(root, work, framework, *, c_receipt=_C_RECEIPT):
         != accepted_framework
     ):
         raise ValueError("The copied framework differs from its accepted output inventory")
-    return install, installed
+    info = plistlib.loads((install / framework.name / "Resources/Info.plist").read_bytes())
+    if info.get("MinimumOSVersion") != minimum_macos:
+        raise ValueError(
+            "The copied framework and its receipt declare different minimum macOS versions"
+        )
+    return install, installed, minimum_macos
+
+
+def _clang_dependencies(text, client):
+    # Clang writes a single Make rule. Quotes are literal in dependency names,
+    # while whitespace, hashes and dollar signs have Make-specific spellings.
+    rule = text.replace("\\\n", " ").rstrip("\n")
+    target, separator, dependencies = rule.partition(":")
+    if target != _C_DEPENDENCY_TARGET or not separator or "\n" in dependencies:
+        raise ValueError("Expected one Clang dependency rule for the C consumer")
+    words = re.findall(r"(?:\\[ \t#\\]|[^ \t])+", dependencies)
+    return [
+        (client / re.sub(r"\\([ \t#\\])", r"\1", word).replace("$$", "$")).resolve()
+        for word in words
+    ]
 
 
 def _run_c(
@@ -753,7 +777,7 @@ def _run_c(
 ):
     run = runner or _run
     env = _environment(work)
-    install, installed = _stage_c(root, work, framework, c_receipt=c_receipt)
+    install, installed, minimum_macos = _stage_c(root, work, framework, c_receipt=c_receipt)
     fixture = _c_file(root, c_fixture, ".c")
     client = work / "client"
     client.mkdir()
@@ -770,9 +794,11 @@ def _run_c(
         "-Wextra",
         "-Werror",
         "-MD",
+        "-MT",
+        _C_DEPENDENCY_TARGET,
         "-MF",
         str(dependencies),
-        "-mmacosx-version-min=26.0",
+        "-mmacosx-version-min=" + minimum_macos,
         "main.c",
         "-F",
         str(install),
@@ -784,11 +810,7 @@ def _run_c(
     ]
     run(command, cwd=client, env=env)
     dependency_text = dependencies.read_text(encoding="utf-8")
-    paths = [
-        (client / value).resolve()
-        for value in shlex.split(dependency_text.replace("\\\n", ""))
-        if not value.endswith(":")
-    ]
+    paths = _clang_dependencies(dependency_text, client)
     resolved = (install / framework.name / "Headers" / header).resolve(strict=True)
     if resolved not in paths or any(path.is_relative_to(root) for path in paths):
         raise ValueError(

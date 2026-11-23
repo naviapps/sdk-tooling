@@ -429,10 +429,11 @@ triples and adds the execution mode after the fixture passes.
 
 #### Copied macOS C framework
 
-The macOS C gate validates the retained native receipt, copies the selected
-framework and notices, and checks the compiler's dependency trace for the copied
-header and absence of producer checkout paths. It checks that the installed
-payload stays intact through compilation and execution, and never rebuilds it.
+The macOS C gate validates the retained native receipt and copies the selected
+framework and notices. It compiles at the minimum macOS version recorded in both
+the receipt and framework, then checks the compiler's dependency trace for the
+copied header and absence of producer checkout paths. The installed payload must
+stay intact through compilation and execution. The gate uses the copied binary.
 SDKs with distinct framework receipts can select one tracked C source with
 `c_fixture` and one tracked JSON receipt under `Artifacts` with `c_receipt`.
 These are SDK-relative paths and must resolve inside their declared roots.

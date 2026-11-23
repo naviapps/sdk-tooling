@@ -4,6 +4,7 @@ import json
 import os
 import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -124,7 +125,8 @@ class DistributionTests(unittest.TestCase):
             temp = root / "scratch files"
             temp.mkdir()
             tooling = root / "shared tools"
-            script = root / "fixture test.py"
+            script = tooling / "tasks/sdk"
+            script.parent.mkdir(parents=True)
             script.write_text(
                 dedent(
                     """
@@ -154,8 +156,8 @@ class DistributionTests(unittest.TestCase):
             arguments = ["{temp}/result.json", "{tooling}", "one argument with spaces & $HOME"]
             settings = {
                 "commands": [
-                    ["python", script.name, "write", *arguments],
-                    ["python", script.name, "verify", *arguments],
+                    ["sdk-tooling", "write", *arguments],
+                    ["python", "-B", "{tooling}/tasks/sdk", "verify", *arguments],
                 ],
                 "archives": [],
             }
@@ -173,11 +175,66 @@ class DistributionTests(unittest.TestCase):
                 },
             )
 
+    def test_macos_commands_use_the_pinned_cli_and_leave_explicit_make_arguments_intact(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            root = Path(disposable)
+            config = root / "mise.toml"
+            tooling = root / "shared $tooling's path"
+            settings = {
+                "commands": [
+                    ["sdk-tooling", "swift-consumer", "--distribution"],
+                    ["make", "check-distribution"],
+                    ["make", "SDK_TOOLING=explicit command"],
+                ],
+                "archives": [],
+            }
+            env = {"PATH": "fixture path"}
+            execute = DISPATCH["execute"]
+            for modern in (False, True):
+                with self.subTest(modern=modern), patch.dict(execute.__globals__) as globals_:
+                    config.write_text(
+                        '[tasks.sdk-tooling]\nrun = "uvx ..."\n' if modern else "",
+                        encoding="utf-8",
+                    )
+                    invocations = []
+
+                    def run(source, environment, *command):
+                        self.assertEqual(source, root)
+                        invocations.append((environment, command))
+
+                    globals_["run"] = run
+                    execute(root, "macos", settings, env, root, tooling)
+                    prefix = ("mise", "exec", "--")
+                    self.assertEqual(
+                        [command for _, command in invocations],
+                        [
+                            ("mise", "trust", "mise.toml"),
+                            ("mise", "install"),
+                            (
+                                *prefix,
+                                sys.executable,
+                                "-I",
+                                "-B",
+                                str(tooling / "tasks/sdk"),
+                                "swift-consumer",
+                                "--distribution",
+                            ),
+                            (*prefix, "make", "check-distribution"),
+                            (*prefix, "make", "SDK_TOOLING=explicit command"),
+                        ],
+                    )
+                    self.assertEqual([environment for environment, _ in invocations[:3]], [env] * 3)
+                    for environment, _ in invocations[3:]:
+                        self.assertEqual("SDK_TOOLING" in environment, modern)
+                        if modern:
+                            self.assertIn("shared $$tooling", environment["SDK_TOOLING"])
+
     def test_sdk_child_identity_replaces_workflow_sha_without_credentials(self):
         environment = {
             "NAVI_CI_SOURCE_COMMIT": "a" * 40,
             "NAVI_CI_SOURCE_FINGERPRINT": "b" * 64,
             "NAVI_CI_SOURCES": "manifest.json",
+            "SDK_TOOLING": "unrelated tool command",
             "GITHUB_SHA": "a" * 40,
             "GITHUB_TOKEN": "test token",
             "GH_TOKEN": "test token",

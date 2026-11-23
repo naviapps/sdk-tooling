@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -36,6 +37,7 @@ SOURCE_VARIABLES = {
     "NAVI_CI_SOURCES",
     "NAVI_SDK_TOOLING_SOURCE",
     "SDK_DISTRIBUTION_TEMP",
+    "SDK_TOOLING",
 }
 
 
@@ -268,19 +270,26 @@ def execute(source, platform, settings, env, temp, tooling):
         env = dict(env, PATH=os.pathsep.join((*tool_dirs, env["PATH"])))
 
     prefix = ()
+    sdk_cli = [sys.executable, "-I", "-B", str(tooling / "tasks/sdk")]
+    make_env = env
     if platform == "macos" and (source / "mise.toml").is_file():
         run(source, env, "mise", "trust", "mise.toml")
         run(source, env, "mise", "install")
         prefix = ("mise", "exec", "--")
+        if "sdk-tooling" in mise_configuration(source).get("tasks", {}):
+            # Make expands dollar signs before passing the command to the shell.
+            make_env = dict(env, SDK_TOOLING=shlex.join(sdk_cli).replace("$", "$$"))
 
     for argv in settings["commands"]:
         command = [
             argument.replace("{temp}", str(temp)).replace("{tooling}", str(tooling))
             for argument in argv
         ]
-        if platform == "windows" and command[0] == "python":
+        if command[0] == "sdk-tooling":
+            command = [*sdk_cli, *command[1:]]
+        elif platform == "windows" and command[0] == "python":
             command[0] = sys.executable
-        run(source, env, *prefix, *command)
+        run(source, make_env if command[0] == "make" else env, *prefix, *command)
 
 
 def write_output(**values):

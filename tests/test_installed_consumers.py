@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import plistlib
 import struct
 import subprocess
 import tempfile
@@ -821,12 +822,13 @@ class InstalledConsumersTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "clean committed SDK"):
             self.cli(root, ["--language", "rust"])
 
-    def c_sdk(self, root=None):
+    def c_sdk(self, root=None, *, minimum_macos="26.0"):
         root = root or self.directory("c-sdk")
         framework = root / FRAMEWORK
         for name, value in {
             "CFixture": b"accepted native bytes",
             "Headers/fixture.h": b"public header",
+            "Resources/Info.plist": plistlib.dumps({"MinimumOSVersion": minimum_macos}),
             "Resources/ThirdPartyNotices.txt": b"original upstream notice",
         }.items():
             path = framework / name
@@ -838,27 +840,31 @@ class InstalledConsumersTests(unittest.TestCase):
         fixture = root / "fixtures/c-consumer/main.c"
         fixture.parent.mkdir(parents=True)
         fixture.write_text("installed client", encoding="utf-8")
-        self.receipt(root)
+        self.receipt(root, minimum_macos=minimum_macos)
         return root
 
     @staticmethod
-    def receipt(root):
+    def receipt(root, *, minimum_macos="26.0"):
         receipt = {
+            "configuration": {"minimumMacOS": minimum_macos},
             "inputs": hashes(files(root / "ThirdParty"), root),
             "outputs": hashes(files(root / FRAMEWORK), root),
         }
         (root / "Artifacts/native-build.json").write_text(json.dumps(receipt), encoding="utf-8")
 
     @staticmethod
-    def depfile(client, header):
-        # Clang's Darwin Make dependency trace uses escaped spaces and forward
-        # separators, including in the Windows test's synthetic absolute path.
-        target = header.as_posix().replace(" ", "\\ ")
-        (client / "headers.d").write_text(f"consumer: main.c \\\n  {target}\n", encoding="utf-8")
+    def depfile(client, *headers):
+        targets = [
+            header.as_posix().replace(" ", "\\ ").replace("#", "\\#").replace("$", "$$")
+            for header in headers
+        ]
+        (client / "headers.d").write_text(
+            "sdk-consumer: main.c \\\n  " + " \\\n  ".join(targets) + "\n", encoding="utf-8"
+        )
 
     def test_c_compiles_with_only_installed_header_and_runs_in_owned_directory(self):
         root = self.c_sdk()
-        task = self.directory("c work")
+        task = self.directory("consumer's work #1 $HOME")
         calls = []
 
         def fake_clang(command, *, cwd, env):
@@ -869,6 +875,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 self.assertNotIn(key, env)
             if "clang" in command:
                 self.depfile(cwd, task / "install" / FRAMEWORK.name / "Headers" / HEADER)
+                self.assertEqual(command[command.index("-MT") + 1], "sdk-consumer")
                 self.assertNotIn("-I", command)
                 self.assertEqual(command[command.index("-F") + 1], str(task / "install"))
                 self.assertFalse(any(str(root) in argument for argument in command))
@@ -885,7 +892,7 @@ class InstalledConsumersTests(unittest.TestCase):
         self.assertEqual(evidence["runtimeOutput"], "fixture passed")
 
     def test_c_uses_the_selected_tracked_source_and_receipt(self):
-        root = self.c_sdk(self.repository())
+        root = self.c_sdk(self.repository(), minimum_macos="27.1")
         fixture = "fixtures/c-consumer/product.c"
         receipt = "Artifacts/CFixture.build.json"
         (root / "fixtures/c-consumer/main.c").rename(root / fixture)
@@ -899,6 +906,7 @@ class InstalledConsumersTests(unittest.TestCase):
         def fake_clang(command, *, cwd, env):
             if "clang" in command:
                 self.assertEqual((cwd / "main.c").read_bytes(), (root / fixture).read_bytes())
+                self.assertIn("-mmacosx-version-min=27.1", command)
                 framework = cwd.parent / "install" / FRAMEWORK.name
                 self.depfile(cwd, framework / "Headers" / HEADER)
             return SimpleNamespace(stdout="selected fixture passed\n")
@@ -989,7 +997,11 @@ class InstalledConsumersTests(unittest.TestCase):
 
         def fake_clang(command, *, cwd, env):
             self.assertIn("clang", command)
-            self.depfile(cwd, root / FRAMEWORK / "Headers" / HEADER)
+            self.depfile(
+                cwd,
+                task / "install" / FRAMEWORK.name / "Headers" / HEADER,
+                root / FRAMEWORK / "Headers" / HEADER,
+            )
             return SimpleNamespace(stdout="")
 
         with self.assertRaisesRegex(ValueError, "installed SDK header"):
@@ -1021,6 +1033,16 @@ class InstalledConsumersTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "accepted output inventory"):
             driver._stage_c(root, self.directory("extra-work"), FRAMEWORK)
 
+    def test_c_receipt_requires_the_frameworks_minimum_macos(self):
+        root = self.c_sdk()
+        for name, version, error in (
+            ("invalid", "26.0 extra", "must declare a minimum macOS"),
+            ("different", "27.1", "different minimum macOS"),
+        ):
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, error):
+                self.receipt(root, minimum_macos=version)
+                driver._stage_c(root, self.directory(name), FRAMEWORK)
+
     @unittest.skipIf(os.name == "nt", "Requires POSIX framework symlinks")
     def test_c_keeps_relative_framework_links_but_rejects_escape(self):
         root = self.c_sdk()
@@ -1031,7 +1053,7 @@ class InstalledConsumersTests(unittest.TestCase):
         (framework / "Versions/Current").symlink_to("A", target_is_directory=True)
         (framework / "Headers").symlink_to("Versions/Current/Headers", target_is_directory=True)
         self.receipt(root)
-        installed, _ = driver._stage_c(root, self.directory("linked"), FRAMEWORK)
+        installed, _, _ = driver._stage_c(root, self.directory("linked"), FRAMEWORK)
         self.assertEqual(
             os.readlink(installed / FRAMEWORK.name / "Headers"), "Versions/Current/Headers"
         )
