@@ -630,6 +630,7 @@ class NuGetTests(unittest.TestCase):
                     for item in config.findall("./packageSourceMapping/packageSource/package")
                 }
                 self.assertIn(toolchain_id, names)
+                self.assertIn("Microsoft.WindowsDesktop.App.Runtime.win-x64", names)
                 self.assertNotIn("Example", names)
                 self.assertFalse(any("*" in name for name in names))
                 cache = Path(options["env"]["NUGET_PACKAGES"])

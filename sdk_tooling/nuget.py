@@ -544,6 +544,7 @@ _NATIVE_AOT_PACKS = (
     "Microsoft.NETCore.App.Host.win-x64",
     "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64",
     "Microsoft.NETCore.App.Runtime.win-x64",
+    "Microsoft.WindowsDesktop.App.Runtime.win-x64",
     "runtime.win-x64.Microsoft.DotNet.ILCompiler",
 )
 
