@@ -325,11 +325,14 @@ Relative framework symlinks survive, while links outside the staged tree fail.
 Developer tools, Rust crates and generated output roots are excluded, along with
 recursive `.git`, `.build`, `.native-build`, `.swiftpm` and `__pycache__` directories.
 
-The shared gate runs Xcode's Swift with complete concurrency checking and warnings
-as errors, a system-only PATH, isolated SwiftPM config/security/cache, module cache,
-temporary and scratch directories, and no inherited compiler or native-loader
-overrides. It preserves the caller's `HOME` and existing `CFFIXED_USER_HOME` so
-Xcode-managed developer components stay outside the disposable consumer tree.
+The shared gate runs Xcode's Swift with complete concurrency checking and treats
+warnings as errors by default. `--build-system swiftbuild` selects Swift Build.
+`--allow-warnings` omits the global warning flag when it conflicts with a dependency's
+compiler flags. The gate also uses a system-only PATH, isolated SwiftPM
+config/security/cache, module cache, temporary and scratch directories, and no
+inherited compiler or native-loader overrides. It preserves the caller's `HOME`
+and existing `CFFIXED_USER_HOME` so Xcode-managed developer components stay outside
+the disposable consumer tree.
 It checks the resolved SwiftPM graph before building and rejects dependencies
 outside the staged SDK, consumer and fresh dependency checkout directories.
 It carries `Package.resolved` from the SDK to the consumer root and enforces those

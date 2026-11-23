@@ -148,6 +148,7 @@ class SwiftConsumerTests(unittest.TestCase):
         self.assertEqual(graph[0][:3], ["/usr/bin/xcrun", "swift", "package"])
         self.assertEqual(graph[0][-3:], ["show-dependencies", "--format", "json"])
         self.assertEqual(build[0][:3], ["/usr/bin/xcrun", "swift", "build"])
+        self.assertNotIn("--build-system", build[0])
         self.assertEqual(show_binary[0], [*build[0], "--show-bin-path"])
         for option in ("--scratch-path", "--cache-path", "--config-path", "--security-path"):
             self.assertTrue(Path(build[0][build[0].index(option) + 1]).is_relative_to(self.work))
@@ -172,6 +173,32 @@ class SwiftConsumerTests(unittest.TestCase):
         for key in ("XDG_CACHE_HOME", "XDG_CONFIG_HOME", "TMPDIR", "SWIFT_MODULECACHE_PATH"):
             self.assertTrue(Path(env[key]).is_relative_to(self.work))
         self.assertEqual(list(self.work.iterdir()), [])
+
+    def test_cli_can_select_swift_build_and_keep_dependency_warnings_nonfatal(self):
+        run = consumers.run_swift_consumer
+
+        def run_with_test_command(**options):
+            run(**options, runner=self.command)
+
+        with (
+            patch.object(consumers.sys, "platform", "darwin"),
+            patch.object(consumers, "run_swift_consumer", side_effect=run_with_test_command),
+        ):
+            consumers.check_swift(
+                root=self.sdk,
+                inputs=self.inputs,
+                fixture=self.fixture,
+                executables=("Fixture",),
+                work_parent=self.work,
+                argv=["--build-system", "swiftbuild", "--allow-warnings"],
+            )
+
+        self.assertEqual(len(self.calls), 4)
+        for argv, _ in self.calls[:3]:
+            backend = argv.index("--build-system")
+            self.assertEqual(argv[backend + 1], "swiftbuild")
+            self.assertIn("-strict-concurrency=complete", argv)
+            self.assertNotIn("-warnings-as-errors", argv)
 
     def test_does_not_invent_a_core_foundation_home_override(self):
         os.environ.pop("CFFIXED_USER_HOME", None)

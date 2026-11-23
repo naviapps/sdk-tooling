@@ -32,6 +32,7 @@ _SWIFT_DEVELOPER_INPUTS = {
     "sdk_tooling",
 }
 _SWIFT_CACHE_DIRECTORIES = {".git", ".build", ".native-build", ".swiftpm", "__pycache__"}
+_SWIFT_BUILD_SYSTEMS = ("native", "swiftbuild")
 
 
 def _swift_copy_ignore(directory, names):
@@ -106,6 +107,8 @@ def run_swift_consumer(
     work_parent=None,
     git_config=None,
     mirror_config=None,
+    build_system=None,
+    warnings_as_errors=True,
     runner=None,
 ):
     """Build/run an SDK-owned external package against a stripped installable tree.
@@ -116,6 +119,8 @@ def run_swift_consumer(
     """
     root = Path(root).resolve(strict=True)
     fixture = Path(fixture).resolve(strict=True)
+    if build_system is not None and build_system not in _SWIFT_BUILD_SYSTEMS:
+        raise ValueError("Unsupported SwiftPM build system: " + str(build_system))
     if mirror_config is not None:
         mirror_config = Path(mirror_config).resolve(strict=True)
     executables = tuple(executables)
@@ -209,10 +214,10 @@ def run_swift_consumer(
             "--disable-dependency-cache",
             "--manifest-cache",
             "none",
+            *(["--build-system", build_system] if build_system else []),
             "-Xswiftc",
             "-strict-concurrency=complete",
-            "-Xswiftc",
-            "-warnings-as-errors",
+            *(["-Xswiftc", "-warnings-as-errors"] if warnings_as_errors else []),
             *(["--force-resolved-versions"] if pinned else []),
         ]
         graph = run(
@@ -249,6 +254,10 @@ def check_swift(*, root, inputs, fixture, executables, work_parent=None, argv=No
         "--git-config", type=Path, help="Explicit job-private dependency Git rewrites"
     )
     parser.add_argument("--mirror-config", type=Path, help="Explicit SwiftPM mirrors.json")
+    parser.add_argument("--build-system", choices=_SWIFT_BUILD_SYSTEMS, help="SwiftPM build system")
+    parser.add_argument(
+        "--allow-warnings", action="store_true", help="Do not pass -warnings-as-errors to Swift"
+    )
     args = parser.parse_args(argv)
     if sys.platform != "darwin":
         raise ValueError("Swift native consumer acceptance requires macOS")
@@ -260,6 +269,8 @@ def check_swift(*, root, inputs, fixture, executables, work_parent=None, argv=No
         work_parent=work_parent,
         git_config=args.git_config,
         mirror_config=args.mirror_config,
+        build_system=args.build_system,
+        warnings_as_errors=not args.allow_warnings,
     )
 
 
