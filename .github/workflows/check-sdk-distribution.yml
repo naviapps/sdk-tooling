@@ -1,0 +1,134 @@
+name: SDK distribution checks
+run-name: ${{ inputs.sdk }} distribution at ${{ inputs.revision }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: Public SDK to validate
+        type: choice
+        required: true
+        options:
+          - configuration-storage
+          - desktop-actions
+          - desktop-applications
+          - pointer-gestures
+          - preset-documents
+          - software-licensing
+          - software-licensing-polar
+          - system-permissions
+          - window-management
+      revision:
+        description: Full SDK commit SHA on main
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-distribution-${{ inputs.sdk }}-${{ inputs.revision }}
+  cancel-in-progress: false
+
+env:
+  SDK_NAME: ${{ inputs.sdk }}
+  SDK_REVISION: ${{ inputs.revision }}
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_CLI_USE_MSBUILD_SERVER: "0"
+  MSBUILDDISABLENODEREUSE: "1"
+  GIT_TERMINAL_PROMPT: "0"
+
+jobs:
+  macos:
+    name: macOS distribution
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - name: Check out the dispatcher's tooling revision
+        uses: actions/checkout@v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          path: dispatcher
+          persist-credentials: false
+      - name: Check out the candidate SDK
+        uses: actions/checkout@v6.1.0
+        with:
+          repository: naviapps/${{ inputs.sdk }}
+          ref: ${{ inputs.revision }}
+          path: sdk
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.15.1"
+          architecture: arm64
+      - name: Validate the SDK revision and read its tooling pin
+        id: pin
+        run: python -I -B ../dispatcher/tools/check-sdk-distribution.py pin "$SDK_NAME" "$SDK_REVISION"
+      - name: Check out the SDK's pinned tooling
+        uses: actions/checkout@v6.1.0
+        with:
+          ref: ${{ steps.pin.outputs.revision }}
+          path: sdk-tooling
+          persist-credentials: false
+      - name: Install mise
+        uses: jdx/mise-action@v5.3.0
+        with:
+          version: "2026.11.12"
+          working_directory: dispatcher
+          install: false
+          cache: false
+          add_shims_to_path: false
+      - name: Verify macOS packages and installed consumers
+        run: python -I -B ../dispatcher/tools/check-sdk-distribution.py macos "$SDK_NAME" "$SDK_REVISION" --tooling ../sdk-tooling
+
+  windows:
+    name: Windows x64 distribution
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - name: Check out the dispatcher's tooling revision
+        uses: actions/checkout@v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          path: dispatcher
+          persist-credentials: false
+      - name: Check out the candidate SDK
+        uses: actions/checkout@v6.1.0
+        with:
+          repository: naviapps/${{ inputs.sdk }}
+          ref: ${{ inputs.revision }}
+          path: sdk
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.15.1"
+          architecture: x64
+      - name: Validate the SDK revision and read its tooling pin
+        run: python -I -B ../dispatcher/tools/check-sdk-distribution.py pin "$env:SDK_NAME" "$env:SDK_REVISION"
+        id: pin
+      - name: Check out the SDK's pinned tooling
+        uses: actions/checkout@v6.1.0
+        with:
+          ref: ${{ steps.pin.outputs.revision }}
+          path: sdk-tooling
+          persist-credentials: false
+      - name: Install the SDK's pinned Rust toolchain
+        run: rustup install --no-self-update
+      - uses: actions/setup-dotnet@v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          dotnet-version: "10.0.403"
+          architecture: x64
+      - name: Build and verify Windows x64 packages and installed consumers
+        run: python -I -B ../dispatcher/tools/check-sdk-distribution.py windows "$env:SDK_NAME" "$env:SDK_REVISION" --tooling ../sdk-tooling

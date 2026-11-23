@@ -42,12 +42,22 @@ After changing a workflow's action dependencies, regenerate its
 `actions.lock` with `gh actions-lock` and review the resolved commits.
 Run `gh actions-lock --verify` to check it.
 
-Public SDKs call the [Windows x64](.github/workflows/check-sdk-windows.yml)
-and [Swift](.github/workflows/check-sdk-swift.yml) workflows at a full SDK
-Tooling commit SHA. The shared workflows provision the runners and invoke
-SDK-owned tests. Each SDK defines its triggers, inputs and macOS distribution job.
-Update the caller's workflow reference when adopting workflow changes. The
-shared workflows' action dependencies are locked in this repository.
+Public SDKs run their contributor checks in their own repositories. The shared
+[SDK distribution checks](.github/workflows/check-sdk-distribution.yml) are run
+by maintainers before publishing a native SDK. Select the SDK and the full
+commit SHA from its `main` branch:
+
+```sh
+gh workflow run check-sdk-distribution.yml --repo naviapps/sdk-tooling \
+  --field sdk=configuration-storage --field revision="$SDK_COMMIT"
+```
+
+Both jobs run the SDK's distribution checks on the same commit and select the
+tooling revision from that SDK's `tools/tooling-sources.json`. The dispatcher
+uses a separate checkout, so updating the workflow alone requires no SDK pins
+to change. Private repository access is used during tooling checkout and is
+removed before SDK commands run. The Swift-only SetappAccess SDK checks its
+standalone consumer in its own workflow.
 
 ### SDK checkouts
 
@@ -70,15 +80,11 @@ older checkouts need `MISE_ACTIVATE_AGGRESSIVE=1` before `mise exec`.
 Check Python against `mise.toml` and the formatter with `xcrun swift-format --version`.
 This tooling repository uses `mise run check` and has no Makefile.
 
-SDK entry points load an immutable revision from `tools/tooling-sources.json`.
-`templates/_tooling.py` validates source/cache bytes against that Git tree before
-import. The first developer use fetches the selected revision; subsequent uses
-reuse the verified cache. `NAVI_SDK_TOOLING_SOURCE` selects an explicit clean
-checkout of that same revision. `NAVI_SDK_TOOLING_CACHE` selects the cache root;
-`NAVI_SDK_TOOLING_OFFLINE=1` rejects a missing cache instead of using the network.
-GitHub-hosted SDK workflows resolve public tooling at the same immutable
-revision. A prepared VM can use a checksummed source bundle and local Git
-mirror supplied by its host.
+For distribution checks outside GitHub Actions, set `NAVI_SDK_TOOLING_SOURCE`
+to an absolute path to a clean checkout at the SDK's pinned revision before
+running the SDK's distribution command. Choose a separate checkout if the
+maintainer's working branch has changes or is at another revision. A prepared
+VM can use a checksummed source bundle and local Git mirror supplied by its host.
 
 ### Tool ownership
 
