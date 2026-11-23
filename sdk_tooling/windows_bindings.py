@@ -88,6 +88,7 @@ def _run(args, *, root):
         raise ValueError("Select existing .csproj files for the Windows fixtures")
 
     env = dotnet.subprocess_environment()
+    env["DOTNET_CLI_UI_LANGUAGE"] = "en"
     executable, _, emulated = select_dotnet_host(env, "x64")
     libraries = _build_dlls(root, env, packages)
     if args.native_property is not None:
