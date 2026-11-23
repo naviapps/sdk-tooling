@@ -169,6 +169,10 @@ and Windows consumer verifies the same package and receipt bytes before and
 after running. Set `--field windows-on-arm=true` at dispatch to run the x64
 packages with x64 .NET on GitHub's Windows on Arm runner too.
 
+Packing with explicit dependency sources restores into a fresh cache for each
+build. This keeps paired packages on the selected feed when the machine has
+cached the same package ID and version from another feed.
+
 Unsigned NuGet packing uses deterministic managed builds and fixed archive
 timestamps. Repacking the same source, native inputs and toolchain can reproduce
 the archive bytes. Rebuilding the native inputs separately can change binary

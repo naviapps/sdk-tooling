@@ -316,7 +316,9 @@ and artifacts.
 MSBuild Pack target. SDK entry points select the project, runtimes and exact
 notice/file set. The project owns package metadata and layout. The packer
 compares its emitted dependency requirements to the evaluated project.
-It preserves private feed selection and rejects input changes before publication.
+When an entry point supplies explicit package sources, the packer resolves
+dependencies from those sources with a fresh staging cache. It rejects input
+changes before publication.
 MSBuild writes new packages with a fixed ZIP timestamp. Identical native and
 managed inputs under the same packaging toolchain can reproduce the unsigned
 archive bytes.

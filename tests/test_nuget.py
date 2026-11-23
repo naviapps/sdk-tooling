@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from sdk_tooling import dotnet as dotnet_tools
 from sdk_tooling import nuget, workspaces
 
 
@@ -704,7 +705,7 @@ class NativeConsumerTests(unittest.TestCase):
         shutil.copyfile(pin, root / pin.name)
 
     @staticmethod
-    def package(folder, name, dependency=None):
+    def package(folder, name, dependency=None, targets=None):
         package = folder / f"{name}.1.0.0.nupkg"
         dependencies = (
             f'<dependencies><dependency id="{dependency}" version="[1.0.0]" /></dependencies>'
@@ -719,9 +720,11 @@ class NativeConsumerTests(unittest.TestCase):
                 f"{dependencies}</metadata></package>",
             )
             archive.writestr("lib/net10.0/_._", "")
+            if targets is not None:
+                archive.writestr(f"build/{name}.targets", targets)
         return package
 
-    def test_native_package_is_reproducible_when_input_timestamps_change(self):
+    def test_native_package_is_reproducible_with_changed_timestamps_and_stale_cache(self):
         with tempfile.TemporaryDirectory(prefix="native-package-timestamp-") as directory:
             root = Path(directory).resolve()
             self.select_sdk(root)
@@ -738,8 +741,10 @@ class NativeConsumerTests(unittest.TestCase):
     <PathMap>$(MSBuildProjectDirectory)=/timestamp-fixture</PathMap>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="BuildDependency" Version="1.0.0" />
     <None Include="README.md;LICENSE" Pack="true" PackagePath="/" />
     <None Include="$(SdkNativeRuntimeAssets)/**/*" Pack="true"
+          Condition="'$(SdkNativeRuntimeAssets)' != ''"
           PackagePath="runtimes/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>
@@ -762,6 +767,40 @@ class NativeConsumerTests(unittest.TestCase):
             native = SimpleNamespace(
                 root=root, version="1.2.3", library="fixture", build_sources=dict
             )
+            fresh, stale = root / "fresh feed", root / "stale feed"
+            for feed, marker in ((fresh, "fresh-dependency"), (stale, "stale-dependency")):
+                feed.mkdir()
+                self.package(
+                    feed,
+                    "BuildDependency",
+                    targets=(
+                        f'<Project><ItemGroup><AssemblyMetadata Include="Dependency" Value="{marker}" />'
+                        "</ItemGroup></Project>"
+                    ),
+                )
+            env = dotnet_tools.subprocess_environment()
+            dotnet = env.get("DOTNET_BIN") or shutil.which("dotnet")
+            self.assertIsNotNone(
+                dotnet, "The prepared .NET SDK is required for native package tests"
+            )
+            stale_env = dict(env, NUGET_PACKAGES=str(root / "obj/stale-cache"))
+            subprocess.run(
+                [dotnet, "restore", project, "--configfile", config, "--source", stale],
+                cwd=root,
+                env=stale_env,
+                check=True,
+            )
+            stale_env.update(
+                NUGET_FALLBACK_PACKAGES=stale_env["NUGET_PACKAGES"],
+                RestoreAdditionalProjectSources=str(stale),
+                _WorkloadLibraryPacksFolder=str(stale),
+            )
+            config.write_text(
+                "<configuration><packageSources><clear /></packageSources>"
+                '<fallbackPackageFolders><clear /><add key="stale" value="obj/stale-cache" />'
+                "</fallbackPackageFolders></configuration>",
+                encoding="utf-8",
+            )
             with mock.patch.object(
                 nuget.windows, "verify_artifact", return_value=(native_dir, record)
             ):
@@ -770,14 +809,27 @@ class NativeConsumerTests(unittest.TestCase):
                     package_files=package_files,
                     nuget_config=config,
                     runtimes=["win-x64"],
+                    sources=[fresh],
                 )
-                package = nuget.pack_native(native, **arguments)
+                package = nuget.pack_native(
+                    native,
+                    environment=dict(env, NUGET_PACKAGES=str(root / "obj/reference-cache")),
+                    **arguments,
+                )
                 first = hashlib.sha256(package.read_bytes()).hexdigest()
                 for path in [library, *package_files.values()]:
                     os.utime(path, (1700000000, 1700000000))
-                package = nuget.pack_native(native, **arguments)
+                package = nuget.pack_native(native, environment=stale_env, **arguments)
+                empty = root / "empty feed"
+                empty.mkdir()
+                with self.assertRaises(subprocess.CalledProcessError) as error:
+                    nuget.pack_native(
+                        native, environment=stale_env, **(arguments | {"sources": [empty]})
+                    )
+                self.assertEqual(error.exception.cmd[1], "restore")
             self.assertEqual(hashlib.sha256(package.read_bytes()).hexdigest(), first)
             with zipfile.ZipFile(package) as archive:
+                self.assertIn(b"fresh-dependency", archive.read("lib/net10.0/TimestampFixture.dll"))
                 self.assertEqual(
                     {entry.date_time for entry in archive.infolist()}, {(1980, 1, 1, 0, 0, 0)}
                 )

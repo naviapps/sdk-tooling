@@ -397,6 +397,27 @@ def _prepare_macos_library(path, rid):
         raise ValueError(f"Staged macOS library must contain only the {architecture} slice")
 
 
+# The .NET SDK can append machine-local sources and caches after reading NuGet.Config.
+_DISABLE_IMPLICIT_RESTORE = {
+    "DisableImplicitLibraryPacksFolder": "true",
+    "DisableImplicitNuGetFallbackFolder": "true",
+}
+
+_RESTORE_OVERRIDES = {
+    *(name.casefold() for name in _DISABLE_IMPLICIT_RESTORE),
+    "nuget_fallback_packages",
+    "nuget_packages",
+    "nugetpackagefolders",
+    "nugetpackageroot",
+    "restoreadditionalprojectfallbackfolders",
+    "restoreadditionalprojectsources",
+    "restoreconfigfile",
+    "restorefallbackfolders",
+    "restorepackagespath",
+    "restoresources",
+}
+
+
 def pack_native(
     native,
     *,
@@ -445,7 +466,9 @@ def pack_native(
             paths.append(root / "global.json")
         for directory, subdirectories, names in project.parent.walk():
             # Generated output is excluded from both snapshots; don't traverse it.
-            subdirectories[:] = [name for name in subdirectories if name not in {"bin", "obj"}]
+            subdirectories[:] = [
+                name for name in subdirectories if name not in {".native-build", "bin", "obj"}
+            ]
             paths.extend(
                 path
                 for name in names
@@ -477,6 +500,20 @@ def pack_native(
             "UseSharedCompilation": "false",
             "SdkNativeRuntimeAssets": str(stage / "runtimes"),
         }
+        if sources:
+            env = {
+                key: value for key, value in env.items() if key.casefold() not in _RESTORE_OVERRIDES
+            }
+            cache = str(stage / "restore")
+            # An empty fallback setting re-enables the folders from NuGet.Config.
+            properties.update(
+                _DISABLE_IMPLICIT_RESTORE,
+                RestorePackagesPath=cache,
+                RestoreFallbackFolders=cache,
+                RestoreAdditionalProjectSources="",
+                RestoreAdditionalProjectFallbackFolders="",
+                RestoreNoHttpCache="true",
+            )
         runtime_files, accepted_bytes = {}, {}
         for rid, (library, filename, digest) in libraries.items():
             member = f"runtimes/{rid}/native/{filename}"
@@ -566,21 +603,6 @@ def pack_native(
         print("Verified local package: " + str(destination))
         return destination
 
-
-_CONSUMER_RESTORE_OVERRIDES = {
-    "disableimplicitlibrarypacksfolder",
-    "disableimplicitnugetfallbackfolder",
-    "nuget_fallback_packages",
-    "nuget_packages",
-    "nugetpackagefolders",
-    "nugetpackageroot",
-    "restoreadditionalprojectfallbackfolders",
-    "restoreadditionalprojectsources",
-    "restoreconfigfile",
-    "restorefallbackfolders",
-    "restorepackagespath",
-    "restoresources",
-}
 
 # The pinned .NET SDK selects the versions. Its toolchain restore has no SDK
 # package references and can obtain only these Windows x64 packs from NuGet.org.
@@ -723,7 +745,7 @@ def run_isolated_consumer(
         raise ValueError("Duplicate local-feed package filename")
     if not packages or not references:
         raise ValueError("Provide local packages and explicit package references")
-    if _CONSUMER_RESTORE_OVERRIDES.intersection(key.casefold() for key in (properties or {})):
+    if _RESTORE_OVERRIDES.intersection(key.casefold() for key in (properties or {})):
         raise ValueError("Consumer project properties must use the isolated restore settings")
     if native_aot and (not execute or runtime != "win-x64"):
         raise ValueError("Native AOT acceptance requires execution of a win-x64 consumer")
@@ -761,9 +783,7 @@ def run_isolated_consumer(
             "UseAppHost": "false",
             "SelfContained": "false",
             "ImplicitUsings": "enable",
-            # The .NET SDK can append machine-local sources and caches after reading NuGet.Config.
-            "DisableImplicitLibraryPacksFolder": "true",
-            "DisableImplicitNuGetFallbackFolder": "true",
+            **_DISABLE_IMPLICIT_RESTORE,
             **(properties or {}),
         }
         if runtime is not None:
@@ -787,7 +807,7 @@ def run_isolated_consumer(
                 "DYLD_LIBRARY_PATH",
                 "DYLD_FALLBACK_LIBRARY_PATH",
             )
-        } | _CONSUMER_RESTORE_OVERRIDES
+        } | _RESTORE_OVERRIDES
         clean = {key: value for key, value in env.items() if key.casefold() not in removed}
         clean["NUGET_PACKAGES"] = str(cache)
         roots = [Path(path).resolve() for path in exclude_paths]
