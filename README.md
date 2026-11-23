@@ -160,6 +160,11 @@ Rosetta. Each macOS and Windows consumer verifies the same bytes
 before and after running. Use `--field windows-on-arm=true` at dispatch to run
 the x64 package with x64 .NET on GitHub's Windows on Arm runner too.
 
+If the SDK distributes a separate Windows adapter, its Windows plan can export
+the verified adapter package and receipt under `sdk-nuget-companions` in the
+hosted acceptance output. Download the adapter and the combined core package
+from the same successful run and put both packages in one local feed.
+
 On macOS the dispatcher runs the commands through the SDK's mise environment.
 The `sdk-tooling` command runs the pinned checkout with the dispatcher's Python
 interpreter. The dispatcher also supplies this runner as `SDK_TOOLING` to Make,
