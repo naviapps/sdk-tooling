@@ -3,7 +3,7 @@ use std::{
     ffi::OsStr,
     fs,
     io::{ErrorKind, Write},
-    path::PathBuf,
+    path::{self, PathBuf},
     process::{self, Command, Output, Stdio},
 };
 
@@ -14,10 +14,13 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         for index in 0.. {
-            let path =
-                env::temp_dir().join(format!("sdk-consumer-modes-{}-{index}", process::id()));
+            // Git and file URLs require the ordinary drive path on Windows.
+            let path = path::absolute(
+                env::temp_dir().join(format!("sdk-consumer-modes-{}-{index}", process::id())),
+            )
+            .unwrap();
             match fs::create_dir(&path) {
-                Ok(()) => return Self(path.canonicalize().unwrap()),
+                Ok(()) => return Self(path),
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
                 Err(error) => panic!("Could not create a Cargo fixture: {error}"),
             }
