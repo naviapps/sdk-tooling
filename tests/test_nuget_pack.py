@@ -86,6 +86,28 @@ class NativePackageTests(unittest.TestCase):
         path.write_bytes(data)
         return path
 
+    def test_retained_notices_keep_member_paths_and_bytes(self):
+        self.file("ThirdParty/.DS_Store")
+        self.file("ThirdParty/Upstream/registry-notices.json")
+        self.file("ThirdParty/LICENSE with spaces", b"license\n")
+
+        for prefix in ("licenses", "ThirdParty"):
+            with self.subTest(prefix=prefix):
+                files = nuget.retained_notice_files(self.root / "ThirdParty", prefix)
+                self.assertEqual(
+                    {member: (path, path.read_bytes()) for member, path in files.items()},
+                    {
+                        f"{prefix}/LICENSE with spaces": (
+                            self.root / "ThirdParty/LICENSE with spaces",
+                            b"license\n",
+                        ),
+                        f"{prefix}/Upstream/NOTICE": (
+                            self.root / "ThirdParty/Upstream/NOTICE",
+                            b"verbatim\r\nnotice\x00",
+                        ),
+                    },
+                )
+
     def build_managed(self, *args, **options):
         for member, source in self.managed_outputs.items():
             self.file(source.relative_to(self.root), f"managed {member}".encode())

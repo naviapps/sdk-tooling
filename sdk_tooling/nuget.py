@@ -26,6 +26,16 @@ _WINDOWS_USER_PATH = re.compile(
 _WINDOWS_USER_END = re.compile(rb"[\\\x00]")
 
 
+def retained_notice_files(directory, archive_prefix):
+    """Select retained notices under the SDK's declared package directory."""
+    directory = Path(directory)
+    return {
+        f"{archive_prefix}/{path.relative_to(directory).as_posix()}": path
+        for path in artifacts.files(directory)
+        if path.name not in {".DS_Store", "registry-notices.json"}
+    }
+
+
 class _PackageMaterialScan:
     def __init__(self, markers):
         self.markers = markers
