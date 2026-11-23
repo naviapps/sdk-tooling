@@ -77,7 +77,7 @@ class InstalledConsumersTests(unittest.TestCase):
         )
 
     def rust_fixture(self, root, packages, dependency=None):
-        fixture = root / "fixtures/rust-consumer"
+        fixture = root / "fixtures/consumers/rust"
         (fixture / "src").mkdir(parents=True)
         (fixture / "src/main.rs").write_text("fn main() {}\n", encoding="utf-8")
         template = self.manifest(packages)
@@ -256,7 +256,7 @@ class InstalledConsumersTests(unittest.TestCase):
             )
         }
         self.rust_fixture(root, ("configuration-storage",))
-        template = root / "fixtures/rust-consumer/Cargo.toml.in"
+        template = root / "fixtures/consumers/rust/Cargo.toml.in"
         with template.open("a", encoding="utf-8") as content:
             for name, pin in dependencies.items():
                 content.write(f'{name} = {{ git = "{pin["git"]}", rev = "{pin["rev"]}" }}\n')
@@ -556,7 +556,7 @@ class InstalledConsumersTests(unittest.TestCase):
         root = self.repository()
         packages = ("recognition", "rendering")
         self.rust_fixture(root, packages)
-        template = root / "fixtures/rust-consumer/Cargo.toml.in"
+        template = root / "fixtures/consumers/rust/Cargo.toml.in"
         template.write_text(
             template.read_text(encoding="utf-8").replace(
                 f'rendering = {{ git = "{GIT_URL}", rev = "@SDK_REVISION@" }}',
@@ -839,7 +839,7 @@ class InstalledConsumersTests(unittest.TestCase):
         notice = root / "ThirdParty/upstream/NOTICE"
         notice.parent.mkdir(parents=True)
         notice.write_bytes(b"original upstream notice")
-        fixture = root / "fixtures/c-consumer/main.c"
+        fixture = root / "fixtures/consumers/c/main.c"
         fixture.parent.mkdir(parents=True)
         fixture.write_text("installed client", encoding="utf-8")
         self.receipt(root, minimum_macos=minimum_macos)
@@ -895,9 +895,9 @@ class InstalledConsumersTests(unittest.TestCase):
 
     def test_c_uses_the_selected_tracked_source_and_receipt(self):
         root = self.c_sdk(self.repository(), minimum_macos="27.1")
-        fixture = "fixtures/c-consumer/product.c"
+        fixture = "fixtures/consumers/c/product.c"
         receipt = "Artifacts/CFixture.build.json"
-        (root / "fixtures/c-consumer/main.c").rename(root / fixture)
+        (root / "fixtures/consumers/c/main.c").rename(root / fixture)
         (root / "Artifacts/native-build.json").rename(root / receipt)
         self.commit(root)
         report = self.work / "product.json"
@@ -930,7 +930,7 @@ class InstalledConsumersTests(unittest.TestCase):
 
     def test_missing_default_c_fixture_retains_rust_evidence(self):
         root = self.c_sdk(self.repository())
-        (root / "fixtures/c-consumer/main.c").unlink()
+        (root / "fixtures/consumers/c/main.c").unlink()
         self.commit(root)
         report = self.work / "both.json"
         lock = b"# isolated client lock\n"
@@ -1111,7 +1111,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 if action == "generate-lockfile":
                     self.assertEqual(
                         (cwd / "src/main.rs").read_bytes(),
-                        (root / "fixtures/rust-consumer/src/main.rs").read_bytes(),
+                        (root / "fixtures/consumers/rust/src/main.rs").read_bytes(),
                     )
                     (cwd / "Cargo.lock").write_text(
                         f'[[package]]\nname = "{packages[0]}"\nsource = "{identity}"\n'

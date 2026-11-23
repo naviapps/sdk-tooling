@@ -65,7 +65,7 @@ fn isolated_git(program: impl AsRef<OsStr>) -> Command {
 }
 
 fn invoke(label: &str, pins: &[&str], observed: &[u8]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-consumer-identity"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-cargo-consumer-identity"))
         .arg(label)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

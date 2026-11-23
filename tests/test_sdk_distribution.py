@@ -11,7 +11,7 @@ from pathlib import Path
 from textwrap import dedent
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).resolve().parents[1] / "tools/check-sdk-distribution.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "ci/check_distribution.py"
 DISPATCH = runpy.run_path(str(SCRIPT))
 
 
@@ -125,7 +125,7 @@ class DistributionTests(unittest.TestCase):
             temp = root / "scratch files"
             temp.mkdir()
             tooling = root / "shared tools"
-            script = tooling / "tasks/sdk"
+            script = tooling / "ci/run_sdk_tooling.py"
             script.parent.mkdir(parents=True)
             script.write_text(
                 dedent(
@@ -156,7 +156,7 @@ class DistributionTests(unittest.TestCase):
             settings = {
                 "commands": [
                     ["sdk-tooling", "write", *arguments],
-                    ["python", "-B", "{tooling}/tasks/sdk", "verify", *arguments],
+                    ["python", "-B", "{tooling}/ci/run_sdk_tooling.py", "verify", *arguments],
                 ],
                 "archives": [],
             }
@@ -204,6 +204,9 @@ class DistributionTests(unittest.TestCase):
                         loader.touch()
                     else:
                         loader.unlink(missing_ok=True)
+                    launcher = tooling / ("tasks/sdk" if legacy_loader else "ci/run_sdk_tooling.py")
+                    launcher.parent.mkdir(parents=True, exist_ok=True)
+                    launcher.touch()
                     invocations = []
 
                     def run(source, environment, *command):
@@ -223,7 +226,7 @@ class DistributionTests(unittest.TestCase):
                                 sys.executable,
                                 "-I",
                                 "-B",
-                                str(tooling / "tasks/sdk"),
+                                str(launcher),
                                 "swift-consumer",
                                 "--distribution",
                             ),

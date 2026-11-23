@@ -262,7 +262,11 @@ def execute(source, platform, settings, env, temp, tooling):
         env = dict(env, PATH=os.pathsep.join((*tool_dirs, env["PATH"])))
 
     prefix = ()
-    sdk_cli = [sys.executable, "-I", "-B", str(tooling / "tasks/sdk")]
+    launcher = tooling / "ci/run_sdk_tooling.py"
+    if not launcher.is_file():
+        # Published SDK revisions may pin the previous checkout layout.
+        launcher = tooling / "tasks/sdk"
+    sdk_cli = [sys.executable, "-I", "-B", str(launcher)]
     make_env = env
     if platform == "macos" and (source / "mise.toml").is_file():
         run(source, env, "mise", "trust", "mise.toml")

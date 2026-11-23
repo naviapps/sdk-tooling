@@ -9,8 +9,21 @@ from pathlib import Path
 
 from .artifacts import hashes
 from .native_plan import SPECIFICATION
+from .quality import EXCLUDED
 
 _TOOLING_ROOT = Path(__file__).resolve().parents[1]
+_FIXTURE_SOURCE_EXTENSIONS = {
+    ".c",
+    ".cs",
+    ".csproj",
+    ".h",
+    ".in",
+    ".json",
+    ".py",
+    ".rs",
+    ".swift",
+    ".toml",
+}
 _FIXTURE_BOOTSTRAP = """
 from pathlib import Path
 import runpy
@@ -85,8 +98,8 @@ def support_inputs(root=None):
     root = Path(root or Path.cwd()).resolve(strict=True)
     tooling = [
         *(_TOOLING_ROOT / "sdk_tooling").glob("*.py"),
-        _TOOLING_ROOT / "tools/consumer-identity/src/main.rs",
-        _TOOLING_ROOT / "tools/native-dep-info/src/main.rs",
+        _TOOLING_ROOT / "crates/cargo-consumer-identity/src/main.rs",
+        _TOOLING_ROOT / "crates/rustc-dep-info/src/main.rs",
     ]
     inputs = {"@sdk-tooling/" + key: value for key, value in hashes(tooling, _TOOLING_ROOT).items()}
     declarations = [
@@ -94,5 +107,14 @@ def support_inputs(root=None):
         for name in (SPECIFICATION, "mise.toml", "sdk-checks.toml", "sdk-distribution.toml")
         if (root / name).is_file()
     ]
-    fixtures = sorted((root / "fixtures/distribution").glob("*.py"))
-    return inputs | hashes([*declarations, *fixtures], root)
+    distribution_scripts = sorted((root / "distribution").glob("*.py"))
+    fixture_inputs = []
+    for fixture in (root / "fixtures/consumers", root / "fixtures/acceptance"):
+        for directory, subdirectories, filenames in fixture.walk():
+            subdirectories[:] = [name for name in subdirectories if name not in EXCLUDED]
+            fixture_inputs.extend(
+                directory / name
+                for name in filenames
+                if name == "Cargo.lock" or Path(name).suffix in _FIXTURE_SOURCE_EXTENSIONS
+            )
+    return inputs | hashes([*declarations, *distribution_scripts, *fixture_inputs], root)

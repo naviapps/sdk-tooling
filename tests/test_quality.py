@@ -46,13 +46,27 @@ class QualityTests(unittest.TestCase):
     def test_source_directory_names_are_not_case_folded_into_generated_outputs(self):
         sources = [
             "Sources/Build/Policy.swift",
-            "fixtures/macos/Sources/Target/main.swift",
+            "fixtures/acceptance/macos/Sources/Target/main.swift",
             "tools/build",
         ]
         for name in sources:
             self.write(name)
         subprocess.run(["git", "-C", str(self.root), "add", sources[1]], check=True)
         self.assertEqual(quality.source_files(self.root), sources)
+
+    def test_managed_formatting_checks_bindings_and_consumer_projects(self):
+        self.write("bindings/dotnet/src/Binding.cs")
+        self.write("fixtures/consumers/dotnet/Program.cs")
+        self.write("fixtures/acceptance/windows/src/main.rs")
+        with patch.object(quality, "run") as run:
+            quality.check(self.root, languages=["python"], dotnet=True)
+        self.assertEqual(
+            [call.args[1][1:5] for call in run.call_args_list],
+            [
+                ["format", "whitespace", "bindings/dotnet", "--folder"],
+                ["format", "whitespace", "fixtures/consumers/dotnet", "--folder"],
+            ],
+        )
 
     def test_git_selection_keeps_tracked_ignored_files_and_skips_deleted_files(self):
         self.write(".gitignore", "owned.py\n")

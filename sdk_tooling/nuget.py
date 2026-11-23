@@ -1,8 +1,4 @@
-"""Explicit C/.NET build, package inspection and fresh-consumer mechanisms.
-
-Callers supply accepted native assets, SDK fixtures and package policy. Nothing
-here builds Rust, discovers sibling SDKs, publishes packages or manages a host.
-"""
+"""Build, audit, and exercise NuGet packages containing accepted native assets."""
 
 import argparse
 import hashlib
@@ -10,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -18,354 +13,10 @@ import zipfile
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 
-from . import windows
-from .artifacts import build_lock, hashes, write_json
-from .dotnet import subprocess_environment
+from . import artifacts, windows
+from . import dotnet as dotnet_tools
+from .artifacts import build_lock, file_sha256, hashes, stage_file, write_json
 from .workspaces import temporary_workspace
-
-
-def _run(argv, *, cwd, env, runner, **options):
-    return (runner or subprocess.run)(
-        [str(value) for value in argv], cwd=cwd, env=dict(env), check=True, **options
-    )
-
-
-def _properties(properties):
-    return ["-p:" + name + "=" + str(value) for name, value in (properties or {}).items()]
-
-
-def _prepare_managed(
-    dotnet,
-    project,
-    *,
-    env,
-    cwd,
-    properties,
-    nuget_config,
-    sources,
-    runner,
-    configuration="Release",
-    no_restore=False,
-    verify_style=False,
-):
-    restore = nuget_config is not None or bool(sources) or (verify_style and not no_restore)
-    if restore:
-        command = [dotnet, "restore", project]
-        if nuget_config is not None:
-            command += ["--configfile", nuget_config]
-        for source in sources:
-            command += ["--source", source]
-        restore_properties = (
-            {"Configuration": configuration, **(properties or {})} if verify_style else properties
-        )
-        _run([*command, *_properties(restore_properties)], cwd=cwd, env=env, runner=runner)
-    if verify_style:
-        verify_managed(
-            dotnet,
-            project,
-            env=env,
-            cwd=cwd,
-            properties=properties,
-            configuration=configuration,
-            runner=runner,
-        )
-    return ["--no-restore"] if restore or no_restore else []
-
-
-def verify_managed(
-    dotnet, project, *, env, cwd, properties=None, configuration="Release", runner=None
-):
-    """Verify restored source projects and their selected project references.
-
-    Format has no MSBuild property switch. Supply the selected values through its
-    environment and reject projects that override them, rather than checking a
-    different configuration. Query references with MSBuild, not XML path guesses.
-    Neither evaluation nor formatting restores packages or runs the assembly.
-    """
-    selected = {"Configuration": configuration, **(properties or {})}
-    selected = {name: str(value) for name, value in selected.items()}
-    environment = {
-        key: value
-        for key, value in env.items()
-        if key.casefold() not in {name.casefold() for name in selected}
-    }
-    environment.update(selected)
-    environment.update(DOTNET_CLI_UI_LANGUAGE="en", LANG="en_US.UTF-8", LC_ALL="en_US.UTF-8")
-    project = Path(project)
-    if not project.is_absolute():
-        project = Path(cwd) / project
-    pending, checked = [project.resolve()], set()
-    while pending:
-        project = pending.pop(0)
-        if project.is_dir():
-            candidates = list(project.glob("*.csproj"))
-            if len(candidates) != 1:
-                raise ValueError("Select one managed project: " + str(project))
-            project = candidates[0]
-        if project in checked:
-            continue
-        checked.add(project)
-        print("Checking restored managed source: " + str(project), flush=True)
-        evaluation = _run(
-            [
-                dotnet,
-                "msbuild",
-                project,
-                "-nologo",
-                "-getProperty:" + ",".join(selected),
-                "-getItem:ProjectReference",
-            ],
-            cwd=cwd,
-            env=environment,
-            runner=runner,
-            capture_output=True,
-            text=True,
-        )
-        values = json.loads(evaluation.stdout)
-        actual = {name.casefold(): value for name, value in values["Properties"].items()}
-        for name, value in selected.items():
-            if actual.get(name.casefold()) != value:
-                raise ValueError(
-                    f"Managed style verification cannot retain {name}={value} in {project}"
-                )
-        for reference in values["Items"]["ProjectReference"]:
-            for name in (
-                "AdditionalProperties",
-                "GlobalPropertiesToRemove",
-                "SetConfiguration",
-                "SetPlatform",
-                "SetTargetFramework",
-            ):
-                if reference.get(name):
-                    raise ValueError(
-                        f"Managed style verification cannot retain reference {name} in {project}"
-                    )
-            pending.append(Path(reference["FullPath"]).resolve())
-        try:
-            result = _run(
-                [
-                    dotnet,
-                    "format",
-                    "style",
-                    project,
-                    "--no-restore",
-                    "--verify-no-changes",
-                    "--severity",
-                    "info",
-                    "--diagnostics",
-                    "IDE0005",
-                    "IDE0051",
-                    "IDE0052",
-                    "IDE0059",
-                    "IDE0060",
-                    "--verbosity",
-                    "normal",
-                ],
-                cwd=cwd,
-                env=environment,
-                runner=runner,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as error:
-            print(error.stdout or "", end="", flush=True)
-            print(error.stderr or "", file=sys.stderr, end="", flush=True)
-            raise
-        print(result.stdout or "", end="", flush=True)
-        print(result.stderr or "", file=sys.stderr, end="", flush=True)
-        if "Warnings were encountered while loading the workspace" in (
-            (result.stdout or "") + (result.stderr or "")
-        ):
-            raise ValueError("Managed style workspace did not load cleanly: " + str(project))
-
-
-def compile_c(
-    source,
-    *,
-    output,
-    compiler,
-    env,
-    cwd,
-    include_dirs=(),
-    libraries=(),
-    standard="c17",
-    flags=(),
-    style="clang",
-    runner=None,
-):
-    """Compile/link one SDK-owned C caller; execution and fixture arguments stay local."""
-    output = Path(output)
-    if not output.is_absolute():
-        output = (Path(cwd) / output).resolve()
-    if style == "clang":
-        arguments = ["-std=" + standard, "-Wall", "-Wextra", "-Werror", *flags]
-        for directory in include_dirs:
-            arguments += ["-I", directory]
-        arguments += [source, *libraries, "-o", output]
-    elif style == "msvc":
-        arguments = ["/nologo", "/W4", "/WX", "/utf-8", "/std:" + standard, *flags]
-        arguments += ["/I" + str(directory) for directory in include_dirs]
-        arguments += [
-            source,
-            *libraries,
-            "/Fo:" + str(output.with_suffix(".obj")),
-            "/Fe:" + str(output),
-        ]
-    else:
-        raise ValueError("Unknown C compiler style: " + style)
-    if not compiler or isinstance(compiler, (str, bytes)):
-        raise ValueError("Provide the compiler as an executable/argument sequence")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    _run([*compiler, *arguments], cwd=cwd, env=env, runner=runner)
-    return output
-
-
-def run_managed(
-    dotnet,
-    project,
-    *,
-    env,
-    cwd,
-    arguments=(),
-    properties=None,
-    nuget_config=None,
-    sources=(),
-    runtime=None,
-    no_restore=False,
-    configuration="Release",
-    verify_style=False,
-    runner=None,
-):
-    """Run an SDK project, optionally restoring from explicitly selected sources first.
-
-    verify_style checks the restored source graph before execution. Without
-    no_restore it makes the project's normal restore explicit, then disables
-    implicit restore for execution. Other callers retain their restore policy.
-    """
-    properties = dict(properties or {})
-    if runtime is not None:
-        properties["RuntimeIdentifier"] = runtime
-    restore_flags = _prepare_managed(
-        dotnet,
-        project,
-        env=env,
-        cwd=cwd,
-        properties=properties,
-        nuget_config=nuget_config,
-        sources=sources,
-        configuration=configuration,
-        no_restore=no_restore,
-        verify_style=verify_style,
-        runner=runner,
-    )
-    command = [dotnet, "run", "--project", project, "--configuration", configuration]
-    command += [*restore_flags, *_properties(properties)]
-    if arguments:
-        command += ["--", *arguments]
-    return _run(command, cwd=cwd, env=env, runner=runner)
-
-
-def build_managed(
-    dotnet,
-    project,
-    *,
-    env,
-    cwd,
-    properties=None,
-    nuget_config=None,
-    sources=(),
-    configuration="Release",
-    no_restore=False,
-    verify_style=False,
-    runner=None,
-):
-    """Build once so a caller can stage native assets before executing an assembly.
-
-    verify_style shares run_managed's restore and source verification policy.
-    """
-    restore_flags = _prepare_managed(
-        dotnet,
-        project,
-        env=env,
-        cwd=cwd,
-        properties=properties,
-        nuget_config=nuget_config,
-        sources=sources,
-        configuration=configuration,
-        no_restore=no_restore,
-        verify_style=verify_style,
-        runner=runner,
-    )
-    command = [dotnet, "build", project, "--configuration", configuration]
-    return _run(
-        [*command, *restore_flags, *_properties(properties)], cwd=cwd, env=env, runner=runner
-    )
-
-
-def pack_project(
-    dotnet,
-    project,
-    *,
-    output,
-    env,
-    cwd,
-    properties=None,
-    nuget_config=None,
-    sources=(),
-    configuration="Release",
-    no_build=False,
-    no_restore=False,
-    runner=None,
-):
-    """Pack using the project's existing rules and caller-selected MSBuild properties."""
-    output = Path(output)
-    if not output.is_absolute():
-        output = (Path(cwd) / output).resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    restore_flags = _prepare_managed(
-        dotnet,
-        project,
-        env=env,
-        cwd=cwd,
-        properties=properties,
-        nuget_config=nuget_config,
-        sources=sources,
-        no_restore=no_restore or no_build,
-        runner=runner,
-    )
-    command = [dotnet, "pack", project, "--configuration", configuration]
-    if no_build:
-        command += ["--no-build"]
-    command += [*restore_flags, "--output", output, *_properties(properties)]
-    return _run(command, cwd=cwd, env=env, runner=runner)
-
-
-def stage_native(source, destination):
-    """Atomically stage unchanged native bytes without replacing the source artifact."""
-    destination = Path(destination)
-    _stage_native(source, destination)
-    return destination
-
-
-def _file_sha256(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def _stage_native(source, destination):
-    source = Path(source).resolve(strict=True)
-    if destination.is_symlink() or source == destination.resolve():
-        raise ValueError("Native staging requires a separate regular-file destination")
-    before = _file_sha256(source)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=destination.parent, prefix="native-stage-") as directory:
-        staged = Path(directory) / destination.name
-        shutil.copyfile(source, staged)
-        if _file_sha256(staged) != before or _file_sha256(source) != before:
-            raise ValueError("Native staging changed the accepted artifact bytes")
-        os.replace(staged, destination)
-    return before
-
 
 _PACKAGE_CHUNK_BYTES = 256 * 1024
 _WINDOWS_PREFIX_OVERLAP = len(b"a:\\users\\") - 1
@@ -477,7 +128,7 @@ def audit_package(
     XML as before. Return the package's SHA-256; errors never include member data.
     """
     package = Path(package)
-    before = _file_sha256(package)
+    before = file_sha256(package)
     forbidden_tags = {name.casefold() for name in forbidden_nuspec_elements}
     markers = tuple(marker.lower() for marker in forbidden_markers)
     expected_sha256 = expected_sha256 or {}
@@ -540,7 +191,7 @@ def audit_package(
         for member in selected_sources.keys() | expected_sha256.keys():
             if member not in files:
                 raise ValueError("Packaged bytes differ from the accepted input: " + member)
-    if _file_sha256(package) != before:
+    if file_sha256(package) != before:
         raise ValueError("Package changed during inspection")
     return before
 
@@ -552,7 +203,7 @@ def _publish_package(archive, destination, receipt):
     record = destination.with_name(destination.name + ".json")
     staged_record = archive.with_name(archive.name + ".json")
     write_json(staged_record, receipt)
-    if _file_sha256(archive) != receipt["sha256"]:
+    if file_sha256(archive) != receipt["sha256"]:
         raise ValueError("Package changed after inspection; no package was replaced.")
     selected = ((archive, destination), (staged_record, record))
     previous = {}
@@ -569,7 +220,7 @@ def _publish_package(archive, destination, receipt):
                 os.replace(target, recovery / target.name)
         for staged, target in selected:
             os.replace(staged, target)
-        if _file_sha256(destination) != receipt["sha256"]:
+        if file_sha256(destination) != receipt["sha256"]:
             raise ValueError("Package changed during publication")
     except BaseException:
         try:
@@ -678,7 +329,7 @@ def pack_native(
     args = parser.parse_args(argv)
     runtimes = sorted(set(args.runtime))
     root, project = native.root, Path(project)
-    env = subprocess_environment(environment)
+    env = dotnet_tools.subprocess_environment(environment)
     dotnet = env.get("DOTNET_BIN") or shutil.which("dotnet", path=env.get("PATH"))
     if not dotnet:
         raise ValueError("Install .NET 10 or provide DOTNET_BIN.")
@@ -728,11 +379,14 @@ def pack_native(
         return hashes(paths, root)
 
     output = root / ".native-build/packages"
+    tool_sources = [
+        Path(module) for module in (__file__, artifacts.__file__, dotnet_tools.__file__)
+    ]
     with build_lock(output):
         inputs, managed_inputs = native.build_sources(), managed_sources()
-        tool_inputs = hashes([Path(__file__)], Path(__file__).parent)
+        tool_inputs = hashes(tool_sources, Path(__file__).parent)
         libraries, receipt_paths, receipt_hashes = _verified_package_libraries(native, runtimes)
-        build_managed(
+        dotnet_tools.build_managed(
             dotnet,
             project,
             env=env,
@@ -770,7 +424,7 @@ def pack_native(
                 key = source, PurePosixPath(target).name
                 if key not in staged_sources:
                     staged = stage / "payload" / target
-                    staged_sources[key] = staged, _stage_native(source, staged)
+                    staged_sources[key] = staged, stage_file(source, staged)
                 staged, digest = staged_sources[key]
                 if native_digest is not None and digest != native_digest:
                     raise ValueError("Native library differs from its verified receipt")
@@ -791,7 +445,7 @@ def pack_native(
                 runtime_files[member] = library
             nuspec = stage / "package.nuspec"
             ET.ElementTree(package).write(nuspec, encoding="utf-8", xml_declaration=True)
-            pack_project(
+            dotnet_tools.pack_project(
                 dotnet,
                 project,
                 output=stage,
@@ -811,8 +465,7 @@ def pack_native(
                 runtime_files=runtime_files,
             )
             if any(
-                _file_sha256(source) != digest
-                for (source, _), (_, digest) in staged_sources.items()
+                file_sha256(source) != digest for (source, _), (_, digest) in staged_sources.items()
             ):
                 raise ValueError(
                     "Accepted package inputs changed while packing; no package was replaced."
@@ -825,7 +478,7 @@ def pack_native(
             if (
                 inputs != native.build_sources()
                 or managed_inputs != managed_sources()
-                or tool_inputs != hashes([Path(__file__)], Path(__file__).parent)
+                or tool_inputs != hashes(tool_sources, Path(__file__).parent)
             ):
                 raise ValueError(
                     "Native, managed or packaging inputs changed while packing; no package was replaced."
@@ -882,7 +535,7 @@ def _verify_restored_packages(work, feed, cache, checksums):
         if (
             archive.resolve() != archive
             or not archive.is_file()
-            or _file_sha256(archive) not in checksums
+            or file_sha256(archive) not in checksums
         ):
             name = archive.relative_to(cache).as_posix()
             raise ValueError("Restored package differs from the supplied local packages: " + name)
@@ -940,10 +593,10 @@ def run_isolated_consumer(
         feed = work / "feed"
         cache = work / "packages"
         feed.mkdir()
-        package_hashes = {package: _file_sha256(package) for package in packages}
+        package_hashes = {package: file_sha256(package) for package in packages}
         for package in packages:
             shutil.copyfile(package, feed / package.name)
-            if _file_sha256(feed / package.name) != package_hashes[package]:
+            if file_sha256(feed / package.name) != package_hashes[package]:
                 raise ValueError("Local feed copy differs from its package: " + package.name)
         config = ET.Element("configuration")
         sources = ET.SubElement(config, "packageSources")
@@ -1000,7 +653,7 @@ def run_isolated_consumer(
                     for part in clean[key].split(os.pathsep)
                     if not any(Path(part).resolve().is_relative_to(root) for root in roots)
                 )
-        _run(
+        dotnet_tools.run_command(
             [dotnet, "restore", project_path, "--configfile", config_path],
             cwd=work,
             env=clean,
@@ -1008,17 +661,17 @@ def run_isolated_consumer(
         )
         _verify_restored_packages(work, feed, cache, set(package_hashes.values()))
         if execute:
-            result = run_managed(
+            result = dotnet_tools.run_managed(
                 dotnet, project_path, env=clean, cwd=work, no_restore=True, runner=runner
             )
         else:
-            result = _run(
+            result = dotnet_tools.run_command(
                 [dotnet, "build", project_path, "--no-restore", "--configuration", "Release"],
                 cwd=work,
                 env=clean,
                 runner=runner,
             )
         for package, checksum in package_hashes.items():
-            if _file_sha256(package) != checksum or _file_sha256(feed / package.name) != checksum:
+            if file_sha256(package) != checksum or file_sha256(feed / package.name) != checksum:
                 raise ValueError("Package changed during consumer validation: " + package.name)
         return result

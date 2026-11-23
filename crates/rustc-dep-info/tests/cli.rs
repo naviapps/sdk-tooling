@@ -54,7 +54,7 @@ impl Rules {
     }
 
     fn read(&self, files: &[&Path]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_sdk-native-dep-info"))
+        Command::new(env!("CARGO_BIN_EXE_sdk-rustc-dep-info"))
             .current_dir(&self.0)
             .arg("--files")
             .args(files)

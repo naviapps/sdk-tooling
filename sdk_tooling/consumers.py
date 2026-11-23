@@ -11,7 +11,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PureWindowsPath
 
-from . import bindings, windows
+from . import artifacts, c_compiler, nuget, windows
+from . import dotnet as dotnet_tools
 from .dotnet import subprocess_environment
 from .workspaces import temporary_workspace
 
@@ -305,13 +306,13 @@ def check_c(*, source, include_dirs, library, work_parent, argv=None):
             import_library = library.with_suffix(".dll.lib")
             if not import_library.is_file():
                 raise ValueError("The accepted DLL's MSVC import library is required")
-            staged = bindings.stage_native(library, work / library.name)
+            staged = artifacts.stage_native(library, work / library.name)
             windows.require_pe_machine(staged, architecture)
             env, tools = windows.native_msvc_environment(
                 host, target_architecture=args.windows_architecture
             )
             executable = work / "abi.exe"
-            bindings.compile_c(
+            c_compiler.compile_c(
                 source,
                 output=executable,
                 compiler=(tools / "cl.exe",),
@@ -331,7 +332,7 @@ def check_c(*, source, include_dirs, library, work_parent, argv=None):
             )
             rpath = framework.parent if framework else library.parent
             executable = work / "abi"
-            bindings.compile_c(
+            c_compiler.compile_c(
                 source,
                 output=executable,
                 compiler=("xcrun", "clang"),
@@ -379,12 +380,12 @@ def check_dotnet(
             )
         if args.windows_architecture is not None:
             # Freeze the exact DLL before restoring packages or compiling the fixture.
-            library = bindings.stage_native(library, work / "native" / library.name)
+            library = artifacts.stage_native(library, work / "native" / library.name)
             windows.require_pe_machine(library, architecture)
             rid = f"win-{architecture}"
             properties.update(RuntimeIdentifier=rid, UseAppHost="false")
             output /= rid
-        bindings.build_managed(
+        dotnet_tools.build_managed(
             dotnet,
             project,
             env=env,
@@ -395,14 +396,14 @@ def check_dotnet(
             verify_style=True,
         )
         if architecture is None:
-            bindings.stage_native(framework, work / ("lib" + library_name + ".dylib"))
+            artifacts.stage_native(framework, work / ("lib" + library_name + ".dylib"))
             env["DYLD_LIBRARY_PATH"] = str(work)
         else:
             # Windows resolves the native dependency beside the managed assembly.
             # Stage both in a disposable copy so acceptance cannot alter build outputs.
             runtime = work / "app"
             shutil.copytree(output, runtime)
-            bindings.stage_native(library, runtime / library.name)
+            artifacts.stage_native(library, runtime / library.name)
             output = runtime
         subprocess.run(
             [dotnet, str(output / (project.stem + ".dll"))], cwd=cwd, env=env, check=True
@@ -444,7 +445,7 @@ def check_nuget(*, package_id, fixture, work_parent, argv=None):
         Path(fixture).read_text()
         + '\nConsole.WriteLine("Fresh NuGet consumer loaded the packaged native SDK and dependencies.");\n'
     )
-    bindings.run_isolated_consumer(
+    nuget.run_isolated_consumer(
         dotnet,
         packages=[package, *args.dependency],
         references={package_id: values["version"]},

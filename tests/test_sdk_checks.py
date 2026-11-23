@@ -30,7 +30,9 @@ class SDKChecksTests(unittest.TestCase):
 
     def test_detailed_swift_consumer_uses_owned_fixture_and_inputs(self):
         self.write("Package.swift", "// SDK manifest")
-        fixture = self.write("fixtures/swift-consumer/Package.swift", "// consumer manifest").parent
+        fixture = self.write(
+            "fixtures/consumers/swift/Package.swift", "// consumer manifest"
+        ).parent
         self.write(
             "sdk-checks.toml",
             """

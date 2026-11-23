@@ -68,7 +68,7 @@ jobs:
           architecture: ${{ matrix.architecture }}
       - name: Validate the requested source identity
         id: source
-        run: python -I -B dispatcher/tools/check-sdk-distribution.py identity "$SDK_NAME" "$SDK_REVISION"
+        run: python -I -B dispatcher/ci/check_distribution.py identity "$SDK_NAME" "$SDK_REVISION"
       - name: Check out the candidate SDK
         uses: actions/checkout@v6.1.0
         with:
@@ -80,7 +80,7 @@ jobs:
       - name: Validate the SDK revision and read its distribution plan
         id: plan
         working-directory: sdk
-        run: python -I -B ../dispatcher/tools/check-sdk-distribution.py pin "$SDK_NAME" "$SDK_REVISION" --platform "$SDK_PLATFORM"
+        run: python -I -B ../dispatcher/ci/check_distribution.py pin "$SDK_NAME" "$SDK_REVISION" --platform "$SDK_PLATFORM"
       - name: Check out the SDK's pinned tooling
         if: steps.plan.outputs.enabled == 'true'
         uses: actions/checkout@v6.1.0
@@ -108,4 +108,4 @@ jobs:
       - name: Run SDK distribution checks
         if: steps.plan.outputs.enabled == 'true'
         working-directory: sdk
-        run: python -I -B ../dispatcher/tools/check-sdk-distribution.py "$SDK_PLATFORM" "$SDK_NAME" "$SDK_REVISION" --tooling ../sdk-tooling
+        run: python -I -B ../dispatcher/ci/check_distribution.py "$SDK_PLATFORM" "$SDK_NAME" "$SDK_REVISION" --tooling ../sdk-tooling

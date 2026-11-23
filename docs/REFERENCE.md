@@ -276,8 +276,8 @@ and artifacts.
 
 ### NuGet package publication
 
-`bindings.pack_native` also owns the shared receipt-checked NuGet packing command;
-SDK entry points select the project, version, authors and exact notice/file set.
+`nuget.pack_native` builds receipt-checked NuGet packages. SDK entry points
+select the project, version, authors and exact notice/file set.
 It preserves private feed selection and rejects input changes before publication.
 The native producer lock covers receipt capture and verification. Staging uses
 the library digest from that receipt, and the package audit checks each selected
@@ -292,8 +292,9 @@ See [consumer verification](#consumer-verification) for independent package and 
 
 ### Managed and C binding fixtures
 
-`bindings` provides explicit C invocation, managed run/pack, native staging,
-package byte/content audits and isolated package-consumer execution. SDKs supply
+`c_compiler` invokes Clang or MSVC for C callers. `dotnet` runs, builds and
+packs managed projects. `artifacts.stage_native` stages verified native bytes.
+`nuget` audits packages and runs isolated NuGet package consumers. SDKs supply
 their fixture sources, selected runtime members, native overrides, dependency
 feeds and test arguments. Clean NuGet consumers ignore parent-directory MSBuild
 and central package settings, and discard inherited restore sources and caches.
@@ -333,7 +334,7 @@ See [NuGet packing and recovery](#nuget-package-publication).
 
 Run `mise run sdk-tooling -- swift-consumer` from the SDK checkout. The `[swift]`
 section in `sdk-checks.toml` declares `inputs`, `executable` or `executables`, and
-an optional `fixture` path that defaults to `fixtures/swift-consumer`. Include
+an optional `fixture` path that defaults to `fixtures/consumers/swift`. Include
 every required target path, native artifact, resource and retained notice in
 `inputs`. The fixture's `Package.swift` selects products from the staged SDK at
 `../sdk`. The fixture owns its platform requirements and API assertions.
@@ -364,8 +365,8 @@ for dependency URL rewrites. Both checks remove their temporary state when done.
 
 `installed_consumers.check_installed` runs independent Git Rust and copied-framework
 C fixtures. SDKs select their canonical repository, public Rust packages, framework
-and header. The Rust fixture owns `fixtures/rust-consumer/Cargo.toml.in` and `src/`;
-the C fixture owns `fixtures/c-consumer/main.c`. Both receive an absolute empty
+and header. The Rust fixture owns `fixtures/consumers/rust/Cargo.toml.in` and `src/`.
+The C fixture owns `fixtures/consumers/c/main.c`. Both receive an absolute empty
 directory for runtime data unless the C caller supplies fixture-specific arguments.
 Their code owns the public API assertions.
 
@@ -441,7 +442,7 @@ stay intact through compilation and execution. The gate uses the copied binary.
 SDKs with distinct framework receipts can select one tracked C source with
 `c_fixture` and one tracked JSON receipt under `Artifacts` with `c_receipt`.
 These are SDK-relative paths and must resolve inside their declared roots.
-Defaults remain `fixtures/c-consumer/main.c` and `Artifacts/native-build.json`.
+The defaults are `fixtures/consumers/c/main.c` and `Artifacts/native-build.json`.
 
 #### Retained evidence
 

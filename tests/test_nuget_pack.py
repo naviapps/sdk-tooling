@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from sdk_tooling import bindings
+from sdk_tooling import dotnet, nuget
 from sdk_tooling.artifacts import build_lock
 
 
@@ -64,8 +64,8 @@ class NativePackageTests(unittest.TestCase):
             str(self.output.relative_to(self.root)) + ".json", b"previous receipt"
         )
         self.mutate = lambda: None
-        self.build = patch.object(bindings, "build_managed", side_effect=self.build_managed).start()
-        self.pack = patch.object(bindings, "pack_project", side_effect=self.pack_project).start()
+        self.build = patch.object(dotnet, "build_managed", side_effect=self.build_managed).start()
+        self.pack = patch.object(dotnet, "pack_project", side_effect=self.pack_project).start()
         self.addCleanup(patch.stopall)
 
     def file(self, relative, data=b"owned bytes"):
@@ -100,7 +100,7 @@ class NativePackageTests(unittest.TestCase):
         )
         arguments.update(options)
         with contextlib.redirect_stdout(io.StringIO()):
-            return bindings.pack_native(self.native, **arguments)
+            return nuget.pack_native(self.native, **arguments)
 
     def assert_previous(self):
         self.assertEqual(self.output.read_bytes(), b"previous accepted package")
@@ -151,7 +151,9 @@ class NativePackageTests(unittest.TestCase):
             )
         digest = hashlib.sha256(self.native.receipt.read_bytes()).hexdigest()
         self.assertEqual(receipt["nativeReceipts"], {"osx-arm64": digest, "osx-x64": digest})
-        self.assertTrue(receipt["packagingToolInputs"])
+        self.assertEqual(
+            set(receipt["packagingToolInputs"]), {"artifacts.py", "dotnet.py", "nuget.py"}
+        )
 
     def test_windows_runtime_uses_accepted_dll_and_its_own_receipt(self):
         dll, receipt, accepted = self.windows_runtime("win-arm64", b"opaque DLL fixture")
@@ -255,7 +257,7 @@ class NativePackageTests(unittest.TestCase):
         self.assertEqual(self.previous_record.read_bytes(), record)
 
     def test_package_binds_runtime_bytes_even_if_the_live_library_matches_the_replacement(self):
-        audit = bindings.audit_package
+        audit = nuget.audit_package
         accepted = self.library.read_bytes()
         replacement = b"newer bytes"
 
@@ -278,7 +280,7 @@ class NativePackageTests(unittest.TestCase):
 
         self.pack.side_effect = replace_staged_library
         with (
-            patch.object(bindings, "audit_package", side_effect=restore_after_audit),
+            patch.object(nuget, "audit_package", side_effect=restore_after_audit),
             self.assertRaisesRegex(ValueError, "Packaged bytes differ from the accepted input"),
         ):
             self.invoke()
@@ -296,7 +298,7 @@ class NativePackageTests(unittest.TestCase):
 
     def test_oversized_native_receipt_is_rejected_before_verification(self):
         with (
-            patch.object(bindings, "_MAX_NATIVE_RECEIPT_BYTES", len(self.mac_record) - 1),
+            patch.object(nuget, "_MAX_NATIVE_RECEIPT_BYTES", len(self.mac_record) - 1),
             self.assertRaisesRegex(ValueError, "Native receipt exceeds the size limit"),
         ):
             self.invoke()
@@ -383,7 +385,7 @@ class NativePackageTests(unittest.TestCase):
 
     def test_receipt_preparation_failure_preserves_the_accepted_pair(self):
         with (
-            patch.object(bindings, "write_json", side_effect=OSError("fixture write failed")),
+            patch.object(nuget, "write_json", side_effect=OSError("fixture write failed")),
             self.assertRaisesRegex(OSError, "fixture write failed"),
         ):
             self.invoke()
@@ -401,7 +403,7 @@ class NativePackageTests(unittest.TestCase):
             return replace(source, target)
 
         with (
-            patch.object(bindings.os, "replace", side_effect=fail_receipt_once),
+            patch.object(os, "replace", side_effect=fail_receipt_once),
             self.assertRaisesRegex(PermissionError, "fixture receipt replacement failed"),
         ):
             self.invoke()
@@ -419,7 +421,7 @@ class NativePackageTests(unittest.TestCase):
                 raise KeyboardInterrupt()
 
         with (
-            patch.object(bindings.os, "replace", side_effect=interrupt_receipt_once),
+            patch.object(os, "replace", side_effect=interrupt_receipt_once),
             self.assertRaises(KeyboardInterrupt),
         ):
             self.invoke()
@@ -436,7 +438,7 @@ class NativePackageTests(unittest.TestCase):
             return replace(source, target)
 
         with (
-            patch.object(bindings.os, "replace", side_effect=fail_receipt),
+            patch.object(os, "replace", side_effect=fail_receipt),
             self.assertRaises(PermissionError),
         ):
             self.invoke()
@@ -456,7 +458,7 @@ class NativePackageTests(unittest.TestCase):
             return replace(source, target)
 
         with (
-            patch.object(bindings.os, "replace", side_effect=fail_publication_and_rollback),
+            patch.object(os, "replace", side_effect=fail_publication_and_rollback),
             self.assertRaisesRegex(PermissionError, "fixture rollback blocked") as raised,
         ):
             self.invoke()
@@ -467,7 +469,7 @@ class NativePackageTests(unittest.TestCase):
         self.assertEqual(list(self.output.parent.glob("pack-*")), [])
 
     def test_package_changed_after_inspection_is_not_published(self):
-        audit = bindings.audit_package
+        audit = nuget.audit_package
 
         def audit_then_change(package, **options):
             digest = audit(package, **options)
@@ -476,7 +478,7 @@ class NativePackageTests(unittest.TestCase):
             return digest
 
         with (
-            patch.object(bindings, "audit_package", side_effect=audit_then_change),
+            patch.object(nuget, "audit_package", side_effect=audit_then_change),
             self.assertRaisesRegex(ValueError, "changed after inspection"),
         ):
             self.invoke()

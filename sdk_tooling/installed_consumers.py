@@ -20,7 +20,7 @@ from .artifacts import files, hashes
 _REPOSITORY_URL = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\.git")
 _REVISION = re.compile(r"[a-f0-9]{40}")
 _PUBLIC_REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
-_C_FIXTURE = "fixtures/c-consumer/main.c"
+_C_FIXTURE = "fixtures/consumers/c/main.c"
 _C_RECEIPT = "Artifacts/native-build.json"
 _C_DEPENDENCY_TARGET = "sdk-consumer"
 
@@ -313,20 +313,22 @@ def _prepare_identity_verifier(work, rustc, env, target=None, *, compiler_verifi
         version = _run([rustc, "-vV"], cwd=work, env=env).stdout.splitlines()
         if f"release: {env['RUSTUP_TOOLCHAIN']}" not in version:
             raise ValueError("The prepared Rust compiler differs from the SDK pin")
-    source = Path(__file__).resolve().parents[1] / "tools/consumer-identity/src/main.rs"
+    source = Path(__file__).resolve().parents[1] / "crates/cargo-consumer-identity/src/main.rs"
     if not source.is_file() or source.is_symlink():
         raise ValueError("Missing ordinary installed-consumer verifier source")
     material = source.read_bytes()
-    snapshot = work / "consumer-identity.rs"
+    snapshot = work / "cargo-consumer-identity.rs"
     with snapshot.open("xb") as stream:
         stream.write(material)
-    executable = work / ("consumer-identity.exe" if os.name == "nt" else "consumer-identity")
+    executable = work / (
+        "cargo-consumer-identity.exe" if os.name == "nt" else "cargo-consumer-identity"
+    )
     _run(
         [
             rustc,
             "--edition=2024",
             "--crate-name",
-            "sdk_consumer_identity",
+            "sdk_cargo_consumer_identity",
             *(["--target", target, "-Ctarget-feature=+crt-static"] if target else []),
             "-o",
             str(executable),
@@ -573,7 +575,7 @@ def _run_rust(
                 raise ValueError(
                     "The CI source bundle HEAD differs from its advertised SDK Git pin"
                 )
-    fixture = root / "fixtures/rust-consumer"
+    fixture = root / "fixtures/consumers/rust"
     client = work / "client"
     client.mkdir()
     shutil.copytree(fixture / "src", client / "src")

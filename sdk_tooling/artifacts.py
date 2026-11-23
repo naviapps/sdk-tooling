@@ -10,7 +10,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-DEP_INFO_PARSER = Path("tools/native-dep-info/src/main.rs")
+DEP_INFO_PARSER = Path("crates/rustc-dep-info/src/main.rs")
 
 
 @contextmanager
@@ -65,6 +65,34 @@ def hashes(paths, root):
         data = ("symlink:" + os.readlink(path)).encode() if path.is_symlink() else path.read_bytes()
         result[relative] = hashlib.sha256(data).hexdigest()
     return result
+
+
+def file_sha256(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def stage_file(source, destination):
+    """Atomically stage unchanged bytes and return the accepted content digest."""
+    source = Path(source).resolve(strict=True)
+    if destination.is_symlink() or source == destination.resolve():
+        raise ValueError("Native staging requires a separate regular-file destination")
+    before = file_sha256(source)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix="native-stage-") as directory:
+        staged = Path(directory) / destination.name
+        shutil.copyfile(source, staged)
+        if file_sha256(staged) != before or file_sha256(source) != before:
+            raise ValueError("Native staging changed the accepted artifact bytes")
+        os.replace(staged, destination)
+    return before
+
+
+def stage_native(source, destination):
+    """Stage an accepted native library and return the path for its consumer."""
+    destination = Path(destination)
+    stage_file(source, destination)
+    return destination
 
 
 def files(root):
@@ -141,11 +169,11 @@ def dep_info_sources(paths, *, expected_sha256, cwd, env):
     if hashlib.sha256(source).hexdigest() != expected_sha256:
         raise ValueError("The Rust dependency parser differs from its build input")
     with tempfile.TemporaryDirectory(prefix="sdk-dep-info-") as temporary:
-        checker = Path(temporary) / "sdk-dep-info"
+        checker = Path(temporary) / "sdk-rustc-dep-info"
         compiler = [
             "rustc",
             "--edition=2024",
-            "--crate-name=sdk_native_dep_info",
+            "--crate-name=sdk_rustc_dep_info",
             "-o",
             checker,
             "-",

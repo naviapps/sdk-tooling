@@ -80,7 +80,7 @@ fn cli_accepts_relative_checkout_paths_with_spaces_and_leading_hyphens() {
         let checkout = working_directory.path().join(name);
         assert_eq!(
             fs::read(checkout.join(".swift-format")).unwrap(),
-            include_bytes!("../../../templates/.swift-format")
+            include_bytes!("../templates/.swift-format")
         );
         assert!(!checkout.join("tools").exists());
     }
@@ -99,7 +99,7 @@ fn check_reports_adopted_policy_drift_without_writing() {
     succeeds(sync(&[path], &["--quality", "--revision", REVISION]));
     assert_eq!(
         fs::read(&ruff).unwrap(),
-        include_bytes!("../../../templates/ruff.toml")
+        include_bytes!("../templates/ruff.toml")
     );
     assert!(!path.join(".clang-format").exists());
     assert!(!path.join("rust-toolchain.toml").exists());
@@ -242,7 +242,7 @@ fn adopted_editorconfig_keeps_local_sections_and_swift_format_is_opt_in() {
     succeeds(sync(&[path], &["--swift-format", "--revision", REVISION]));
     assert_eq!(
         fs::read(&swift_format).unwrap(),
-        include_bytes!("../../../templates/.swift-format")
+        include_bytes!("../templates/.swift-format")
     );
     succeeds(sync(&[path], &["--check", "--swift-format"]));
 }

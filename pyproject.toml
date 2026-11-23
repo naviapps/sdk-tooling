@@ -19,14 +19,14 @@ include = [
   "/LICENSE",
   "/README.md",
   "/sdk_tooling",
-  "/tasks/sdk",
-  "/tools/consumer-identity/src/main.rs",
-  "/tools/native-dep-info/src/main.rs",
+  "/ci/run_sdk_tooling.py",
+  "/crates/cargo-consumer-identity/src/main.rs",
+  "/crates/rustc-dep-info/src/main.rs",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["sdk_tooling"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"tools/consumer-identity/src/main.rs" = "tools/consumer-identity/src/main.rs"
-"tools/native-dep-info/src/main.rs" = "tools/native-dep-info/src/main.rs"
+"crates/cargo-consumer-identity/src/main.rs" = "crates/cargo-consumer-identity/src/main.rs"
+"crates/rustc-dep-info/src/main.rs" = "crates/rustc-dep-info/src/main.rs"

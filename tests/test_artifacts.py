@@ -1,11 +1,13 @@
 import errno
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from sdk_tooling import artifacts
 from sdk_tooling.artifacts import build_lock, dep_info_sources, hashes, publish, write_json
 
 
@@ -14,6 +16,97 @@ class ArtifactTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+
+    def file(self, relative, content=b"owned bytes"):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return path
+
+    def symlink(self, link, target):
+        try:
+            link.symlink_to(Path(target))
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                self.skipTest(
+                    "Windows denied symlink creation (WinError 1314); no privilege changes attempted"
+                )
+            raise
+
+    def test_symlink_fixture_skips_only_windows_privilege_denial(self):
+        error = OSError("symlink privilege unavailable")
+        error.winerror = 1314
+        with (
+            patch.object(Path, "symlink_to", side_effect=error),
+            self.assertRaises(unittest.SkipTest),
+        ):
+            self.symlink(self.root / "link", "owned-target")
+
+    def test_symlink_fixture_does_not_hide_other_setup_errors(self):
+        for winerror in (None, 5):
+            error = PermissionError("unrelated setup error")
+            if winerror is not None:
+                error.winerror = winerror
+            with (
+                self.subTest(winerror=winerror),
+                patch.object(Path, "symlink_to", side_effect=error),
+            ):
+                with self.assertRaises(PermissionError) as raised:
+                    self.symlink(self.root / "link", "owned-target")
+                self.assertIs(raised.exception, error)
+
+    def test_native_staging_reads_framework_symlink_without_modifying_source(self):
+        native = self.file("Native.framework/Versions/A/Native", b"accepted native")
+        link = self.root / "Native.framework/Native"
+        self.symlink(link, "Versions/A/Native")
+        before = native.read_bytes()
+        destination = self.root / "runtime/native.dll"
+        self.assertEqual(artifacts.stage_native(link, destination), destination)
+        self.assertEqual(destination.read_bytes(), before)
+        self.assertEqual(native.read_bytes(), before)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(list(destination.parent.iterdir()), [destination])
+
+    def test_native_staging_rejects_same_file_and_destination_symlink(self):
+        native = self.file("native.dll")
+        link = self.root / "link.dll"
+        self.symlink(link, native)
+        for destination in (native, link):
+            with self.subTest(destination=destination), self.assertRaises(ValueError):
+                artifacts.stage_native(native, destination)
+        self.assertEqual(native.read_bytes(), b"owned bytes")
+
+    def test_bad_native_copy_preserves_previous_staging_and_cleans_temporary(self):
+        native = self.file("accepted.dll", b"new accepted")
+        destination = self.file("runtime/native.dll", b"previous accepted")
+
+        def corrupt(source, target):
+            Path(target).write_bytes(b"bad copy")
+
+        with (
+            patch.object(artifacts.shutil, "copyfile", side_effect=corrupt),
+            self.assertRaises(ValueError),
+        ):
+            artifacts.stage_native(native, destination)
+        self.assertEqual(destination.read_bytes(), b"previous accepted")
+        self.assertEqual(native.read_bytes(), b"new accepted")
+        self.assertEqual(list(destination.parent.iterdir()), [destination])
+
+    def test_native_source_change_during_staging_is_rejected(self):
+        native = self.file("accepted.dll", b"before")
+        destination = self.root / "runtime/native.dll"
+        copy = shutil.copyfile
+
+        def changed(source, target):
+            copy(source, target)
+            native.write_bytes(b"changed during copy")
+
+        with (
+            patch.object(artifacts.shutil, "copyfile", side_effect=changed),
+            self.assertRaises(ValueError),
+        ):
+            artifacts.stage_native(native, destination)
+        self.assertFalse(destination.exists())
 
     def test_failed_verification_restores_every_previous_artifact(self):
         stage = self.root / "stage"

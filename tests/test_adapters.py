@@ -12,16 +12,16 @@ class AdapterTests(unittest.TestCase):
     def test_script_and_module_use_the_selected_tooling_with_isolated_python(self):
         with tempfile.TemporaryDirectory(prefix="SDK fixture ") as directory:
             root = Path(directory).resolve()
-            fixtures = root / "fixtures"
-            fixtures.mkdir()
-            script = fixtures / "probe.py"
+            distribution = root / "distribution"
+            distribution.mkdir()
+            script = distribution / "probe.py"
             script.write_text(
                 "import json, sys\nfrom sdk_tooling import adapters\n"
                 "print(json.dumps([adapters.__file__, sys.argv[1:]]))\n",
                 encoding="utf-8",
             )
             expected = [str(Path(adapters.__file__).resolve()), ["one value"]]
-            for target in (("fixtures/probe.py",), ("-m", "fixtures.probe")):
+            for target in (("distribution/probe.py",), ("-m", "distribution.probe")):
                 with self.subTest(target=target):
                     result = subprocess.check_output(
                         adapters.python_command(root, *target, "one value"),
@@ -30,7 +30,37 @@ class AdapterTests(unittest.TestCase):
                         text=True,
                     )
                     self.assertEqual(json.loads(result), expected)
-            self.assertFalse(list(fixtures.glob("__pycache__")))
+            self.assertFalse(list(distribution.glob("__pycache__")))
+
+    def test_distribution_support_records_fixture_sources_without_build_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = [
+                "distribution/verify_windows.py",
+                "fixtures/consumers/dotnet/Program.cs",
+                "fixtures/consumers/rust/Cargo.toml.in",
+                "fixtures/consumers/swift/Package.swift",
+                "fixtures/consumers/c/main.c",
+                "fixtures/acceptance/macos/acceptance.py",
+                "fixtures/acceptance/windows/Cargo.lock",
+                "fixtures/acceptance/windows/src/main.rs",
+            ]
+            for name in [
+                *sources,
+                "distribution/tests/test_distribution.py",
+                "fixtures/consumers/dotnet/obj/Generated.cs",
+                "fixtures/consumers/swift/.build/workspace-state.json",
+                "fixtures/acceptance/windows/target/debug/build.rs",
+            ]:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"initial")
+
+            evidence = adapters.support_inputs(root)
+            self.assertEqual({name for name in evidence if not name.startswith("@")}, set(sources))
+            fixture = "fixtures/consumers/dotnet/Program.cs"
+            (root / fixture).write_bytes(b"modified")
+            self.assertNotEqual(adapters.support_inputs(root)[fixture], evidence[fixture])
 
     def test_python_fixtures_cannot_escape_the_selected_checkout(self):
         with tempfile.TemporaryDirectory() as directory:

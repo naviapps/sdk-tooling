@@ -264,9 +264,13 @@ def check(root, *, write=False, languages=None, dotnet=False):
                 )
         if not write:
             run(root, [tool(root, "cargo-machete", "github:bnjbvr/cargo-machete"), root])
-    if dotnet and (root / "bindings/dotnet").is_dir():
-        for directory in ["bindings/dotnet", "fixtures/windows"]:
-            if (root / directory).is_dir():
+    if dotnet:
+        for directory in [
+            "bindings/dotnet",
+            "fixtures/consumers/dotnet",
+            "fixtures/acceptance/windows",
+        ]:
+            if any(name.startswith(directory + "/") and name.endswith(".cs") for name in files):
                 run(
                     root,
                     [

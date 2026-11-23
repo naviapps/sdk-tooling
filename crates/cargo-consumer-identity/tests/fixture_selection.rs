@@ -4,7 +4,7 @@ use std::{
 };
 
 fn request(operation: &str, input: &[u8]) -> Output {
-    let mut process = Command::new(env!("CARGO_BIN_EXE_sdk-consumer-identity"))
+    let mut process = Command::new(env!("CARGO_BIN_EXE_sdk-cargo-consumer-identity"))
         .arg(operation)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

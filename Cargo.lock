@@ -125,11 +125,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "sdk-consumer-identity"
+name = "sdk-cargo-consumer-identity"
 version = "0.1.0"
 
 [[package]]
-name = "sdk-native-dep-info"
+name = "sdk-rustc-dep-info"
 version = "0.1.0"
 
 [[package]]

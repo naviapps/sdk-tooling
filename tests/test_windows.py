@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, Mock, patch
 
-from sdk_tooling import consumers, workspaces
+from sdk_tooling import c_compiler, consumers, workspaces
 from sdk_tooling.artifacts import files, hashes
 from sdk_tooling.windows import (
     build_library,
@@ -453,7 +453,7 @@ class WindowsCConsumerTests(unittest.TestCase):
                         "native_msvc_environment",
                         return_value=({"PATH": "verified-path"}, tools),
                     ) as native_environment,
-                    patch.object(consumers.bindings, "compile_c", side_effect=compile_c) as build,
+                    patch.object(c_compiler, "compile_c", side_effect=compile_c) as build,
                     patch.object(consumers.subprocess, "run", side_effect=run) as launch,
                     patch.object(
                         tempfile.TemporaryDirectory,
@@ -491,7 +491,7 @@ class WindowsCConsumerTests(unittest.TestCase):
         with (
             patch.object(consumers.sys, "platform", "darwin"),
             patch.object(consumers.windows, "host_architecture") as host,
-            patch.object(consumers.bindings, "compile_c") as build,
+            patch.object(c_compiler, "compile_c") as build,
             patch.object(consumers.subprocess, "run") as launch,
             self.assertRaisesRegex(ValueError, "requires a Windows host"),
         ):

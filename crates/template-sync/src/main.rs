@@ -17,27 +17,27 @@ const CLI_PREFIX: &str = "uvx --from git+https://github.com/naviapps/sdk-tooling
 const RUST_TEMPLATES: [(&str, &[u8]); 2] = [
     (
         ".editorconfig",
-        include_bytes!("../../../templates/.editorconfig"),
+        include_bytes!("../templates/.editorconfig"),
     ),
     (
         "rust-toolchain.toml",
-        include_bytes!("../../../templates/rust-toolchain.toml"),
+        include_bytes!("../templates/rust-toolchain.toml"),
     ),
 ];
 const QUALITY_TEMPLATES: [(&str, &[u8]); 3] = [
-    ("ruff.toml", include_bytes!("../../../templates/ruff.toml")),
+    ("ruff.toml", include_bytes!("../templates/ruff.toml")),
     (
         ".clang-format",
-        include_bytes!("../../../templates/.clang-format"),
+        include_bytes!("../templates/.clang-format"),
     ),
     (
         ".swiftlint.yml",
-        include_bytes!("../../../templates/.swiftlint.yml"),
+        include_bytes!("../templates/.swiftlint.yml"),
     ),
 ];
 const SWIFT_FORMAT: (&str, &[u8]) = (
     ".swift-format",
-    include_bytes!("../../../templates/.swift-format"),
+    include_bytes!("../templates/.swift-format"),
 );
 
 #[derive(Default)]

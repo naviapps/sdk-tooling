@@ -9,7 +9,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import DEFAULT, patch
 
-from sdk_tooling import bindings, consumers, workspaces
+from sdk_tooling import artifacts, consumers, nuget, workspaces
+from sdk_tooling import dotnet as dotnet_tools
 
 
 def write_pe(path, machine):
@@ -32,7 +33,7 @@ class ManagedQualityTests(unittest.TestCase):
         self.workspace_warning = False
         self.reference_metadata = {}
         guard = patch.object(
-            bindings.subprocess, "run", side_effect=AssertionError("Inject external commands")
+            subprocess, "run", side_effect=AssertionError("Inject external commands")
         )
         guard.start()
         self.addCleanup(guard.stop)
@@ -71,7 +72,7 @@ class ManagedQualityTests(unittest.TestCase):
             "UseSharedCompilation": "false",
         }
         original = dict(properties)
-        bindings.run_managed(
+        dotnet_tools.run_managed(
             "owned-dotnet",
             self.project,
             cwd=self.root,
@@ -118,7 +119,7 @@ class ManagedQualityTests(unittest.TestCase):
         self.assertEqual(self.calls[-1][1]["env"], self.env)
 
     def test_referenced_library_diagnostic_prevents_entry_execution_or_build(self):
-        for operation in (bindings.run_managed, bindings.build_managed):
+        for operation in (dotnet_tools.run_managed, dotnet_tools.build_managed):
             self.calls.clear()
             self.failure = lambda argv: argv[1:4] == ["format", "style", str(self.library)]
             with (
@@ -140,7 +141,7 @@ class ManagedQualityTests(unittest.TestCase):
     def test_restore_failure_prevents_semantic_evaluation(self):
         self.failure = lambda argv: argv[1] == "restore"
         with self.assertRaises(subprocess.CalledProcessError):
-            bindings.run_managed(
+            dotnet_tools.run_managed(
                 "dotnet",
                 self.project,
                 env=self.env,
@@ -151,7 +152,7 @@ class ManagedQualityTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
     def test_already_restored_build_checks_graph_without_any_restore(self):
-        bindings.build_managed(
+        dotnet_tools.build_managed(
             "dotnet",
             self.project,
             env=self.env,
@@ -170,7 +171,7 @@ class ManagedQualityTests(unittest.TestCase):
     def test_overridden_property_fails_before_format_or_runtime(self):
         self.override = {"Configuration": "Debug"}
         with self.assertRaisesRegex(ValueError, "cannot retain Configuration=Release"):
-            bindings.run_managed(
+            dotnet_tools.run_managed(
                 "dotnet",
                 self.project,
                 env=self.env,
@@ -184,7 +185,7 @@ class ManagedQualityTests(unittest.TestCase):
     def test_incomplete_workspace_cannot_pass_on_format_zero_exit(self):
         self.workspace_warning = True
         with self.assertRaisesRegex(ValueError, "workspace did not load cleanly"):
-            bindings.run_managed(
+            dotnet_tools.run_managed(
                 "dotnet",
                 self.project,
                 env=self.env,
@@ -198,7 +199,7 @@ class ManagedQualityTests(unittest.TestCase):
     def test_reference_property_overrides_require_explicit_support(self):
         self.reference_metadata = {"AdditionalProperties": "Configuration=Other"}
         with self.assertRaisesRegex(ValueError, "cannot retain reference AdditionalProperties"):
-            bindings.run_managed(
+            dotnet_tools.run_managed(
                 "dotnet",
                 self.project,
                 env=self.env,
@@ -216,8 +217,8 @@ class ManagedQualityTests(unittest.TestCase):
             patch.object(
                 consumers, "subprocess_environment", return_value={"DOTNET_BIN": "dotnet"}
             ),
-            patch.object(bindings, "build_managed", side_effect=failure) as build,
-            patch.object(bindings, "stage_native") as stage,
+            patch.object(dotnet_tools, "build_managed", side_effect=failure) as build,
+            patch.object(artifacts, "stage_native") as stage,
             self.assertRaises(subprocess.CalledProcessError),
         ):
             consumers.check_dotnet(
@@ -263,7 +264,7 @@ class ManagedQualityTests(unittest.TestCase):
                     "check_output",
                     side_effect=[f"Host:\n  Architecture: {architecture}\n", version],
                 ) as probe,
-                patch.object(bindings, "run_isolated_consumer") as run,
+                patch.object(nuget, "run_isolated_consumer") as run,
             ):
                 if accepted:
                     consumers.check_nuget(**arguments)
@@ -287,7 +288,7 @@ class ManagedQualityTests(unittest.TestCase):
                 side_effect=ValueError("Target-native Windows Python is required"),
             ),
             patch.object(consumers.subprocess, "check_output") as probe,
-            patch.object(bindings, "run_isolated_consumer") as run,
+            patch.object(nuget, "run_isolated_consumer") as run,
             self.assertRaisesRegex(ValueError, "Target-native Windows Python"),
         ):
             consumers.check_nuget(**arguments)
@@ -325,7 +326,7 @@ class ManagedQualityTests(unittest.TestCase):
             patch.object(
                 consumers, "subprocess_environment", return_value={"DOTNET_BIN": "dotnet"}
             ),
-            patch.object(bindings, "build_managed"),
+            patch.object(dotnet_tools, "build_managed"),
             patch.object(consumers.subprocess, "run", side_effect=run),
             self.assertRaises(subprocess.CalledProcessError),
         ):
@@ -357,9 +358,9 @@ class ManagedQualityTests(unittest.TestCase):
                 side_effect=["Host:\n  Architecture: x64\n", "10.0.403"],
             ) as probe,
             patch.object(
-                bindings, "build_managed", side_effect=AssertionError("Managed build started")
+                dotnet_tools, "build_managed", side_effect=AssertionError("Managed build started")
             ) as build,
-            patch.object(bindings, "stage_native") as stage,
+            patch.object(artifacts, "stage_native") as stage,
             patch.object(consumers.subprocess, "run") as run,
             self.assertRaisesRegex(ValueError, "target-native .NET 10 SDK"),
         ):
@@ -434,7 +435,9 @@ class ManagedQualityTests(unittest.TestCase):
                 side_effect=["Host:\n  Architecture: x64\n", "10.0.403"] * 2,
             ),
             patch.object(
-                bindings, "build_managed", side_effect=lambda *_, **__: write_pe(library, 0xAA64)
+                dotnet_tools,
+                "build_managed",
+                side_effect=lambda *_, **__: write_pe(library, 0xAA64),
             ) as build,
             patch.object(consumers.subprocess, "run", side_effect=run) as execute,
             patch.object(
@@ -496,7 +499,7 @@ class ManagedQualityTests(unittest.TestCase):
                 "check_output",
                 side_effect=["Host:\n  Architecture: x64\n", "10.0.403"],
             ) as probe,
-            patch.object(bindings, "run_isolated_consumer") as run,
+            patch.object(nuget, "run_isolated_consumer") as run,
             patch("builtins.print") as report,
         ):
             consumers.check_nuget(**arguments)
@@ -521,7 +524,7 @@ class ManagedQualityTests(unittest.TestCase):
                 patch.object(consumers.sys, "platform", platform),
                 patch.object(consumers.windows, "host_architecture", return_value=architecture),
                 patch.object(consumers.windows, "native_dotnet") as dotnet,
-                patch.object(bindings, "build_managed") as build,
+                patch.object(dotnet_tools, "build_managed") as build,
                 self.assertRaises(ValueError),
             ):
                 consumers.check_dotnet(

@@ -72,7 +72,7 @@ def swift_command(args, *, root):
     inputs = tuple(
         _relative(path, "swift.inputs") for path in _strings(config.get("inputs"), "swift.inputs")
     )
-    fixture = _inside(root, config.get("fixture", "fixtures/swift-consumer"), "swift.fixture")
+    fixture = _inside(root, config.get("fixture", "fixtures/consumers/swift"), "swift.fixture")
     if ("executable" in config) == ("executables" in config):
         raise ValueError("Declare swift.executable or swift.executables")
     verify_dependencies = _boolean(
