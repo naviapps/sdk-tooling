@@ -568,6 +568,8 @@ def pack_native(
 
 
 _CONSUMER_RESTORE_OVERRIDES = {
+    "disableimplicitlibrarypacksfolder",
+    "disableimplicitnugetfallbackfolder",
     "nuget_fallback_packages",
     "nuget_packages",
     "nugetpackagefolders",
@@ -759,6 +761,9 @@ def run_isolated_consumer(
             "UseAppHost": "false",
             "SelfContained": "false",
             "ImplicitUsings": "enable",
+            # The .NET SDK can append machine-local sources and caches after reading NuGet.Config.
+            "DisableImplicitLibraryPacksFolder": "true",
+            "DisableImplicitNuGetFallbackFolder": "true",
             **(properties or {}),
         }
         if runtime is not None:

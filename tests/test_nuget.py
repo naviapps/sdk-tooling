@@ -828,6 +828,8 @@ class NativeConsumerTests(unittest.TestCase):
                 DOTNET_CLI_UI_LANGUAGE="en",
                 DOTNET_NOLOGO="1",
                 RestoreAdditionalProjectSources=str(outside),
+                # Model an installed SDK with an offline workload feed.
+                _WorkloadLibraryPacksFolder=str(outside),
             )
             options = {
                 "references": {"ConsumerPrimary": "1.0.0"},
