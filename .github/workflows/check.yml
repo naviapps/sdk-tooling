@@ -82,7 +82,9 @@ jobs:
           set -euo pipefail
           for tool in template-sync consumer-identity native-dep-info; do
             manifest="tools/$tool/Cargo.toml"
-            cargo fmt --manifest-path "$manifest" -- --check
+            if [[ "$RUNNER_OS" == macOS ]]; then
+              cargo fmt --manifest-path "$manifest" -- --check
+            fi
             cargo fetch --locked --manifest-path "$manifest" --target "$RUST_TARGET"
             cargo clippy --locked --offline --manifest-path "$manifest" --target "$RUST_TARGET" --all-targets -- -D warnings
             cargo test --locked --offline --manifest-path "$manifest" --target "$RUST_TARGET"
