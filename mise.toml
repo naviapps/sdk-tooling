@@ -31,3 +31,7 @@ run = [
   "python3 -B -m sdk_tooling quality format --language python --language shell --language data",
   "cargo fmt --all",
 ]
+
+[tasks.clean]
+description = "Remove local Rust build and Python bytecode outputs"
+run = "python3 -B -m sdk_tooling clean target ci/__pycache__ sdk_tooling/__pycache__ sdk_tooling/consumers/__pycache__ tests/__pycache__"

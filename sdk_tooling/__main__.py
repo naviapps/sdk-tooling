@@ -34,13 +34,16 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    from . import binding_checks, quality, sdk_checks, xcframework_archive
+    from . import binding_checks, clean, quality, sdk_checks, xcframework_archive
 
     command = commands.add_parser(
         "quality", help="Check or format first-party source without building the product"
     )
     quality.add_arguments(command)
     command.set_defaults(handler=quality.run_operation)
+    command = commands.add_parser("clean", help="Remove declared local SDK build directories")
+    command.add_argument("paths", nargs="+", help="Checkout-relative ignored build directories")
+    command.set_defaults(handler=clean.clean)
     command = commands.add_parser(
         "xcframework", help="Build or verify macOS XCFrameworks declared in native.toml"
     )

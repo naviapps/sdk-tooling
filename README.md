@@ -86,6 +86,13 @@ After changing a workflow's action dependencies, regenerate its
 `actions.lock` with `gh actions-lock` and review the resolved commits.
 Run `gh actions-lock --verify` to check it.
 
+Run `make clean` in an SDK checkout to remove the local build outputs listed
+by its Makefile. In this tooling checkout, use `mise run clean`. Finish local
+builds and tests before cleaning. The cleaner preserves tracked artifacts,
+dependency locks, shared caches and native build recovery directories. When
+an output contains a native publisher lock, it must acquire that lock before
+removing any output.
+
 Public SDKs run contributor checks in their own repositories. They can call the
 [Swift matrix](.github/workflows/check-swift.yml) and the
 [Windows x64 Rust step](.github/actions/test-rust-windows/action.yml) at an
