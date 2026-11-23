@@ -260,6 +260,9 @@ def install_archive(source, env, temp, index, configuration):
 
 
 def execute(source, platform, settings, env, temp, tooling, *, xcframework_output=None):
+    if platform == "windows" and env.get("RUNNER_TEMP"):
+        # Cargo clones can contain macOS framework paths even on Windows.
+        env = dict(env, TMPDIR=env["RUNNER_TEMP"])
     pinned_cli = "sdk-tooling" in mise_configuration(source).get("tasks", {})
     if not pinned_cli or (source / "tools/_tooling.py").is_file():
         env = dict(env, NAVI_SDK_TOOLING_SOURCE=str(tooling))

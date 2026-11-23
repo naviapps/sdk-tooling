@@ -133,6 +133,7 @@ class DistributionTests(unittest.TestCase):
                     import json
                     import os
                     import sys
+                    import tempfile
                     from pathlib import Path
 
                     mode, output, tooling, argument = sys.argv[1:]
@@ -142,6 +143,7 @@ class DistributionTests(unittest.TestCase):
                         "arg": argument,
                         "source": os.environ["GITHUB_SHA"],
                         "temp": str(path.parent),
+                        "child_temp_root": str(Path(tempfile.gettempdir()).resolve()),
                         "credential": "GH_TOKEN" in os.environ,
                     }
                     if mode == "write":
@@ -160,7 +162,10 @@ class DistributionTests(unittest.TestCase):
                 ],
                 "archives": [],
             }
-            with patch.dict(os.environ, {"GH_TOKEN": "unrelated token"}):
+            with patch.dict(
+                os.environ,
+                {"GH_TOKEN": "unrelated token", "RUNNER_TEMP": str(root), "TMPDIR": str(temp)},
+            ):
                 env = DISPATCH["child_environment"](revision)
                 DISPATCH["execute"](root, "windows", settings, env, temp, tooling)
             self.assertEqual(
@@ -170,6 +175,7 @@ class DistributionTests(unittest.TestCase):
                     "arg": arguments[-1],
                     "source": revision,
                     "temp": str(temp),
+                    "child_temp_root": str(root),
                     "credential": False,
                 },
             )
