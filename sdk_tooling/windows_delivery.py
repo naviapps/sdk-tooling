@@ -1,6 +1,7 @@
 """Build and validate Windows x64 SDKs and publish verified package evidence."""
 
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -11,9 +12,17 @@ from pathlib import Path
 
 from . import artifacts, c_compiler, dotnet, vm_environment, windows
 from .artifacts import file_sha256
+from .ffi import NOTICE_TARGETS
 
 TARGET = windows.MSVC_TARGETS["x64"]
 RID = "win-x64"
+
+
+def locked_fetch_args(*, notice_targets=NOTICE_TARGETS):
+    """Fetch the x64 build and notice graphs before offline inspection."""
+    targets = dict.fromkeys((TARGET, *notice_targets))
+    flags = (argument for target in targets for argument in ("--target", target))
+    return ("cargo", "fetch", "--locked", *flags)
 
 
 class X64Acceptance:
@@ -46,8 +55,8 @@ class X64Acceptance:
         subprocess.run([str(value) for value in args], cwd=self.root, env=self.env, check=True)
 
     def build(self, native, *, fetch_all=False):
-        fetch_target = () if fetch_all else ("--target", TARGET)
-        self.run("cargo", "fetch", "--locked", *fetch_target)
+        fetch = ("cargo", "fetch", "--locked") if fetch_all else locked_fetch_args()
+        self.run(*fetch)
         self.run("cargo", "fmt", "--all", "--", "--check")
         built = windows.build_library(native, self.env, self.tools, "x64", native_host=self.host)
         workspace = ("--workspace", "--target", TARGET, "--locked", "--offline")
@@ -60,14 +69,9 @@ class X64Acceptance:
         verified, receipt = windows.verify_artifact(native, "x64", environment=self.env)
         if verified != built or receipt.get("toolchain") != self.toolchain:
             raise ValueError("Windows x64 library differs from the selected host build")
-        dll = native.library + ".dll"
-        names = (dll, dll + ".lib")
-        library, import_library = (
-            artifacts.stage_native(built / name, candidate / name) for name in names
+        library, import_library = stage_verified_library(
+            native, built, candidate, receipt, artifacts
         )
-        expected = {name: receipt["outputs"][name] for name in names}
-        if artifacts.hashes([library, import_library], candidate) != expected:
-            raise ValueError("Staged DLL or import library differs from its verified receipt")
         return library, import_library, receipt
 
     def run_c(self, source, *, include_directory, import_library):
@@ -86,6 +90,17 @@ class X64Acceptance:
         )
         windows.require_pe_machine(executable, "x64")
         self.run(executable)
+
+
+def stage_verified_library(native, built, candidate, receipt, tooling=artifacts):
+    """Copy a verified x64 DLL and its import library for an independent consumer."""
+    dll = native.library + ".dll"
+    names = (dll, dll + ".lib")
+    staged = tuple(tooling.stage_native(built / name, candidate / name) for name in names)
+    expected = {name: receipt["outputs"][name] for name in names}
+    if tooling.hashes(staged, candidate) != expected:
+        raise ValueError("Staged DLL or import library differs from its verified receipt")
+    return staged
 
 
 def acceptance_source(root, *, match_actions=False, environment=None):
@@ -113,59 +128,113 @@ def acceptance_source(root, *, match_actions=False, environment=None):
     return commit, fingerprint
 
 
-def publish_x64(package, receipt, *, receipt_name, output_dir, artifact_root, tooling):
-    """Publish an accepted package and receipt, rolling back both locations on failure."""
-    version = receipt["version"]
+def _ordinary_path(path):
+    return not (path.is_symlink() or path.is_junction())
+
+
+def _owned_file(path, names):
+    return path.name in names and _ordinary_path(path) and path.is_file()
+
+
+def _component(value, pattern):
+    return (
+        isinstance(value, str)
+        and re.fullmatch(pattern, value) is not None
+        and not ntpath.isreserved(value)
+    )
+
+
+def verify_packages(directory, packages, *, receipt_name=None):
+    """Check the exact set of package names and digests in a staging directory."""
+    names = {*packages}
+    if receipt_name is not None:
+        names.add(receipt_name)
+    entries = tuple(directory.iterdir()) if _ordinary_path(directory) and directory.is_dir() else ()
     if (
-        not isinstance(version, str)
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+-]*", version)
-        or version.endswith(".")
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.json", receipt_name)
-        or receipt_name == package.name
+        not packages
+        or {entry.name for entry in entries} != names
+        or not all(_owned_file(entry, names) for entry in entries)
+        or any(file_sha256(directory / name) != digest for name, digest in packages.items())
     ):
-        raise ValueError("Windows evidence requires local version and receipt component names")
-    evidence_path = Path(RID) / version
-    local = output_dir / evidence_path
-    external = artifact_root / evidence_path if artifact_root else None
+        raise ValueError("Windows package output differs from the accepted package set")
+
+
+def publish_package_evidence(
+    package_directory,
+    receipt,
+    *,
+    receipt_name,
+    destination,
+    mirror=None,
+    lock_root=None,
+    legacy_packages_directory=False,
+    tooling=artifacts,
+):
+    """Publish an accepted package set and receipt, with transactional mirroring."""
+    packages = receipt["packages"]
+    if (
+        not isinstance(packages, dict)
+        or not packages
+        or not _component(receipt_name, r"[A-Za-z0-9][A-Za-z0-9_.-]*\.json")
+        or any(
+            not _component(name, r"[A-Za-z0-9][A-Za-z0-9_.+-]*\.nupkg")
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for name, digest in packages.items()
+        )
+        or len({name.casefold() for name in packages}) != len(packages)
+    ):
+        raise ValueError("Windows evidence requires package names, SHA-256 digests and a receipt")
+
+    local = Path(destination)
+    external = Path(mirror) if mirror is not None else local
     local_path = local.resolve()
-    external_path = external.resolve() if external is not None else local_path
+    external_path = external.resolve()
     destinations = [local]
     if external_path != local_path:
         if external_path.is_relative_to(local_path) or local_path.is_relative_to(external_path):
             raise ValueError("Local and external x64 evidence directories must be disjoint")
         destinations.append(external)
 
-    names = {package.name, receipt_name}
-    digest = receipt["packages"][package.name]
+    names = {*packages, receipt_name}
 
     def verify(directory):
-        if (
-            {entry.name for entry in directory.iterdir()} != names
-            or json.loads((directory / receipt_name).read_bytes()) != receipt
-            or file_sha256(directory / package.name) != digest
-        ):
-            raise ValueError("Windows x64 evidence differs from the accepted package and receipt")
+        try:
+            verify_packages(directory, packages, receipt_name=receipt_name)
+            if json.loads((directory / receipt_name).read_bytes()) == receipt:
+                return
+        except ValueError:
+            pass
+        raise ValueError("Windows x64 evidence differs from the accepted package and receipt")
+
+    def can_replace(entry):
+        if _owned_file(entry, names):
+            return True
+        return (
+            legacy_packages_directory
+            and entry.name == "packages"
+            and _ordinary_path(entry)
+            and entry.is_dir()
+            and all(_owned_file(file, packages) for file in entry.iterdir())
+        )
 
     def check_destination(destination):
         if (
-            destination.parent.is_symlink()
-            or destination.parent.is_junction()
-            or destination.is_symlink()
-            or destination.is_junction()
+            not _ordinary_path(destination.parent)
+            or not _ordinary_path(destination)
             or (
                 destination.exists()
                 and (
                     not destination.is_dir()
-                    or any(
-                        entry.name not in names or not entry.is_file() or entry.is_symlink()
-                        for entry in destination.iterdir()
-                    )
+                    or not all(can_replace(entry) for entry in destination.iterdir())
                 )
             )
         ):
             raise ValueError("Windows x64 evidence directory contains unrelated files")
 
-    with tooling.build_lock(output_dir), ExitStack() as temporary:
+    with ExitStack() as temporary:
+        if lock_root is not None:
+            temporary.enter_context(tooling.build_lock(lock_root))
         for destination in destinations:
             check_destination(destination)
         stages = []
@@ -176,7 +245,11 @@ def publish_x64(package, receipt, *, receipt_name, output_dir, artifact_root, to
             )
             stage = Path(path) / destination.name
             stage.mkdir()
-            shutil.copyfile(package, stage / package.name)
+            for name in packages:
+                package = package_directory / name
+                if not _owned_file(package, packages):
+                    raise ValueError("Windows x64 evidence requires ordinary package files")
+                shutil.copyfile(package, stage / name)
             tooling.write_json(stage / receipt_name, receipt)
             verify(stage)
             stages.append(stage)
@@ -211,3 +284,43 @@ def publish_x64(package, receipt, *, receipt_name, output_dir, artifact_root, to
         tooling.publish(stages[0], local, verify_local)
         if cleanup_failure is not None:
             raise cleanup_failure
+
+
+def publish_versioned_x64(
+    package_directory,
+    receipt,
+    *,
+    version,
+    receipt_name,
+    output_dir,
+    artifact_root,
+    tooling=artifacts,
+):
+    """Publish a versioned package set under the Windows x64 runtime directory."""
+    if not _component(version, r"[A-Za-z0-9][A-Za-z0-9.+-]*") or version.endswith("."):
+        raise ValueError("Windows evidence requires a local version component name")
+    evidence_path = Path(RID) / version
+    publish_package_evidence(
+        package_directory,
+        receipt,
+        receipt_name=receipt_name,
+        destination=output_dir / evidence_path,
+        mirror=artifact_root / evidence_path if artifact_root else None,
+        lock_root=output_dir,
+        tooling=tooling,
+    )
+
+
+def publish_x64(package, receipt, *, receipt_name, output_dir, artifact_root, tooling):
+    """Publish a solitary accepted package and receipt to the versioned output."""
+    if set(receipt["packages"]) != {package.name}:
+        raise ValueError("Windows x64 evidence must identify the accepted package")
+    publish_versioned_x64(
+        package.parent,
+        receipt,
+        version=receipt["version"],
+        receipt_name=receipt_name,
+        output_dir=output_dir,
+        artifact_root=artifact_root,
+        tooling=tooling,
+    )

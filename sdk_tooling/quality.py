@@ -120,9 +120,6 @@ def source_files(root):
                 raise ValueError("Static checks require ordinary first-party files: " + name)
             if not resolved.is_relative_to(root):
                 raise ValueError("Static check input escapes the repository: " + name)
-        # DocC validates catalog Markdown; generic formatting rewrites its symbol links.
-        if relative.suffix == ".md" and any(part.endswith(".docc") for part in directories):
-            continue
         result.append(name)
     return result
 

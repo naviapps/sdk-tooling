@@ -18,6 +18,22 @@ publish_x64 = partial(windows_delivery.publish_x64, receipt_name=RECEIPT)
 
 
 class WindowsDeliveryTests(unittest.TestCase):
+    def test_locked_fetch_covers_build_and_notice_graphs(self):
+        targets = (
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-pc-windows-msvc",
+        )
+        args = windows_delivery.locked_fetch_args()
+        self.assertEqual(args[:3], ("cargo", "fetch", "--locked"))
+        self.assertEqual(args[3::2], ("--target",) * len(targets))
+        self.assertEqual(args[4::2], targets)
+        self.assertEqual(
+            windows_delivery.locked_fetch_args(notice_targets=(windows_delivery.TARGET,)),
+            ("cargo", "fetch", "--locked", "--target", windows_delivery.TARGET),
+        )
+
     def test_captured_source_requires_commit_and_fingerprint(self):
         commit, digest = "a" * 40, "b" * 64
         values = {"VM_RUNNER_SOURCE_COMMIT": commit, "VM_RUNNER_SOURCE_FINGERPRINT": digest}
@@ -179,6 +195,66 @@ class WindowsDeliveryTests(unittest.TestCase):
                 self.assertEqual(json.loads((destination / RECEIPT).read_bytes()), receipt)
             (recovery,) = external.parent.glob(".0.1.0.rollback-*")
             assert_previous_evidence(self, recovery / "previous-artifacts", package.name)
+
+    def test_publishes_package_set_with_optional_legacy_directory_migration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, destination = root / "candidate", root / "published"
+            source.mkdir()
+            packages = {}
+            for name in ("Example.Core.0.1.0.nupkg", "Example.Windows.0.1.0.nupkg"):
+                data = name.encode()
+                (source / name).write_bytes(data)
+                packages[name] = hashlib.sha256(data).hexdigest()
+            old_packages = destination / "packages"
+            old_packages.mkdir(parents=True)
+            (old_packages / name).write_bytes(b"previous package")
+            owner = old_packages / "notes.txt"
+            owner.write_bytes(b"user data")
+            publish = partial(
+                windows_delivery.publish_package_evidence,
+                source,
+                {"packages": packages},
+                receipt_name=RECEIPT,
+                destination=destination,
+                legacy_packages_directory=True,
+            )
+
+            with self.assertRaisesRegex(ValueError, "contains unrelated files"):
+                publish()
+            self.assertEqual(owner.read_bytes(), b"user data")
+            owner.unlink()
+            publish()
+            self.assertFalse(old_packages.exists())
+            windows_delivery.verify_packages(destination, packages, receipt_name=RECEIPT)
+            (source / name).write_bytes(b"changed")
+            with self.assertRaisesRegex(
+                ValueError, "differs from the accepted package and receipt"
+            ):
+                publish()
+            windows_delivery.verify_packages(destination, packages, receipt_name=RECEIPT)
+
+    def test_package_set_rejects_path_aliases_and_non_sha256_digests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "destination"
+            for packages in (
+                {"../Example.nupkg": "0" * 64},
+                {"CON.nupkg": "0" * 64},
+                {"Example.nupkg": "0" * 64, "example.nupkg": "1" * 64},
+                {"Example.nupkg": "unknown"},
+            ):
+                with (
+                    self.subTest(packages=packages),
+                    self.assertRaisesRegex(ValueError, "package names, SHA-256 digests"),
+                ):
+                    windows_delivery.publish_package_evidence(
+                        root,
+                        {"packages": packages},
+                        receipt_name=RECEIPT,
+                        destination=destination,
+                    )
+                self.assertFalse(destination.exists())
 
 
 def x64_evidence(root):

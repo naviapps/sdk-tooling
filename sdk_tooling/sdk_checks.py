@@ -1,4 +1,4 @@
-"""Run consumer and documentation checks from an SDK-owned description."""
+"""Run consumer checks from an SDK-owned description."""
 
 import json
 import sys
@@ -6,7 +6,6 @@ import tomllib
 from copy import copy
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from . import docs
 from .consumers import nuget, rust_c, rust_git, swiftpm
 
 CONFIGURATION = "sdk-checks.toml"
@@ -92,66 +91,6 @@ def swift_command(args, *, root):
         mirror_config=args.mirror_config,
         build_system=args.build_system or config.get("build_system"),
         warnings_as_errors=not args.allow_warnings,
-    )
-
-
-def _validate_declaration_docs(source_root, graphs):
-    missing = []
-    for graph in graphs:
-        for symbol in graph.get("symbols", []):
-            try:
-                location = Path.from_uri(symbol.get("location", {}).get("uri", ""))
-            except ValueError:
-                continue
-            if not location.is_relative_to(source_root):
-                continue
-            kind = symbol["kind"]["identifier"]
-            # Extension containers and Equatable witnesses add no independent API contract.
-            if kind == "swift.extension" or (
-                kind == "swift.func.op" and symbol["names"]["title"] == "==(_:_:)"
-            ):
-                continue
-            if not any(
-                line["text"].strip() for line in symbol.get("docComment", {}).get("lines", [])
-            ):
-                missing.append(".".join(symbol["pathComponents"]))
-    if missing:
-        raise ValueError(
-            "Missing public Swift declaration documentation: " + ", ".join(sorted(set(missing)))
-        )
-
-
-def docs_command(args, *, root):
-    root = Path(root).resolve(strict=True)
-    config = _section(root, "docs")
-    output = args.output or _inside(root, config.get("output", "build/docs"), "docs.output")
-    patterns = _strings(config.get("catalogs", ["Sources/**/*.docc"]), "docs.catalogs")
-    catalogs = []
-    for pattern in patterns:
-        matches = sorted(root.glob(_relative(pattern, "docs.catalogs")))
-        if not matches or any(
-            path.suffix != ".docc" or not path.is_dir() or not path.resolve().is_relative_to(root)
-            for path in matches
-        ):
-            raise ValueError("docs.catalogs must select SDK DocC directories: " + pattern)
-        catalogs.extend(matches)
-    require_docs = _boolean(
-        config.get("require_declaration_docs", False), "docs.require_declaration_docs"
-    )
-
-    def validate(_module, graphs):
-        _validate_declaration_docs(root / "Sources", graphs)
-
-    docs.check_catalogs(
-        root,
-        tuple(dict.fromkeys(catalogs)),
-        output=output,
-        bundle_identifier_prefix=_string(
-            config.get("bundle_identifier_prefix", "com.naviapps."), "docs.bundle_identifier_prefix"
-        ),
-        graph_arguments=_strings(config.get("graph_arguments", []), "docs.graph_arguments"),
-        symbol_validator=validate if require_docs else None,
-        retain_archives=_boolean(config.get("retain_archives", False), "docs.retain_archives"),
     )
 
 
@@ -261,9 +200,6 @@ def add_commands(commands):
     )
     swift.add_argument("--allow-warnings", action="store_true", help="Allow Swift warnings")
     swift.set_defaults(handler=swift_command)
-    docc = commands.add_parser("docs", help="Validate SDK DocC catalogs against public symbols")
-    docc.add_argument("--output", type=Path, help="Override the SDK documentation output")
-    docc.set_defaults(handler=docs_command)
     rust_c_cli = commands.add_parser(
         "rust-c-consumers", help="Check Rust from Git and C against a copied framework"
     )

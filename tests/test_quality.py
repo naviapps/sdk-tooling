@@ -295,60 +295,6 @@ class QualityTests(unittest.TestCase):
                 all(call.args[1][:2] == ["cargo", "fmt"] for call in run.call_args_list)
             )
 
-    def test_docc_symbol_links_never_reach_generic_markdown_checks_or_formatting(self):
-        self.write(".dprint.json", "{}\n")
-        catalog_markdown = "# ``Core``\n\n## Topics\n\n### Types\n\n- ``CoreType``\n"
-        catalogs = [
-            self.write("Sources/Core/Core.docc/Core.md", catalog_markdown),
-            self.write("Sources/Core/Core.docc/Guides/Overview.md", catalog_markdown),
-        ]
-        subprocess.run(["git", "-C", str(self.root), "add", str(catalogs[0])], check=True)
-        self.write("Sources/Core/Core.docc/theme-settings.json", "{}\n")
-        readme_markdown = "# README\n\nUse ``value``.\n"
-
-        for write in (False, True):
-            with self.subTest(write=write):
-                readme = self.write("README.md", readme_markdown)
-                markdown_inputs = []
-
-                def formatter(root, arguments):
-                    self.assertEqual(
-                        arguments,
-                        [
-                            "dprint",
-                            "fmt" if write else "check",
-                            "--config",
-                            ".dprint.json",
-                            "./.dprint.json",
-                            "./README.md",
-                            "./Sources/Core/Core.docc/theme-settings.json",
-                        ],
-                    )
-                    for name in arguments[4:]:
-                        path = root / name
-                        if path.suffix == ".md":
-                            original = path.read_bytes()
-                            markdown_inputs.append(original)
-                            if write:
-                                path.write_bytes(original.replace(b"``", b"`"))
-
-                with (
-                    patch.object(quality, "tool", return_value="dprint"),
-                    patch.object(quality, "run", side_effect=formatter) as run,
-                ):
-                    quality.check(self.root, write=write, languages=["data"])
-                    run.assert_called_once()
-
-                self.assertEqual(markdown_inputs, [readme_markdown.encode()])
-                self.assertEqual(
-                    readme.read_bytes(),
-                    readme_markdown.encode().replace(b"``", b"`")
-                    if write
-                    else readme_markdown.encode(),
-                )
-                for catalog in catalogs:
-                    self.assertEqual(catalog.read_bytes(), catalog_markdown.encode())
-
 
 class ManifestQualityTests(unittest.TestCase):
     def setUp(self):
@@ -381,8 +327,8 @@ class ManifestQualityTests(unittest.TestCase):
         files = [
             "Artifacts/header.h",
             "Sources/Build/Policy.swift",
-            "Sources/Core/Core.docc/Core.md",
-            "Sources/Core/Core.docc/theme-settings.json",
+            "Sources/Core/resource.json",
+            "Sources/Core/usage.md",
             "Sources/Target/main.py",
             "ThirdParty/license.py",
             "ignored-but-tracked.py",
@@ -403,7 +349,6 @@ class ManifestQualityTests(unittest.TestCase):
                     if name
                     not in {
                         "Artifacts/header.h",
-                        "Sources/Core/Core.docc/Core.md",
                         "ThirdParty/license.py",
                     }
                 ],

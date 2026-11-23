@@ -2,7 +2,7 @@
 
 [Developer setup](../README.md#developer-bootstrap).
 
-## Quality and documentation checks
+## Quality checks
 
 ### Run static checks
 
@@ -36,7 +36,7 @@ to 16 MiB, with shape `{"version":1,"files":["sorted/relative/name.py"]}`.
 Parent directory aliases resolving to that same workspace are accepted, including
 macOS `/tmp` and `/private/tmp`; the manifest itself must not be a symlink.
 The nonempty, sorted, unique POSIX list (at most 100,000 names) records CI's
-captured tracked and unignored working files, including dirty edits. It applies the same directory, DocC and
+captured tracked and unignored working files, including dirty edits. It applies the same directory and
 linked-input policy as Git selection. Missing selected inputs, invalid metadata
 or a mismatched hash fail without falling back to Git. The metadata file itself
 is transport data and cannot be selected as source. Both variables absent retain
@@ -98,9 +98,7 @@ check.
 #### Markdown and structured data
 
 Dprint formats owned Markdown, JSON, TOML and YAML with checksummed Wasm plugins,
-without requiring Node in SDK repositories. Markdown inside `.docc` catalogs is left
-to DocC validation to preserve double-backtick symbol links; other catalog assets
-remain eligible for static checks.
+without requiring Node in SDK repositories.
 
 #### Rust and managed code
 
@@ -148,15 +146,6 @@ The tool validates all selected checkout paths before replacing files and
 writes each updated pin after its templates. A check without `--revision`
 accepts any canonical immutable pin. Add `--revision FULL_COMMIT_SHA` to
 require every selected checkout to use that revision.
-
-### DocC catalog acceptance
-
-`docs.check_catalogs` generates module-specific DocC archives in caller-selected
-order, preserves dependency links, and invokes SDK-owned declaration checks. Every
-conversion enables DocC's external link support and verifies both link metadata
-files before another module uses it; a zero exit code with missing or malformed
-link metadata is a failed check. Optional retained archives replace prior output
-only after all conversions pass.
 
 ## Native artifacts and provenance
 

@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,52 +107,6 @@ class SDKChecksTests(unittest.TestCase):
             self.assertEqual(arguments.windows_architecture, "x64")
             self.assertEqual(call.kwargs["package_id"], "Example.Bindings")
             self.assertEqual(call.kwargs["work_parent"], self.root / ".native-build/packages")
-
-    def test_docs_find_only_owned_catalogs_and_use_declared_settings(self):
-        first = self.write("Sources/First/First.docc/First.md", "First").parent
-        second = self.write("Sources/Second/Second.docc/Second.md", "Second").parent
-        self.write("Tests/Fixtures/NotPublic.docc/Fixture.md", "Internal only")
-        self.write(
-            "sdk-checks.toml",
-            """
-            [docs]
-            retain_archives = true
-            graph_arguments = ["--skip-synthesized-members"]
-            """,
-        )
-        with patch("sdk_tooling.docs.check_catalogs") as check_catalogs:
-            self.check("docs")
-        check_catalogs.assert_called_once()
-        options = check_catalogs.call_args.kwargs
-        self.assertEqual(check_catalogs.call_args.args[0], self.root)
-        self.assertEqual(list(check_catalogs.call_args.args[1]), [first, second])
-        self.assertEqual(options["output"], self.root / "build/docs")
-        self.assertEqual(list(options["graph_arguments"]), ["--skip-synthesized-members"])
-        self.assertTrue(options["retain_archives"])
-
-    def test_docs_reject_output_outside_checkout(self):
-        self.write("Sources/Module/Module.docc/Module.md", "Module")
-        self.write("sdk-checks.toml", '[docs]\noutput = "../outside"\n')
-        with patch("sdk_tooling.docs.check_catalogs") as check_catalogs:
-            with self.assertRaises(ValueError):
-                self.check("docs")
-            check_catalogs.assert_not_called()
-
-    def test_docs_reject_symlinked_output_outside_checkout(self):
-        self.write("Sources/Module/Module.docc/Module.md", "Module")
-        self.write("sdk-checks.toml", '[docs]\noutput = "outside-link/archives"\n')
-        output = self.root / "outside-link"
-        with tempfile.TemporaryDirectory() as outside:
-            try:
-                output.symlink_to(outside, target_is_directory=True)
-            except OSError as error:
-                if os.name == "nt" and getattr(error, "winerror", None) == 1314:
-                    self.skipTest("Windows runner cannot create directory symlinks")
-                raise
-            with patch("sdk_tooling.docs.check_catalogs") as check_catalogs:
-                with self.assertRaises(ValueError):
-                    self.check("docs")
-                check_catalogs.assert_not_called()
 
     def test_installed_consumer_resolves_cargo_pins_and_supplies_owned_c_options(self):
         self.write("Artifacts/CExample.framework/Headers/example.h", "/* SDK header */")

@@ -136,6 +136,14 @@ index as a seven-day Actions artifact. The archives are verification output.
 SDKs that use SwiftPM path-based binary targets continue to supply their
 frameworks in the source checkout.
 
+To verify one cross-platform NuGet package, add `[nuget]` with a
+`pack = "distribution/pack_nuget.py"` entry. Both platform plans must be
+present. The Windows plan exports its accepted native build at
+`sdk-windows/win-x64`. The packer accepts repeated `--runtime` options and
+reports the generated package filename to `--result`. The workflow combines
+the verified Windows output and the tracked macOS framework into one package,
+then runs the macOS and Windows consumers against that exact file.
+
 On macOS the dispatcher runs the commands through the SDK's mise environment.
 The `sdk-tooling` command runs the pinned checkout with the dispatcher's Python
 interpreter. The dispatcher also supplies this runner as `SDK_TOOLING` to Make,
@@ -190,20 +198,20 @@ checksummed source bundle and local Git mirror supplied by its host.
 
 ### Tool ownership
 
-| Scope               | Tools and version authority                                                                                                                                                                                                                                                   |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repository checks   | Each repository's `mise.toml` selects Python, formatters and linters. `global.json` pins the .NET SDK where applicable. `uv` supplies the PyPI tool backend.                                                                                                                  |
-| Rust producers      | `rust-toolchain.toml` selects Rust, rustfmt and Clippy. Install only the standard-library targets needed by the job: both Darwin targets for universal frameworks, the appropriate MSVC target for Windows, or the WebAssembly target for browser bindings.                   |
-| macOS SDKs          | Select full Xcode for Swift, SwiftPM, swift-format, DocC, Clang, `xcodebuild` and Mach-O inspection. Use the macOS signing tools for framework checks. Do not install separate copies of these tools through mise. The pinned C formatter is independent of Xcode's compiler. |
-| Native Windows SDKs | Use target-native Python, Rust, .NET 10 and Visual Studio C++ tools with the Windows SDK. The Windows driver selects the Visual Studio environment and checks the host and target architectures.                                                                              |
-| Optional jobs       | Web bindings and release packaging have separate prerequisites. Windows DLLs are built and exercised on Windows.                                                                                                                                                              |
+| Scope               | Tools and version authority                                                                                                                                                                                                                                             |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository checks   | Each repository's `mise.toml` selects Python, formatters and linters. `global.json` pins the .NET SDK where applicable. `uv` supplies the PyPI tool backend.                                                                                                            |
+| Rust producers      | `rust-toolchain.toml` selects Rust, rustfmt and Clippy. Install only the standard-library targets needed by the job: both Darwin targets for universal frameworks, the appropriate MSVC target for Windows, or the WebAssembly target for browser bindings.             |
+| macOS SDKs          | Select full Xcode for Swift, SwiftPM, swift-format, Clang, `xcodebuild` and Mach-O inspection. Use the macOS signing tools for framework checks. Do not install separate copies of these tools through mise. The pinned C formatter is independent of Xcode's compiler. |
+| Native Windows SDKs | Use target-native Python, Rust, .NET 10 and Visual Studio C++ tools with the Windows SDK. The Windows driver selects the Visual Studio environment and checks the host and target architectures.                                                                        |
+| Optional jobs       | Web bindings and release packaging have separate prerequisites. Windows DLLs are built and exercised on Windows.                                                                                                                                                        |
 
 ## SDK repository layout
 
 Keep each language's build conventions and place tests with their owning interface:
 
 - `Sources/<Target>` and `Tests/<TargetTests>` contain Swift targets and tests.
-  Target-specific API documentation stays in the target's DocC catalog.
+  Document API contracts on the public declarations and link usage guides from the SDK README.
 - `crates/<role>` contains independent Rust packages. Each package owns its
   `src`, `tests`, `examples` and `benches`; C ABI callers live in the FFI package's
   `tests/c` directory.

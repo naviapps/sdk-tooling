@@ -1,5 +1,6 @@
 """Check the SDK-owned distribution plan, source identity and credential boundaries."""
 
+import hashlib
 import json
 import os
 import runpy
@@ -70,6 +71,123 @@ class DistributionTests(unittest.TestCase):
         for content in plans:
             with self.subTest(content=content), self.assertRaises(ValueError):
                 self.distribution_plan(content)
+
+    def test_combined_nuget_plan_requires_both_producers_and_checkout_owned_files(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            source = Path(disposable).resolve()
+            config = source / "sdk-distribution.toml"
+            plan = dedent(
+                """
+                [macos]
+                commands = [["make", "check-distribution"]]
+                [windows]
+                commands = [["sdk-tooling", "windows", "distribution/check.py"]]
+                [nuget]
+                pack = "distribution/pack.py"
+                """
+            )
+            config.write_text(plan, encoding="utf-8")
+            parse = DISPATCH["distribution_plan"]
+            with self.assertRaisesRegex(ValueError, "require both platforms"):
+                parse(source)
+            (source / "global.json").touch()
+            (source / "native.toml").touch()
+            pack = source / "distribution/pack.py"
+            pack.parent.mkdir()
+            pack.touch()
+            self.assertEqual(parse(source)["nuget"], "distribution/pack.py")
+            config.write_text(
+                plan.replace("distribution/pack.py", "distribution/../pack.py"), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "nuget.pack"):
+                parse(source)
+
+    def test_combined_nuget_consumers_receive_one_byte_identical_package(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            work = Path(disposable).resolve()
+            source = work / "checkout"
+            builds = source / ".native-build/packages"
+            builds.mkdir(parents=True)
+            output = work / "accepted"
+            pack = DISPATCH["pack_combined_nuget"]
+            consume = DISPATCH["consume_package"]
+            cli = ("verified-tooling",)
+            script = "distribution/pack.py"
+            package_name = "Example.Sdk.0.1.0.nupkg"
+            package_bytes = b"the same native package on both workers"
+            checksum = hashlib.sha256(package_bytes).hexdigest()
+            receipt = {
+                "package": package_name,
+                "runtimes": ["osx-arm64", "osx-x64", "win-x64"],
+                "sha256": checksum,
+            }
+            seen = []
+
+            def run(checkout, env, *argv):
+                self.assertEqual(checkout, source)
+                self.assertEqual(env, {})
+                self.assertEqual(argv[0], cli[0])
+                if argv[1] == "python":
+                    self.assertEqual(
+                        argv[2:-1],
+                        (
+                            script,
+                            "--runtime",
+                            "osx-arm64",
+                            "--runtime",
+                            "osx-x64",
+                            "--runtime",
+                            "win-x64",
+                            "--result",
+                        ),
+                    )
+                    (builds / package_name).write_bytes(package_bytes)
+                    (builds / f"{package_name}.json").write_text(
+                        json.dumps(receipt), encoding="utf-8"
+                    )
+                    Path(argv[-1]).write_text(package_name, encoding="utf-8")
+                else:
+                    self.assertEqual(argv[1], "nuget-consumer")
+                    seen.append(Path(argv[-1]).read_bytes())
+
+            with patch.dict(pack.__globals__, run=run):
+                self.assertEqual(pack(source, {}, cli, script, output), checksum)
+                artifact = output / package_name
+                self.assertEqual(consume(source, {}, cli, artifact, expected=checksum), checksum)
+                with self.assertRaisesRegex(ValueError, "accepted receipt"):
+                    consume(source, {}, cli, artifact, expected="0" * 64)
+
+            self.assertEqual(seen, [package_bytes, package_bytes])
+            self.assertEqual(
+                {path.name for path in output.iterdir()}, {package_name, f"{package_name}.json"}
+            )
+
+    def test_combined_nuget_rejects_changes_during_acceptance(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            work = Path(disposable).resolve()
+            artifact = work / "Example.Sdk.0.1.0.nupkg"
+            artifact.write_bytes(b"package")
+            checksum = hashlib.sha256(b"package").hexdigest()
+            artifact.with_suffix(".nupkg.json").write_text(
+                json.dumps(
+                    {
+                        "package": artifact.name,
+                        "runtimes": ["osx-arm64", "osx-x64", "win-x64"],
+                        "sha256": checksum,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            consume = DISPATCH["consume_package"]
+
+            def run(*_):
+                artifact.write_bytes(b"replacement")
+
+            with (
+                patch.dict(consume.__globals__, run=run),
+                self.assertRaisesRegex(ValueError, "changed during consumer acceptance"),
+            ):
+                consume(work, {}, (), artifact, expected=checksum)
 
     def test_windows_commands_use_literal_arguments_and_share_one_scratch_directory(self):
         revision = "a" * 40
