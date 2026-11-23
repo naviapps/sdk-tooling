@@ -328,6 +328,23 @@ See [consumer verification](#consumer-verification) for independent package and 
 
 ### C ABI and .NET project checks
 
+For Windows contributor checks, `test-windows-bindings` builds the SDK's
+workspace `cdylib` packages for `x86_64-pc-windows-msvc`. It reads the DLL paths
+from Cargo's compiler artifact messages and runs each .NET fixture with those
+DLLs in its temporary output directory. Declare the packages and projects in
+`sdk-checks.toml`:
+
+```toml
+[windows_bindings]
+packages = ["example-ffi"]
+projects = ["bindings/dotnet/tests/Example.Tests/Example.Tests.csproj"]
+```
+
+If `projects` is omitted, the command uses `[bindings].dotnet_project`. On a
+prepared Windows host, run `sdk-tooling test-windows-bindings` with a tooling
+revision that provides the command. These source fixtures run independently of
+the release package and native build receipts.
+
 `c_compiler` invokes Clang or MSVC for C callers. `dotnet` runs, builds and
 packs managed projects. `artifacts.stage_native` stages verified native bytes.
 `check-binding c` and `check-binding dotnet` run the SDK's C ABI and managed

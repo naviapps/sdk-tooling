@@ -95,7 +95,7 @@ class CargoBuildTests(unittest.TestCase):
         for artifact, error in cases:
             with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
                 self.compile([artifact])
-        with self.assertRaisesRegex(ValueError, "selected native library"):
+        with self.assertRaisesRegex(ValueError, "successful native build"):
             self.compile([self.artifact(self.library)], complete=False)
 
     def test_receipt_rejects_missing_unresolved_or_inconsistent_units(self):

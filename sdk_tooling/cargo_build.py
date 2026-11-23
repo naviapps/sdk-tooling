@@ -37,16 +37,9 @@ def _unit_key(unit):
     )
 
 
-def compile_units(command, *, graph, target, library, env):
-    """Run Cargo and select metadata for the compiler outputs of this invocation."""
-    result = subprocess.run(command, cwd=graph.root, env=env, stdout=subprocess.PIPE, check=True)
-    packages = {package["id"]: package for package in graph.packages}
-    target_dir = Path(env["CARGO_TARGET_DIR"]).resolve()
-    target_output = target_dir / target
-    expected_library = library.resolve()
-    units = {}
-    linked = False
-    finished = False
+def compiler_artifacts(command, *, root, env):
+    """Yield the artifact messages from a successful Cargo build."""
+    result = subprocess.run(command, cwd=root, env=env, stdout=subprocess.PIPE, check=True)
     for line in result.stdout.splitlines():
         if not line.startswith(b"{"):
             continue
@@ -54,10 +47,21 @@ def compile_units(command, *, graph, target, library, env):
         if message.get("reason") == "build-finished":
             if message.get("success") is not True:
                 raise ValueError("Cargo didn't report a successful native build")
-            finished = True
-            break
-        if message.get("reason") != "compiler-artifact":
-            continue
+            return
+        if message.get("reason") == "compiler-artifact":
+            yield message
+    raise ValueError("Cargo didn't report a successful native build")
+
+
+def compile_units(command, *, graph, target, library, env):
+    """Run Cargo and select metadata for the compiler outputs of this invocation."""
+    packages = {package["id"]: package for package in graph.packages}
+    target_dir = Path(env["CARGO_TARGET_DIR"]).resolve()
+    target_output = target_dir / target
+    expected_library = library.resolve()
+    units = {}
+    linked = False
+    for message in compiler_artifacts(command, root=graph.root, env=env):
         package = packages.get(message["package_id"])
         if package is None or message["manifest_path"] != package["manifest_path"]:
             raise ValueError("Cargo built a package outside the verified dependency graph")
@@ -91,7 +95,7 @@ def compile_units(command, *, graph, target, library, env):
         # Cached artifacts still participate in the build. Drop paths and freshness
         # so the result describes the same compilation on another checkout.
         units[_unit_key(unit)] = unit
-    if not finished or not linked:
+    if not linked:
         raise ValueError("Cargo didn't report the selected native library")
     return [units[key] for key in sorted(units)]
 

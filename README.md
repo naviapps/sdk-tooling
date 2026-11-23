@@ -106,7 +106,8 @@ immutable SDK Tooling revision. The Swift matrix runs the SDK's `make test` and
 macOS 27 by default. SDKs can select macOS 26 with `source-macos` or choose a
 Make target that prepares and runs their source checks with `source-target`.
 Windows checks can opt in to installing the x64 .NET SDK declared in the SDK's
-`global.json`.
+`global.json`. Set `test-bindings: "true"` on the Windows check step to run the
+contributor fixtures declared in [`sdk-checks.toml`](docs/REFERENCE.md#c-abi-and-net-project-checks).
 
 The shared
 [SDK distribution checks](.github/workflows/check-sdk-distribution.yml) are run
