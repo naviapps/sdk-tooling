@@ -211,7 +211,8 @@ def check_installed(
 
     with destination.open("x", encoding="utf-8") if destination else nullcontext() as report:
         try:
-            with tempfile.TemporaryDirectory(prefix="installed-sdk-consumers-") as directory:
+            # Cargo checks out full SDK trees, including macOS frameworks on Windows.
+            with tempfile.TemporaryDirectory(prefix="sdk-") as directory:
                 work = Path(directory).resolve()
                 if work.is_relative_to(root):
                     raise ValueError("External clients must be outside the SDK workspace")
