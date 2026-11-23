@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 import plistlib
+import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -13,8 +15,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sdk_tooling import installed_consumers as driver
+from sdk_tooling import windows
 from sdk_tooling.artifacts import files, hashes
+from sdk_tooling.consumers import c_framework, rust_c, rust_git, workspace
 
 GIT_URL = "https://github.com/naviapps/fixture.git"
 DEPENDENCY_URL = "https://github.com/naviapps/dependency.git"
@@ -27,24 +30,24 @@ class InstalledConsumersTests(unittest.TestCase):
     def setUpClass(cls):
         work = Path(cls.enterClassContext(tempfile.TemporaryDirectory())).resolve()
         architecture = "x64" if os.name == "nt" else None
-        env = driver._environment(work, rust=True, windows_architecture=architecture)
+        env = workspace._environment(work, rust=True, windows_architecture=architecture)
         if architecture:
-            env, _ = driver.windows.native_msvc_environment(
-                driver.windows.host_architecture(), env, target_architecture=architecture
+            env, _ = windows.native_msvc_environment(
+                windows.host_architecture(), env, target_architecture=architecture
             )
         root = Path(__file__).resolve().parents[1]
         env["RUSTUP_TOOLCHAIN"] = tomllib.loads((root / "rust-toolchain.toml").read_text())[
             "toolchain"
         ]["channel"]
         env["RUSTUP_AUTO_INSTALL"] = "0"
-        cls.verifier = driver._prepare_identity_verifier(
-            work, "rustc", env, driver.windows.MSVC_TARGETS.get(architecture)
+        cls.verifier = rust_git._prepare_identity_verifier(
+            work, "rustc", env, windows.MSVC_TARGETS.get(architecture)
         )
 
     def setUp(self):
         self.work = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.prepare_verifier = self.enterContext(
-            patch.object(driver, "_prepare_identity_verifier", return_value=type(self).verifier)
+            patch.object(rust_git, "_prepare_identity_verifier", return_value=type(self).verifier)
         )
 
     def directory(self, name):
@@ -54,17 +57,17 @@ class InstalledConsumersTests(unittest.TestCase):
 
     def repository(self, name="sdk"):
         root = self.directory(name)
-        driver._git(root, "init", "--quiet", "--initial-branch", "main")
-        driver._git(root, "config", "user.name", "Fixture")
-        driver._git(root, "config", "user.email", "fixture@example.invalid")
+        workspace._git(root, "init", "--quiet", "--initial-branch", "main")
+        workspace._git(root, "config", "user.name", "Fixture")
+        workspace._git(root, "config", "user.email", "fixture@example.invalid")
         (root / "producer").write_text("producer", encoding="utf-8")
         self.commit(root)
         return root
 
     @staticmethod
     def commit(root):
-        driver._git(root, "add", ".")
-        driver._git(root, "commit", "--quiet", "-m", "fixture")
+        workspace._git(root, "add", ".")
+        workspace._git(root, "commit", "--quiet", "-m", "fixture")
 
     @staticmethod
     def manifest(packages):
@@ -91,7 +94,7 @@ class InstalledConsumersTests(unittest.TestCase):
         self.commit(root)
 
     def cli(self, root, argv, packages=("configuration-storage",), **options):
-        return driver.check_installed(
+        return rust_c.check_installed(
             root=root,
             git_url=GIT_URL,
             rust_packages=packages,
@@ -103,27 +106,27 @@ class InstalledConsumersTests(unittest.TestCase):
 
     def test_complete_bundle_delivers_exact_source_through_canonical_url(self):
         root = self.repository()
-        rev, tree = driver._source_revision(root, None)
+        rev, tree = workspace._source_revision(root, None)
         bundle = self.work / "sdk.bundle"
-        driver._git(root, "bundle", "create", str(bundle), "HEAD")
+        workspace._git(root, "bundle", "create", str(bundle), "HEAD")
         task = self.directory("task")
-        env = driver._environment(task, rust=True)
-        mirror = driver._prepare_git_delivery(bundle, task, env, GIT_URL, rev, tree)
+        env = workspace._environment(task, rust=True)
+        mirror = rust_git._prepare_git_delivery(bundle, task, env, GIT_URL, rev, tree)
         self.assertEqual(
-            driver._git(mirror, "rev-parse", "--is-shallow-repository", env=env), "false"
+            workspace._git(mirror, "rev-parse", "--is-shallow-repository", env=env), "false"
         )
         remote = self.work / "consumer-checkout"
-        driver._git(task, "clone", GIT_URL, str(remote), env=env)
-        self.assertEqual(driver._source_revision(remote, rev), (rev, tree))
-        self.assertEqual(driver._source_revision(root, rev), (rev, tree))
+        workspace._git(task, "clone", GIT_URL, str(remote), env=env)
+        self.assertEqual(workspace._source_revision(remote, rev), (rev, tree))
+        self.assertEqual(workspace._source_revision(root, rev), (rev, tree))
 
     def dependency_bundle(self, name="dependency", index=0):
         source = self.repository(name)
         (source / "producer").write_text("distinct " + name, encoding="utf-8")
         self.commit(source)
-        revision, _ = driver._source_revision(source, None)
+        revision, _ = workspace._source_revision(source, None)
         bundle = self.work / f"{index}.bundle"
-        driver._git(source, "bundle", "create", str(bundle), "HEAD")
+        workspace._git(source, "bundle", "create", str(bundle), "HEAD")
         row = {
             "repository": "naviapps/" + name,
             "url": "https://github.com/naviapps/" + name + ".git",
@@ -138,7 +141,7 @@ class InstalledConsumersTests(unittest.TestCase):
         source, row = self.dependency_bundle()
         revision = row["revision"]
         self.rust_fixture(root, ("configuration-storage",), revision)
-        producer, tree = driver._source_revision(root, None)
+        producer, tree = workspace._source_revision(root, None)
         extra = f"git+{DEPENDENCY_URL}?rev={revision}#{revision}"
         sources = {
             "configuration-storage": f"git+{GIT_URL}?rev={producer}#{producer}",
@@ -148,7 +151,7 @@ class InstalledConsumersTests(unittest.TestCase):
         }
         manifest = self.work / "manifest.json"
         manifest.write_text(json.dumps([row]), encoding="utf-8")
-        original = driver._run_rust
+        original = rust_git._run_rust
 
         def cargo(command, *, cwd, env):
             cache = Path(env["CARGO_HOME"])
@@ -160,8 +163,8 @@ class InstalledConsumersTests(unittest.TestCase):
                     self.assertNotIn(name, env)
                 for url, pin in ((GIT_URL, producer), (DEPENDENCY_URL, revision)):
                     checkout = cache / pin
-                    driver._git(cwd, "clone", url, str(checkout), env=env)
-                    self.assertEqual(driver._git(checkout, "rev-parse", "HEAD", env=env), pin)
+                    workspace._git(cwd, "clone", url, str(checkout), env=env)
+                    self.assertEqual(workspace._git(checkout, "rev-parse", "HEAD", env=env), pin)
                 (cwd / "Cargo.lock").write_text(
                     "".join(
                         f'[[package]]\nname = "{name}"\nsource = "{identity}"\n'
@@ -190,11 +193,11 @@ class InstalledConsumersTests(unittest.TestCase):
             with (
                 self.subTest(delivery=delivery),
                 patch.object(
-                    driver,
+                    rust_git,
                     "_run_rust",
                     side_effect=lambda *args, **kw: original(*args, runner=cargo, **kw),
                 ),
-                patch.object(driver.shutil, "which", return_value="prepared-cargo"),
+                patch.object(shutil, "which", return_value="prepared-cargo"),
                 patch.dict(
                     os.environ,
                     {
@@ -233,7 +236,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 with self.subTest(rows=rows):
                     manifest.write_text(json.dumps(rows), encoding="utf-8")
                     with self.assertRaisesRegex(ValueError, message):
-                        driver._ci_dependency_bundles(pins, type(self).verifier)
+                        rust_git._ci_dependency_bundles(pins, type(self).verifier)
             root = self.repository()
             with self.assertRaisesRegex(ValueError, "Choose either"):
                 self.cli(
@@ -261,11 +264,12 @@ class InstalledConsumersTests(unittest.TestCase):
             for name, pin in dependencies.items():
                 content.write(f'{name} = {{ git = "{pin["git"]}", rev = "{pin["rev"]}" }}\n')
         self.commit(root)
-        revision, _ = driver._source_revision(root, None)
+        revision, _ = workspace._source_revision(root, None)
         identities = {
-            name: driver._git_identity(pin["git"], pin["rev"]) for name, pin in dependencies.items()
+            name: rust_git._git_identity(pin["git"], pin["rev"])
+            for name, pin in dependencies.items()
         }
-        identities["configuration-storage"] = driver._git_identity(GIT_URL, revision)
+        identities["configuration-storage"] = rust_git._git_identity(GIT_URL, revision)
         manifest = self.work / "manifest.json"
         manifest.write_text(json.dumps(origins), encoding="utf-8")
         calls = []
@@ -282,8 +286,8 @@ class InstalledConsumersTests(unittest.TestCase):
                     *((row["url"], row["revision"]) for row in origins),
                 ]:
                     target = marker.parent / commit
-                    driver._git(cwd, "clone", url, target, env=env)
-                    self.assertEqual(driver._git(target, "rev-parse", "HEAD", env=env), commit)
+                    workspace._git(cwd, "clone", url, target, env=env)
+                    self.assertEqual(workspace._git(target, "rev-parse", "HEAD", env=env), commit)
                 (cwd / "Cargo.lock").write_text(
                     "".join(
                         f'[[package]]\nname = "{name}"\nsource = "{source}"\n'
@@ -305,7 +309,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 )
             return SimpleNamespace(stdout="")
 
-        original = driver._run_rust
+        original = rust_git._run_rust
         explicit = [
             "--git-dependency-source",
             f"{second_row['repository']}={second}",
@@ -314,11 +318,11 @@ class InstalledConsumersTests(unittest.TestCase):
         ]
         with (
             patch.object(
-                driver,
+                rust_git,
                 "_run_rust",
                 side_effect=lambda *args, **kw: original(*args, runner=cargo, **kw),
             ),
-            patch.object(driver.shutil, "which", return_value="prepared-cargo"),
+            patch.object(shutil, "which", return_value="prepared-cargo"),
         ):
             for uses_ci in (True, False):
                 evidence = self.work / f"multiple-{uses_ci}.json"
@@ -364,7 +368,7 @@ class InstalledConsumersTests(unittest.TestCase):
             (second / "producer").write_text("newer than the advertised pin", encoding="utf-8")
             self.commit(second)
             unrelated_head = self.work / "unrelated-head.bundle"
-            driver._git(second, "bundle", "create", unrelated_head, "HEAD")
+            workspace._git(second, "bundle", "create", unrelated_head, "HEAD")
             content = unrelated_head.read_bytes()
             (self.work / second_row["bundle"]).write_bytes(content)
             manifest.write_text(
@@ -401,9 +405,9 @@ class InstalledConsumersTests(unittest.TestCase):
         a, b = "naviapps/first", "naviapps/second"
         pins = dict.fromkeys((a, b))
         path = "file with an=equals sign"
-        self.assertEqual(driver._local_dependency_sources([path], {a: None}), {a: Path(path)})
+        self.assertEqual(rust_git._local_dependency_sources([path], {a: None}), {a: Path(path)})
         self.assertEqual(
-            driver._local_dependency_sources([f"{a}={path}"], {a: None}), {a: Path(path)}
+            rust_git._local_dependency_sources([f"{a}={path}"], {a: None}), {a: Path(path)}
         )
         for values in (
             [path],
@@ -416,7 +420,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 self.subTest(values=values),
                 self.assertRaisesRegex(ValueError, "each SDK Git source once"),
             ):
-                driver._local_dependency_sources(values, pins)
+                rust_git._local_dependency_sources(values, pins)
 
     def test_conflicting_revisions_or_aliases_of_one_repository_are_rejected(self):
         first = {"git": DEPENDENCY_URL, "rev": "a" * 40}
@@ -428,19 +432,19 @@ class InstalledConsumersTests(unittest.TestCase):
                 self.subTest(conflict=conflict),
                 self.assertRaisesRegex(ValueError, "one exact URL and revision"),
             ):
-                driver._extra_dependencies(
+                rust_git._extra_dependencies(
                     {"first": first, "second": first | conflict}, GIT_URL, ()
                 )
 
     def test_shallow_source_cannot_replace_complete_delivery(self):
         root = self.repository()
-        rev, tree = driver._source_revision(root, None)
+        rev, tree = workspace._source_revision(root, None)
         shallow = self.work / "shallow"
-        driver._git(self.work, "clone", "--depth=1", root.as_uri(), str(shallow))
+        workspace._git(self.work, "clone", "--depth=1", root.as_uri(), str(shallow))
         task = self.directory("task")
         with self.assertRaisesRegex(ValueError, "complete local mirror or bundle"):
-            driver._prepare_git_delivery(
-                shallow, task, driver._environment(task, rust=True), GIT_URL, rev, tree
+            rust_git._prepare_git_delivery(
+                shallow, task, workspace._environment(task, rust=True), GIT_URL, rev, tree
             )
         self.assertFalse((task / "sdk.git").exists())
 
@@ -453,10 +457,10 @@ class InstalledConsumersTests(unittest.TestCase):
                 revision = "a" * 40
                 template = self.manifest(packages)
                 self.assertNotIn(
-                    "@SDK_REVISION@", driver._rust_manifest(template, GIT_URL, packages, revision)
+                    "@SDK_REVISION@", rust_git._rust_manifest(template, GIT_URL, packages, revision)
                 )
                 with self.assertRaisesRegex(ValueError, "exact public Git"):
-                    driver._rust_manifest(
+                    rust_git._rust_manifest(
                         template.replace(f'git = "{GIT_URL}"', 'path = "../sdk"'),
                         GIT_URL,
                         packages,
@@ -466,7 +470,7 @@ class InstalledConsumersTests(unittest.TestCase):
     def test_registry_dependency_requires_an_exact_manifest_version_and_features(self):
         packages = ("producer",)
         revision = "a" * 40
-        registry = driver._registry_dependencies(
+        registry = rust_git._registry_dependencies(
             {"tokio": {"version": "=1.54.1", "features": ["macros", "rt"]}}, packages
         )
         template = (
@@ -476,7 +480,7 @@ class InstalledConsumersTests(unittest.TestCase):
         options = {"registry_dependencies": registry}
         self.assertIn(
             'version = "=1.54.1"',
-            driver._rust_manifest(template, GIT_URL, packages, revision, **options),
+            rust_git._rust_manifest(template, GIT_URL, packages, revision, **options),
         )
         for changed in (
             template.replace('"=1.54.1"', '"1.54.1"'),
@@ -486,7 +490,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 self.subTest(changed=changed),
                 self.assertRaisesRegex(ValueError, "exact public Git"),
             ):
-                driver._rust_manifest(changed, GIT_URL, packages, revision, **options)
+                rust_git._rust_manifest(changed, GIT_URL, packages, revision, **options)
 
     def test_rust_metadata_rejects_a_manifest_outside_the_client_and_fresh_cache(self):
         client, cache = self.directory("client"), self.directory("cargo-home")
@@ -500,16 +504,16 @@ class InstalledConsumersTests(unittest.TestCase):
         outside.write_text("developer", encoding="utf-8")
         entry["manifest_path"] = str(outside)
         with self.assertRaisesRegex(ValueError, "escaped"):
-            driver._check_rust_metadata(
+            rust_git._check_rust_metadata(
                 metadata, client, cache, type(self).verifier, (package,), expected
             )
 
     def test_identity_verifier_rejects_ambiguous_framing_before_launching(self):
         with (
-            patch.object(driver.subprocess, "run") as launch,
+            patch.object(subprocess, "run") as launch,
             self.assertRaisesRegex(ValueError, "Invalid Cargo package evidence record"),
         ):
-            driver._verify_packages(
+            rust_git._verify_packages(
                 type(self).verifier, [{"name": "bad\0record"}], ("producer",), GIT_URL, "Cargo.lock"
             )
         launch.assert_not_called()
@@ -531,10 +535,10 @@ class InstalledConsumersTests(unittest.TestCase):
         ):
             with (
                 self.subTest(message=message, result=result),
-                patch.object(driver.subprocess, "run", return_value=result, side_effect=exception),
+                patch.object(subprocess, "run", return_value=result, side_effect=exception),
                 self.assertRaisesRegex(ValueError, message) as failure,
             ):
-                driver._verify_packages(
+                rust_git._verify_packages(
                     type(self).verifier, [{"name": "producer"}], (), GIT_URL, "Cargo.lock"
                 )
             self.assertNotIn("private", str(failure.exception))
@@ -544,7 +548,7 @@ class InstalledConsumersTests(unittest.TestCase):
             with (
                 self.subTest(output=output),
                 patch.object(
-                    driver.subprocess,
+                    subprocess,
                     "run",
                     return_value=subprocess.CompletedProcess([], 0, output, b""),
                 ),
@@ -566,8 +570,8 @@ class InstalledConsumersTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.commit(root)
-        revision, _ = driver._source_revision(root, None)
-        identity = driver._git_identity(GIT_URL, revision)
+        revision, _ = workspace._source_revision(root, None)
+        identity = rust_git._git_identity(GIT_URL, revision)
         lock = "".join(
             f'[[package]]\nname = "{name}"\nsource = "{identity}"\n' for name in packages
         ).encode()
@@ -578,7 +582,7 @@ class InstalledConsumersTests(unittest.TestCase):
         }
         report = self.work / "features.json"
         actions, caches, inspected = [], set(), []
-        original = driver._run_rust
+        original = rust_git._run_rust
 
         def fake_cargo(command, *, cwd, env):
             action = command[1]
@@ -623,10 +627,10 @@ class InstalledConsumersTests(unittest.TestCase):
             return {"mode": mode}
 
         with (
-            patch.object(driver, "_run_rust", side_effect=rust),
-            patch.object(driver.shutil, "which", return_value="prepared-cargo"),
+            patch.object(rust_git, "_run_rust", side_effect=rust),
+            patch.object(shutil, "which", return_value="prepared-cargo"),
         ):
-            driver.check_installed(
+            rust_c.check_installed(
                 root=root,
                 git_url=GIT_URL,
                 rust_packages=packages,
@@ -657,11 +661,11 @@ class InstalledConsumersTests(unittest.TestCase):
             return check(metadata, mode)
 
         with (
-            patch.object(driver, "_run_rust", side_effect=rust),
-            patch.object(driver.shutil, "which", return_value="prepared-cargo"),
+            patch.object(rust_git, "_run_rust", side_effect=rust),
+            patch.object(shutil, "which", return_value="prepared-cargo"),
             self.assertRaisesRegex(ValueError, "leaked into geometry"),
         ):
-            driver.check_installed(
+            rust_c.check_installed(
                 root=root,
                 git_url=GIT_URL,
                 rust_packages=packages,
@@ -686,7 +690,7 @@ class InstalledConsumersTests(unittest.TestCase):
         root = self.repository()
         packages = ("preset-documents", "preset-documents-file-io")
         self.rust_fixture(root, packages)
-        rev, tree = driver._source_revision(root, None)
+        rev, tree = workspace._source_revision(root, None)
         identity = f"git+{GIT_URL}?rev={rev}#{rev}"
         lock = "".join(
             f'[[package]]\nname = "{name}"\nsource = "{identity}"\n' for name in packages
@@ -694,7 +698,7 @@ class InstalledConsumersTests(unittest.TestCase):
         report = self.work / "evidence.json"
         events = []
         work_dirs = []
-        original = driver._run_rust
+        original = rust_git._run_rust
 
         def fake_cargo(command, *, cwd, env):
             action = command[1]
@@ -736,8 +740,8 @@ class InstalledConsumersTests(unittest.TestCase):
             return original(*args, runner=fake_cargo)
 
         with (
-            patch.object(driver, "_run_rust", side_effect=rust),
-            patch.object(driver.shutil, "which", return_value="prepared-cargo"),
+            patch.object(rust_git, "_run_rust", side_effect=rust),
+            patch.object(shutil, "which", return_value="prepared-cargo"),
             patch.dict(os.environ, {"CARGO_HOME": "producer", "RUSTFLAGS": "producer"}),
             self.assertRaises(subprocess.CalledProcessError),
         ):
@@ -755,7 +759,7 @@ class InstalledConsumersTests(unittest.TestCase):
         root = self.repository()
         sentinel = root / "producer"
         original = sentinel.read_bytes()
-        revision = driver._source_revision(root, None)
+        revision = workspace._source_revision(root, None)
         for index, suffix in enumerate(
             (None, ".Cargo.lock", ".cargo-metadata.json", ".geometry.cargo-metadata.json")
         ):
@@ -772,49 +776,49 @@ class InstalledConsumersTests(unittest.TestCase):
             )
             with (
                 self.subTest(suffix=suffix),
-                patch.object(driver, "_run_rust") as rust,
+                patch.object(rust_git, "_run_rust") as rust,
                 self.assertRaisesRegex(ValueError, "evidence output already exists"),
             ):
                 self.cli(root, ["--language", "rust", "--evidence", str(report)], **modes)
             rust.assert_not_called()
             self.assertTrue(output.is_symlink())
             self.assertEqual(sentinel.read_bytes(), original)
-        self.assertEqual(driver._source_revision(root, None), revision)
+        self.assertEqual(workspace._source_revision(root, None), revision)
 
     @unittest.skipIf(os.name == "nt", "Requires POSIX symlinks")
     def test_new_sidecar_symlink_cannot_overwrite_producer_and_partial_evidence_survives(self):
         root = self.repository()
         sentinel = root / "producer"
         original = sentinel.read_bytes()
-        revision = driver._source_revision(root, None)
+        revision = workspace._source_revision(root, None)
         report = self.work / "evidence.json"
         lock = b"# resolved lock\n"
 
         def run_rust(root, work, git_url, packages, revision, tree, delivery, resolved):
             report.with_suffix(".cargo-metadata.json").symlink_to(sentinel)
-            resolved(tree, driver._git_identity(git_url, revision), lock, {"packages": []})
+            resolved(tree, rust_git._git_identity(git_url, revision), lock, {"packages": []})
             self.fail("A newly occupied sidecar must stop acceptance")
 
-        with patch.object(driver, "_run_rust", run_rust), self.assertRaises(FileExistsError):
+        with patch.object(rust_git, "_run_rust", run_rust), self.assertRaises(FileExistsError):
             self.cli(root, ["--language", "rust", "--evidence", str(report)])
         self.assertEqual(sentinel.read_bytes(), original)
-        self.assertEqual(driver._source_revision(root, None), revision)
+        self.assertEqual(workspace._source_revision(root, None), revision)
         self.assertEqual(report.with_suffix(".Cargo.lock").read_bytes(), lock)
         self.assertEqual(json.loads(report.read_bytes())["state"], "failed")
 
     def test_git_replace_cannot_relabel_a_different_producer_tree(self):
         root = self.repository()
-        revision, tree = driver._source_revision(root, None)
+        revision, tree = workspace._source_revision(root, None)
         (root / "producer").write_text("replacement", encoding="utf-8")
         self.commit(root)
-        replacement = driver._git(root, "rev-parse", "HEAD")
-        driver._git(root, "checkout", "--quiet", "--detach", revision)
-        driver._git(root, "replace", revision, replacement)
-        self.assertEqual(driver._source_revision(root, revision), (revision, tree))
+        replacement = workspace._git(root, "rev-parse", "HEAD")
+        workspace._git(root, "checkout", "--quiet", "--detach", revision)
+        workspace._git(root, "replace", revision, replacement)
+        self.assertEqual(workspace._source_revision(root, revision), (revision, tree))
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         subprocess.run(["git", "reset", "--quiet", "--hard", "HEAD"], cwd=root, env=env, check=True)
         with self.assertRaisesRegex(ValueError, "clean committed SDK"):
-            driver._source_revision(root, revision)
+            workspace._source_revision(root, revision)
 
     def test_dirty_producer_or_wrong_revision_stops_before_delivery(self):
         root = self.repository()
@@ -888,7 +892,7 @@ class InstalledConsumersTests(unittest.TestCase):
         with patch.dict(
             os.environ, {"GITHUB_TOKEN": "fixture", "CPATH": str(root), "RUSTFLAGS": "fixture"}
         ):
-            evidence = driver._run_c(root, task, FRAMEWORK, HEADER, None, fake_clang)
+            evidence = c_framework._run_c(root, task, FRAMEWORK, HEADER, None, fake_clang)
         self.assertEqual(len(calls), 2)
         self.assertIn("ThirdParty/upstream/NOTICE", evidence["installedFiles"])
         self.assertEqual(evidence["runtimeOutput"], "fixture passed")
@@ -903,7 +907,7 @@ class InstalledConsumersTests(unittest.TestCase):
         report = self.work / "product.json"
         unused_lock = report.with_suffix(".Cargo.lock")
         unused_lock.write_bytes(b"unrelated Rust evidence\n")
-        actual_run_c = driver._run_c
+        actual_run_c = c_framework._run_c
 
         def fake_clang(command, *, cwd, env):
             if "clang" in command:
@@ -916,7 +920,7 @@ class InstalledConsumersTests(unittest.TestCase):
         def run_c(*args, **kwargs):
             return actual_run_c(*args, runner=fake_clang, **kwargs)
 
-        with patch.object(driver.sys, "platform", "darwin"), patch.object(driver, "_run_c", run_c):
+        with patch.object(sys, "platform", "darwin"), patch.object(c_framework, "_run_c", run_c):
             self.cli(
                 root,
                 ["--language", "c", "--evidence", str(report)],
@@ -936,12 +940,12 @@ class InstalledConsumersTests(unittest.TestCase):
         lock = b"# isolated client lock\n"
 
         def run_rust(root, work, git_url, packages, revision, tree, delivery, resolved):
-            resolved(tree, driver._git_identity(git_url, revision), lock, {"packages": []})
+            resolved(tree, rust_git._git_identity(git_url, revision), lock, {"packages": []})
             return "Rust fixture passed\n"
 
         with (
-            patch.object(driver.sys, "platform", "darwin"),
-            patch.object(driver, "_run_rust", run_rust),
+            patch.object(sys, "platform", "darwin"),
+            patch.object(rust_git, "_run_rust", run_rust),
             self.assertRaises(FileNotFoundError),
         ):
             self.cli(root, ["--evidence", str(report)])
@@ -966,7 +970,7 @@ class InstalledConsumersTests(unittest.TestCase):
             report = self.work / f"invalid-product-{index}.json"
             with (
                 self.subTest(arguments=arguments),
-                patch.object(driver.sys, "platform", "darwin"),
+                patch.object(sys, "platform", "darwin"),
                 self.assertRaisesRegex(ValueError, message),
             ):
                 self.cli(root, ["--language", "c", "--evidence", str(report)], **arguments)
@@ -988,7 +992,7 @@ class InstalledConsumersTests(unittest.TestCase):
         ):
             with (
                 self.subTest(arguments=arguments),
-                patch.object(driver.sys, "platform", "darwin"),
+                patch.object(sys, "platform", "darwin"),
                 self.assertRaisesRegex(ValueError, "inside its declared root"),
             ):
                 self.cli(root, ["--language", "c"], **arguments)
@@ -1007,7 +1011,7 @@ class InstalledConsumersTests(unittest.TestCase):
             return SimpleNamespace(stdout="")
 
         with self.assertRaisesRegex(ValueError, "installed SDK header"):
-            driver._run_c(root, task, FRAMEWORK, HEADER, None, fake_clang)
+            c_framework._run_c(root, task, FRAMEWORK, HEADER, None, fake_clang)
 
     def test_c_rejects_changes_to_installed_payload_during_execution(self):
         root = self.c_sdk()
@@ -1022,18 +1026,18 @@ class InstalledConsumersTests(unittest.TestCase):
             return SimpleNamespace(stdout="fixture passed")
 
         with self.assertRaisesRegex(ValueError, "installed C payload changed"):
-            driver._run_c(root, task, FRAMEWORK, HEADER, None, fake_clang)
+            c_framework._run_c(root, task, FRAMEWORK, HEADER, None, fake_clang)
 
     def test_c_rejects_stale_or_unrecorded_framework_bytes(self):
         root = self.c_sdk()
         binary = root / FRAMEWORK / "CFixture"
         binary.write_bytes(b"changed binary")
         with self.assertRaisesRegex(ValueError, "receipt"):
-            driver._stage_c(root, self.directory("stale-work"), FRAMEWORK)
+            c_framework._stage_c(root, self.directory("stale-work"), FRAMEWORK)
         binary.write_bytes(b"accepted native bytes")
         (root / FRAMEWORK / "unrecorded").write_text("unrecorded", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "accepted output inventory"):
-            driver._stage_c(root, self.directory("extra-work"), FRAMEWORK)
+            c_framework._stage_c(root, self.directory("extra-work"), FRAMEWORK)
 
     def test_c_receipt_requires_the_frameworks_minimum_macos(self):
         root = self.c_sdk()
@@ -1043,7 +1047,7 @@ class InstalledConsumersTests(unittest.TestCase):
         ):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, error):
                 self.receipt(root, minimum_macos=version)
-                driver._stage_c(root, self.directory(name), FRAMEWORK)
+                c_framework._stage_c(root, self.directory(name), FRAMEWORK)
 
     @unittest.skipIf(os.name == "nt", "Requires POSIX framework symlinks")
     def test_c_keeps_relative_framework_links_but_rejects_escape(self):
@@ -1055,19 +1059,19 @@ class InstalledConsumersTests(unittest.TestCase):
         (framework / "Versions/Current").symlink_to("A", target_is_directory=True)
         (framework / "Headers").symlink_to("Versions/Current/Headers", target_is_directory=True)
         self.receipt(root)
-        installed, _, _ = driver._stage_c(root, self.directory("linked"), FRAMEWORK)
+        installed, _, _ = c_framework._stage_c(root, self.directory("linked"), FRAMEWORK)
         self.assertEqual(
             os.readlink(installed / FRAMEWORK.name / "Headers"), "Versions/Current/Headers"
         )
         (framework / "escape").symlink_to(root / "ThirdParty/upstream/NOTICE")
         self.receipt(root)
         with self.assertRaisesRegex(ValueError, "symlink escapes"):
-            driver._stage_c(root, self.directory("escaped"), FRAMEWORK)
+            c_framework._stage_c(root, self.directory("escaped"), FRAMEWORK)
 
     def test_default_gate_does_not_invoke_mac_framework_on_windows(self):
         root = self.repository()
         with (
-            patch.object(driver.sys, "platform", "win32"),
+            patch.object(sys, "platform", "win32"),
             self.assertRaisesRegex(ValueError, "requires owned macOS"),
         ):
             self.cli(root, [])
@@ -1076,9 +1080,9 @@ class InstalledConsumersTests(unittest.TestCase):
         root = self.repository()
         packages = ("configuration-storage",)
         self.rust_fixture(root, packages)
-        revision, _ = driver._source_revision(root, None)
-        identity = driver._git_identity(GIT_URL, revision)
-        original = driver._run_rust
+        revision, _ = workspace._source_revision(root, None)
+        identity = rust_git._git_identity(GIT_URL, revision)
+        original = rust_git._run_rust
 
         def msvc(architecture, *, environment, target_architecture):
             self.assertEqual((architecture, target_architecture), (host, target_arch))
@@ -1103,7 +1107,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 action = command[1]
                 actions.append(action)
                 if action == "-vV":
-                    triple = driver.windows.MSVC_TARGETS[host]
+                    triple = windows.MSVC_TARGETS[host]
                     return SimpleNamespace(stdout=f"release: 1.99.1\nhost: {triple}\n")
                 if action == "--print":
                     self.assertEqual(command[2:], ["target-libdir", "--target", target])
@@ -1156,7 +1160,7 @@ class InstalledConsumersTests(unittest.TestCase):
                     image[:2] = b"MZ"
                     struct.pack_into("<I", image, 60, 64)
                     image[64:68] = b"PE\0\0"
-                    struct.pack_into("<H", image, 68, driver.windows.MSVC_MACHINES[image_arch])
+                    struct.pack_into("<H", image, 68, windows.MSVC_MACHINES[image_arch])
                     program.write_bytes(image)
                     return SimpleNamespace(
                         stdout=json.dumps(
@@ -1188,7 +1192,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 "Select the native Windows Rust target or x64 on ARM64",
             ),
         ):
-            target = driver.windows.MSVC_TARGETS[target_arch]
+            target = windows.MSVC_TARGETS[target_arch]
             report = self.work / f"{host}-{target_arch}-{image_arch}-{prepared}.json"
             actions = []
             if prepared:
@@ -1197,13 +1201,11 @@ class InstalledConsumersTests(unittest.TestCase):
                 stdlib_file.unlink()
             with (
                 self.subTest(host=host, target=target_arch, image=image_arch, prepared=prepared),
-                patch.object(driver.sys, "platform", "win32"),
-                patch.object(driver.windows, "host_architecture", return_value=host),
-                patch.object(driver.windows, "native_msvc_environment", side_effect=msvc),
-                patch.object(driver, "_run_rust", side_effect=rust),
-                patch.object(
-                    driver.shutil, "which", side_effect=lambda exe, **_: "prepared-" + exe
-                ),
+                patch.object(sys, "platform", "win32"),
+                patch.object(windows, "host_architecture", return_value=host),
+                patch.object(windows, "native_msvc_environment", side_effect=msvc),
+                patch.object(rust_git, "_run_rust", side_effect=rust),
+                patch.object(shutil, "which", side_effect=lambda exe, **_: "prepared-" + exe),
                 patch.dict(
                     os.environ,
                     {
@@ -1229,7 +1231,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 if not prepared:
                     self.assertEqual(actions, ["-vV", "--print"])
                 continue
-            self.assertEqual(evidence["rust"]["host"], driver.windows.MSVC_TARGETS[host])
+            self.assertEqual(evidence["rust"]["host"], windows.MSVC_TARGETS[host])
             self.assertEqual(evidence["rust"]["target"], target)
             self.assertEqual(
                 evidence["rust"]["execution"], "emulated" if host != target_arch else "native"
@@ -1247,17 +1249,15 @@ class InstalledConsumersTests(unittest.TestCase):
         root = self.repository()
         packages = ("configuration-storage",)
         self.rust_fixture(root, packages)
-        revision, tree = driver._source_revision(root, None)
+        revision, tree = workspace._source_revision(root, None)
         with (
-            patch.object(driver.windows, "host_architecture", return_value="arm64"),
-            patch.object(
-                driver.windows, "native_msvc_environment", return_value=({"PATH": ""}, None)
-            ),
-            patch.object(driver.shutil, "which", return_value="prepared-cargo"),
-            patch.object(driver, "_prepare_git_delivery") as delivery,
+            patch.object(windows, "host_architecture", return_value="arm64"),
+            patch.object(windows, "native_msvc_environment", return_value=({"PATH": ""}, None)),
+            patch.object(shutil, "which", return_value="prepared-cargo"),
+            patch.object(rust_git, "_prepare_git_delivery") as delivery,
             self.assertRaisesRegex(ValueError, "compiler host must match"),
         ):
-            driver._run_rust(
+            rust_git._run_rust(
                 root,
                 self.directory("windows"),
                 GIT_URL,

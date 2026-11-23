@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sdk_tooling import consumers
+from sdk_tooling.consumers import swiftpm
 
 
 class SwiftConsumerTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class SwiftConsumerTests(unittest.TestCase):
         return subprocess.CompletedProcess(argv, 0)
 
     def check(self, **options):
-        consumers.run_swift_consumer(
+        swiftpm.run_swift_consumer(
             root=self.sdk,
             inputs=self.inputs,
             fixture=self.fixture,

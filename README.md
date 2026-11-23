@@ -40,10 +40,8 @@ executable = "ExampleConsumer"
 
 `swift-consumer` stages the declared SDK inputs and
 `fixtures/consumers/swift` in a temporary directory. Add `--distribution`
-to verify the full resolved dependency graph. The `docs` and
-`installed-consumers` commands use their corresponding SDK-owned sections.
-Tooling receives the SDK's own API names, source paths and test clients from
-that description.
+to verify the full resolved dependency graph. SDK-owned sections also select
+the inputs for `docs`, `rust-c-consumers`, `nuget-consumer` and `check-binding`.
 
 Native SDKs describe their artifacts in `native.toml`. Each product identifies
 its C symbol namespace and minimum supported macOS version. Add the FFI path,
@@ -56,8 +54,8 @@ symbol_prefix = "example_"
 minimum_macos = "26.0"
 ```
 
-`sdk-tooling native` builds the declared frameworks and records the source
-specification in their receipts. Use `native --verify` to verify a checkout's
+`sdk-tooling xcframework` builds the declared macOS frameworks and records
+their source specification. Use `xcframework --verify` to verify a checkout's
 existing frameworks, or `--product <id>` to select one declaration.
 `sdk-tooling python distribution/verify_windows.py` runs an SDK-owned check
 with the same selected toolkit. Module commands use `python -m` after the CLI
@@ -199,8 +197,8 @@ Keep each language's build conventions and place tests with their owning interfa
 - `fixtures/consumers/<language>` contains independent package and public interface
   consumers. The verification driver can generate a .NET project from the
   consumer source here. Each consumer selects its inputs explicitly.
-- `fixtures/acceptance/{macos,windows}` contains disposable native hosts that
-  exercise real OS behavior.
+- `fixtures/acceptance/{macos,windows,browser}` contains disposable hosts that
+  exercise real OS or browser behavior.
 - `distribution` contains SDK-specific packaging and verification code and tests
   for that code. The SDK selects the commands in `sdk-distribution.toml`.
 - `Artifacts` contains consumer-required native binaries and provenance;

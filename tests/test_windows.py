@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, Mock, patch
 
-from sdk_tooling import c_compiler, consumers, workspaces
+from sdk_tooling import binding_checks, c_compiler, workspaces
 from sdk_tooling.artifacts import files, hashes
 from sdk_tooling.windows import (
     build_library,
@@ -60,7 +60,6 @@ class WindowsToolsTests(unittest.TestCase):
                 root=root,
                 compiler="1.99.1",
                 build_sources=lambda: sources,
-                tool_inputs=lambda: {"native.py": "build contract"},
             )
             destination = root / ".native-build/windows/win-arm64"
             destination.mkdir(parents=True)
@@ -71,7 +70,7 @@ class WindowsToolsTests(unittest.TestCase):
                 target="aarch64-pc-windows-msvc",
                 compiler="rustc 1.99.1 fixture",
                 inputs=dict(sources),
-                toolInputs=tool_inputs(builder),
+                toolInputs=tool_inputs(),
                 outputs=hashes(files(destination), destination),
             )
             (destination / "native-build.json").write_text(json.dumps(receipt))
@@ -430,7 +429,7 @@ class WindowsCConsumerTests(unittest.TestCase):
                         cleanup.side_effect = [error, DEFAULT]
 
                 def check_c():
-                    consumers.check_c(
+                    binding_checks.check_c(
                         source=root / "main.c",
                         include_dirs=(),
                         library=library,
@@ -439,9 +438,9 @@ class WindowsCConsumerTests(unittest.TestCase):
                     )
 
                 with (
-                    patch.object(consumers.sys, "platform", "win32"),
+                    patch.object(binding_checks.sys, "platform", "win32"),
                     patch.object(
-                        consumers.windows,
+                        binding_checks.windows,
                         "host_architecture",
                         return_value=host,
                         side_effect=None
@@ -449,12 +448,12 @@ class WindowsCConsumerTests(unittest.TestCase):
                         else ValueError("C acceptance requires native Python"),
                     ) as architecture,
                     patch.object(
-                        consumers.windows,
+                        binding_checks.windows,
                         "native_msvc_environment",
                         return_value=({"PATH": "verified-path"}, tools),
                     ) as native_environment,
                     patch.object(c_compiler, "compile_c", side_effect=compile_c) as build,
-                    patch.object(consumers.subprocess, "run", side_effect=run) as launch,
+                    patch.object(binding_checks.subprocess, "run", side_effect=run) as launch,
                     patch.object(
                         tempfile.TemporaryDirectory,
                         "_rmtree",
@@ -489,13 +488,13 @@ class WindowsCConsumerTests(unittest.TestCase):
 
     def test_explicit_windows_c_target_requires_a_windows_worker(self):
         with (
-            patch.object(consumers.sys, "platform", "darwin"),
-            patch.object(consumers.windows, "host_architecture") as host,
+            patch.object(binding_checks.sys, "platform", "darwin"),
+            patch.object(binding_checks.windows, "host_architecture") as host,
             patch.object(c_compiler, "compile_c") as build,
-            patch.object(consumers.subprocess, "run") as launch,
+            patch.object(binding_checks.subprocess, "run") as launch,
             self.assertRaisesRegex(ValueError, "requires a Windows host"),
         ):
-            consumers.check_c(
+            binding_checks.check_c(
                 source="abi.c",
                 include_dirs=(),
                 library="fixture",
@@ -521,7 +520,6 @@ class WindowsPublicationTests(unittest.TestCase):
             symbol_prefix="fixture_",
             retain_notices=lambda env: None,
             build_sources=lambda: {"runtime.rs": "first"},
-            tool_inputs=lambda: {},
             dependencies=lambda env, targets: {"source": "first"},
         )
 

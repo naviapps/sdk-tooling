@@ -69,7 +69,7 @@ def tooling_command(*arguments, root=None):
 
 
 def load(name):
-    if not re.fullmatch(r"[a-z_]+", name):
+    if not re.fullmatch(r"[a-z_]+(?:\.[a-z_]+)*", name):
         raise ValueError("Invalid SDK Tooling module")
     return import_module("sdk_tooling." + name)
 
@@ -96,8 +96,13 @@ def git(root, *arguments):
 
 def support_inputs(root=None):
     root = Path(root or Path.cwd()).resolve(strict=True)
+    package = _TOOLING_ROOT / "sdk_tooling"
     tooling = [
-        *(_TOOLING_ROOT / "sdk_tooling").glob("*.py"),
+        *(
+            path
+            for path in package.rglob("*.py")
+            if not EXCLUDED.intersection(path.relative_to(package).parts[:-1])
+        ),
         _TOOLING_ROOT / "crates/cargo-consumer-identity/src/main.rs",
         _TOOLING_ROOT / "crates/rustc-dep-info/src/main.rs",
     ]

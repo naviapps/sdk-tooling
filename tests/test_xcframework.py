@@ -7,8 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sdk_tooling.artifacts import DEP_INFO_PARSER, dep_info_sources, files, hashes
-from sdk_tooling.native import NativeBuilder
+from sdk_tooling import ffi, windows, xcframework
+from sdk_tooling.artifacts import files, hashes
+from sdk_tooling.xcframework import DEP_INFO_PARSER, XcframeworkBuilder, dep_info_sources
 
 
 class NativeInputsTests(unittest.TestCase):
@@ -28,11 +29,11 @@ class NativeInputsTests(unittest.TestCase):
             "crates/core/src/lib.rs": "pub fn runtime() {}\n",
             "crates/core/src/tests.rs": "#[test] fn test_only() {}\n",
             "ThirdParty/fixture/LICENSE": "retained notice",
-            "tools/native.py": "# SDK-owned native specification\n",
+            "native.toml": "# SDK-owned native specification\n",
         }
         for path, content in sources.items():
             self.write(path, content)
-        self.builder = NativeBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
+        self.builder = XcframeworkBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
         self.production = [
             self.root / name for name in ("crates/ffi/src/lib.rs", "crates/core/src/lib.rs")
         ]
@@ -89,9 +90,9 @@ class NativeInputsTests(unittest.TestCase):
 
     def verify_without_tools(self, builder=None):
         with (
-            patch("sdk_tooling.native.CargoDependencies") as cargo,
-            patch("sdk_tooling.native.run") as run,
-            patch("sdk_tooling.native.subprocess.run") as subprocess_run,
+            patch("sdk_tooling.xcframework.CargoDependencies") as cargo,
+            patch("sdk_tooling.xcframework.run") as run,
+            patch("sdk_tooling.xcframework.subprocess.run") as subprocess_run,
         ):
             (builder or self.builder).verify(inspect_native=False)
         cargo.assert_not_called()
@@ -100,7 +101,7 @@ class NativeInputsTests(unittest.TestCase):
 
     def production_sources(self, builder=None, paths=None):
         with patch(
-            "sdk_tooling.native.dep_info_sources",
+            "sdk_tooling.xcframework.dep_info_sources",
             return_value=self.production if paths is None else paths,
         ):
             return (builder or self.builder)._production_sources("fixture parser digest")
@@ -122,8 +123,8 @@ class NativeInputsTests(unittest.TestCase):
         expected = "@rpath/CFixture.framework/Versions/A/CFixture\n"
         identifiers = dict.fromkeys(("arm64", "x86_64"), expected)
         with (
-            patch("sdk_tooling.native.run", side_effect=inspect),
-            patch("sdk_tooling.native.subprocess.check_output", side_effect=install_name),
+            patch("sdk_tooling.xcframework.run", side_effect=inspect),
+            patch("sdk_tooling.xcframework.subprocess.check_output", side_effect=install_name),
         ):
             self.builder.verify_platform(library)
             for architecture in identifiers:
@@ -139,7 +140,7 @@ class NativeInputsTests(unittest.TestCase):
         self.write("ThirdParty/Product/LICENSE", "product-only notice")
         self.write("ThirdParty/Core/LICENSE", "core notice")
         self.write("tools/core-native.py", "# host-owned native specification\n")
-        builder = NativeBuilder(
+        builder = XcframeworkBuilder(
             self.root,
             symbol_prefix="fixture_",
             minimum_macos="26.0",
@@ -158,13 +159,13 @@ class NativeInputsTests(unittest.TestCase):
 
     def test_cargo_version_can_be_declared_locally_or_inherited(self):
         self.write("crates/ffi/Cargo.toml", '[package]\nname="fixture-ffi"\nversion="0.2.0"\n')
-        builder = NativeBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
+        builder = XcframeworkBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
         self.assertEqual(builder.version, "0.2.0")
         self.write(
             "crates/ffi/Cargo.toml", '[package]\nname="fixture-ffi"\nversion.workspace=true\n'
         )
         self.write("Cargo.toml", '[workspace.package]\nversion="0.3.0"\n')
-        builder = NativeBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
+        builder = XcframeworkBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
         self.assertEqual(builder.version, "0.3.0")
 
     def test_runtime_edit_or_new_module_connection_invalidates(self):
@@ -197,6 +198,62 @@ class NativeInputsTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "escapes"):
             self.builder.inputs()
+
+    def test_dependency_parser_rejects_a_different_snapshot_before_compiling(self):
+        with (
+            patch("sdk_tooling.xcframework.subprocess.run") as run,
+            self.assertRaisesRegex(ValueError, "dependency parser differs from its build input"),
+        ):
+            list(dep_info_sources([], expected_sha256="0" * 64, cwd=self.root, env=os.environ))
+        run.assert_not_called()
+
+    def test_windows_receipt_depends_on_shared_tooling_but_not_xcframework_tools(self):
+        tooling = self.root / "tooling"
+        package = tooling / "sdk_tooling"
+        package.mkdir(parents=True)
+        expected_shared = {"artifacts.py", "cargo.py", "ffi.py", "native_plan.py"}
+        for name in expected_shared | {"windows.py", "xcframework.py"}:
+            (package / name).write_text(name, encoding="utf-8")
+        parser = tooling / DEP_INFO_PARSER
+        parser.parent.mkdir(parents=True)
+        parser.write_text("parser", encoding="utf-8")
+        product = ffi.FfiProduct(self.root, symbol_prefix="fixture_")
+        destination = self.root / ".native-build/windows/win-x64"
+        destination.mkdir(parents=True)
+        (destination / "fixture.dll").write_bytes(b"fixture DLL")
+
+        with (
+            patch.object(ffi, "__file__", str(package / "ffi.py")),
+            patch.object(windows, "__file__", str(package / "windows.py")),
+            patch.object(xcframework, "__file__", str(package / "xcframework.py")),
+        ):
+            windows_inputs = windows.tool_inputs()
+            mac_inputs = self.builder.tool_inputs()
+            self.assertEqual(set(windows_inputs), expected_shared | {"windows.py"})
+            self.assertEqual(
+                set(mac_inputs), expected_shared | {"xcframework.py", DEP_INFO_PARSER.as_posix()}
+            )
+            (destination / "native-build.json").write_text(
+                json.dumps(
+                    dict(
+                        schema=2,
+                        target="x86_64-pc-windows-msvc",
+                        compiler="rustc " + product.compiler + " fixture",
+                        inputs=product.build_sources(),
+                        toolInputs=windows_inputs,
+                        outputs=hashes([destination / "fixture.dll"], destination),
+                    )
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(windows.verify_artifact(product, "x64")[0], destination)
+            (package / "xcframework.py").write_text("new framework tool", encoding="utf-8")
+            parser.write_text("new parser", encoding="utf-8")
+            self.assertNotEqual(self.builder.tool_inputs(), mac_inputs)
+            self.assertEqual(windows.verify_artifact(product, "x64")[0], destination)
+            (package / "cargo.py").write_text("new shared build tool", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "sources or build contract"):
+                windows.verify_artifact(product, "x64")
 
     @unittest.skipUnless(sys.platform == "darwin", "Native framework producers require macOS")
     def test_production_sources_filter_the_real_parser_batch(self):
@@ -332,7 +389,7 @@ class NativeInputsTests(unittest.TestCase):
         descriptors = [self.package("crates/core", "build.rs")]
         roots = self.builder._build_script_roots(descriptors)
         self.accept(roots)
-        reused = NativeBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
+        reused = XcframeworkBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
         self.assertEqual(self.production_sources(reused), sorted(self.production))
         self.assertEqual(reused._build_script_roots(descriptors), roots)
         self.verify_without_tools(reused)
@@ -349,13 +406,13 @@ class NativeInputsTests(unittest.TestCase):
             added.mkdir(exist_ok=True)
 
         with (
-            patch("sdk_tooling.native.sys.platform", "darwin"),
-            patch("sdk_tooling.native.run", return_value="rustc 1.99.1 fixture"),
+            patch("sdk_tooling.xcframework.sys.platform", "darwin"),
+            patch("sdk_tooling.xcframework.run", return_value="rustc 1.99.1 fixture"),
             patch.object(self.builder, "retain_notices"),
-            patch("sdk_tooling.native.CargoDependencies") as dependencies,
-            patch("sdk_tooling.native.subprocess.run", side_effect=cached_build) as cargo,
-            patch("sdk_tooling.native.dep_info_sources", return_value=self.production),
-            patch("sdk_tooling.native.publish") as publish,
+            patch("sdk_tooling.xcframework.CargoDependencies") as dependencies,
+            patch("sdk_tooling.xcframework.subprocess.run", side_effect=cached_build) as cargo,
+            patch("sdk_tooling.xcframework.dep_info_sources", return_value=self.production),
+            patch("sdk_tooling.xcframework.publish") as publish,
         ):
             graph = dependencies.return_value
             graph.provenance.return_value = {}
@@ -375,14 +432,14 @@ class NativeInputsTests(unittest.TestCase):
         self.assertIn(parser, before)
         after = before | {parser: "replacement"}
         with (
-            patch("sdk_tooling.native.sys.platform", "darwin"),
-            patch("sdk_tooling.native.run", return_value="rustc 1.99.1 fixture"),
+            patch("sdk_tooling.xcframework.sys.platform", "darwin"),
+            patch("sdk_tooling.xcframework.run", return_value="rustc 1.99.1 fixture"),
             patch.object(self.builder, "retain_notices"),
             patch.object(self.builder, "tool_inputs", side_effect=[before, after]),
-            patch("sdk_tooling.native.CargoDependencies") as dependencies,
-            patch("sdk_tooling.native.dep_info_sources", return_value=self.production),
-            patch("sdk_tooling.native.subprocess.run"),
-            patch("sdk_tooling.native.publish") as publish,
+            patch("sdk_tooling.xcframework.CargoDependencies") as dependencies,
+            patch("sdk_tooling.xcframework.dep_info_sources", return_value=self.production),
+            patch("sdk_tooling.xcframework.subprocess.run"),
+            patch("sdk_tooling.xcframework.publish") as publish,
         ):
             graph = dependencies.return_value
             graph.provenance.return_value = {}
@@ -411,7 +468,7 @@ class NativeInputsTests(unittest.TestCase):
         ):
             with self.subTest(root=relative), self.assertRaises(ValueError):
                 self.builder.inputs(self.production, build_script_roots=[relative])
-        builder = NativeBuilder(
+        builder = XcframeworkBuilder(
             self.root,
             symbol_prefix="fixture_",
             minimum_macos="26.0",
@@ -456,7 +513,7 @@ class NativeInputsTests(unittest.TestCase):
             ("CRATES/CORE", "crates/core/uncreated/native"),
         ):
             with self.subTest(root=relative, output=output):
-                builder = NativeBuilder(
+                builder = XcframeworkBuilder(
                     self.root,
                     symbol_prefix="fixture_",
                     minimum_macos="26.0",
@@ -553,7 +610,7 @@ class NativeInputsTests(unittest.TestCase):
         self.builder.receipt.write_text(json.dumps(receipt))
         self.write("crates/core/src/lib.rs", "pub fn changed_runtime() {}")
         with (
-            patch("sdk_tooling.native.subprocess.run") as run,
+            patch("sdk_tooling.xcframework.subprocess.run") as run,
             self.assertRaisesRegex(ValueError, "Production source"),
         ):
             self.builder.verify()

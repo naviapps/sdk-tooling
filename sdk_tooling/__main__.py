@@ -6,11 +6,11 @@ import sys
 from pathlib import Path
 
 
-def _native(args, *, root):
-    from .native_plan import builder, builders
+def _xcframework(args, *, root):
+    from .xcframework import xcframework, xcframeworks
 
     root = args.root or root
-    products = [builder(root, args.product)] if args.product else builders(root).values()
+    products = [xcframework(root, args.product)] if args.product else xcframeworks(root).values()
     for product in products:
         if args.verify:
             product.verify()
@@ -42,12 +42,12 @@ def main(argv=None):
     quality.add_arguments(command)
     command.set_defaults(handler=quality.run_operation)
     command = commands.add_parser(
-        "native", help="Build or verify frameworks declared in native.toml"
+        "xcframework", help="Build or verify macOS XCFrameworks declared in native.toml"
     )
     command.add_argument("root", nargs="?", type=Path)
     command.add_argument("--product", help="Select one product in native.toml")
     command.add_argument("--verify", action="store_true")
-    command.set_defaults(handler=_native)
+    command.set_defaults(handler=_xcframework)
     sdk_checks.add_commands(commands)
     binding_checks.add_commands(commands)
     commands.add_parser("windows", help="Run an SDK-owned Windows x64 validation command")

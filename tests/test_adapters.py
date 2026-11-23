@@ -6,9 +6,19 @@ import unittest
 from pathlib import Path
 
 from sdk_tooling import adapters
+from sdk_tooling.consumers import nuget
 
 
 class AdapterTests(unittest.TestCase):
+    def test_load_accepts_package_modules_but_not_relative_names(self):
+        self.assertIs(adapters.load("consumers.nuget"), nuget)
+        for name in (".nuget", "consumers..nuget", "consumers/nuget", "consumers.nuget."):
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(ValueError, "Invalid SDK Tooling module"),
+            ):
+                adapters.load(name)
+
     def test_script_and_module_use_the_selected_tooling_with_isolated_python(self):
         with tempfile.TemporaryDirectory(prefix="SDK fixture ") as directory:
             root = Path(directory).resolve()
@@ -58,6 +68,7 @@ class AdapterTests(unittest.TestCase):
 
             evidence = adapters.support_inputs(root)
             self.assertEqual({name for name in evidence if not name.startswith("@")}, set(sources))
+            self.assertIn("@sdk-tooling/sdk_tooling/consumers/nuget.py", evidence)
             fixture = "fixtures/consumers/dotnet/Program.cs"
             (root / fixture).write_bytes(b"modified")
             self.assertNotEqual(adapters.support_inputs(root)[fixture], evidence[fixture])

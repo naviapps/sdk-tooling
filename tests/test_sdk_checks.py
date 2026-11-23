@@ -43,7 +43,7 @@ class SDKChecksTests(unittest.TestCase):
         )
         with (
             patch("sys.platform", "darwin"),
-            patch("sdk_tooling.consumers.run_swift_consumer") as run,
+            patch("sdk_tooling.consumers.swiftpm.run_swift_consumer") as run,
         ):
             self.check(
                 "swift-consumer",
@@ -71,10 +71,43 @@ class SDKChecksTests(unittest.TestCase):
                 )
                 with (
                     patch("sys.platform", "darwin"),
-                    patch("sdk_tooling.consumers.run_swift_consumer") as run,
+                    patch("sdk_tooling.consumers.swiftpm.run_swift_consumer") as run,
                 ):
                     self.check("swift-consumer")
                 self.assertEqual(run.call_args.kwargs["verify_dependencies"], enabled)
+
+    def test_x64_package_consumers_get_each_fixture_and_preserve_user_inputs(self):
+        self.write(
+            "sdk-checks.toml",
+            """
+            [nuget]
+            package_id = "Example.Bindings"
+            fixtures = ["fixtures/public.cs", "fixtures/trimming.cs"]
+            windows_x64 = true
+            """,
+        )
+        options = self.parser.parse_args(
+            ["nuget-consumer", "package.nupkg", "--dependency", "dependency.nupkg"]
+        )
+        with (
+            patch("sys.platform", "win32"),
+            patch("sdk_tooling.consumers.nuget.check_nuget") as check,
+        ):
+            options.handler(options, root=self.root)
+        self.assertEqual(options.package, Path("package.nupkg"))
+        self.assertEqual(options.dependency, [Path("dependency.nupkg")])
+        self.assertIsNone(options.windows_architecture)
+        self.assertEqual(
+            [call.kwargs["fixture"] for call in check.call_args_list],
+            [self.root / "fixtures/public.cs", self.root / "fixtures/trimming.cs"],
+        )
+        for call in check.call_args_list:
+            arguments = call.kwargs["args"]
+            self.assertEqual(arguments.package, options.package)
+            self.assertEqual(arguments.dependency, options.dependency)
+            self.assertEqual(arguments.windows_architecture, "x64")
+            self.assertEqual(call.kwargs["package_id"], "Example.Bindings")
+            self.assertEqual(call.kwargs["work_parent"], self.root / ".native-build/packages")
 
     def test_docs_find_only_owned_catalogs_and_use_declared_settings(self):
         first = self.write("Sources/First/First.docc/First.md", "First").parent
@@ -148,20 +181,20 @@ class SDKChecksTests(unittest.TestCase):
         self.write(
             "sdk-checks.toml",
             """
-            [installed]
+            [rust_c]
             git_url = "https://github.com/sdk-team/example-sdk.git"
             rust_packages = ["example-sdk"]
             rust_git_dependencies = ["support-crate"]
             rust_registry_dependencies = {tokio = ["rt"]}
 
-            [installed.c]
+            [rust_c.c]
             framework = "Artifacts/CExample.framework"
             header = "example.h"
             options = {path = "{owned}/document.preset", maximumByteCount = 4096}
             """,
         )
-        with patch("sdk_tooling.installed_consumers.check_installed") as check_installed:
-            self.check("installed-consumers", "--language", "c", "--revision", "a" * 40)
+        with patch("sdk_tooling.consumers.rust_c.check_installed") as check_installed:
+            self.check("rust-c-consumers", "--language", "c", "--revision", "a" * 40)
         check_installed.assert_called_once()
         options = check_installed.call_args.kwargs
         self.assertEqual(options["root"], self.root)

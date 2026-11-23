@@ -3,14 +3,16 @@
 import json
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import DEFAULT, patch
 
-from sdk_tooling import artifacts, consumers, nuget, workspaces
+from sdk_tooling import artifacts, binding_checks, nuget, windows, workspaces
 from sdk_tooling import dotnet as dotnet_tools
+from sdk_tooling.consumers import nuget as nuget_consumer
 
 
 def write_pe(path, machine):
@@ -213,15 +215,15 @@ class ManagedQualityTests(unittest.TestCase):
     def test_native_consumer_enables_verification_before_staging_or_execution(self):
         failure = subprocess.CalledProcessError(2, ["dotnet", "format"])
         with (
-            patch.object(consumers.sys, "platform", "darwin"),
+            patch.object(sys, "platform", "darwin"),
             patch.object(
-                consumers, "subprocess_environment", return_value={"DOTNET_BIN": "dotnet"}
+                binding_checks, "subprocess_environment", return_value={"DOTNET_BIN": "dotnet"}
             ),
             patch.object(dotnet_tools, "build_managed", side_effect=failure) as build,
             patch.object(artifacts, "stage_native") as stage,
             self.assertRaises(subprocess.CalledProcessError),
         ):
-            consumers.check_dotnet(
+            binding_checks.check_dotnet(
                 project=self.project,
                 nuget_config=self.root / "NuGet.Config",
                 framework=self.root / "Native.framework/Native",
@@ -256,24 +258,24 @@ class ManagedQualityTests(unittest.TestCase):
         ):
             with (
                 self.subTest(machine=machine, architecture=architecture, version=version),
-                patch.object(consumers.sys, "platform", "win32"),
-                patch.object(consumers.windows, "host_architecture", return_value=machine),
-                patch.object(consumers, "subprocess_environment", return_value=env),
+                patch.object(sys, "platform", "win32"),
+                patch.object(windows, "host_architecture", return_value=machine),
+                patch.object(nuget_consumer, "subprocess_environment", return_value=env),
                 patch.object(
-                    consumers.subprocess,
+                    subprocess,
                     "check_output",
                     side_effect=[f"Host:\n  Architecture: {architecture}\n", version],
                 ) as probe,
                 patch.object(nuget, "run_isolated_consumer") as run,
             ):
                 if accepted:
-                    consumers.check_nuget(**arguments)
+                    nuget_consumer.check_nuget(**arguments)
                     run.assert_called_once()
                     self.assertEqual(run.call_args.args, ("selected-dotnet",))
                     self.assertEqual(run.call_args.kwargs["packages"], [package])
                 else:
                     with self.assertRaisesRegex(ValueError, "target-native .NET 10 SDK"):
-                        consumers.check_nuget(**arguments)
+                        nuget_consumer.check_nuget(**arguments)
                     run.assert_not_called()
                 self.assertEqual(
                     [call.args[0] for call in probe.call_args_list],
@@ -281,17 +283,17 @@ class ManagedQualityTests(unittest.TestCase):
                 )
 
         with (
-            patch.object(consumers.sys, "platform", "win32"),
+            patch.object(sys, "platform", "win32"),
             patch.object(
-                consumers.windows,
+                windows,
                 "host_architecture",
                 side_effect=ValueError("Target-native Windows Python is required"),
             ),
-            patch.object(consumers.subprocess, "check_output") as probe,
+            patch.object(subprocess, "check_output") as probe,
             patch.object(nuget, "run_isolated_consumer") as run,
             self.assertRaisesRegex(ValueError, "Target-native Windows Python"),
         ):
-            consumers.check_nuget(**arguments)
+            nuget_consumer.check_nuget(**arguments)
         probe.assert_not_called()
         run.assert_not_called()
 
@@ -316,21 +318,21 @@ class ManagedQualityTests(unittest.TestCase):
             raise subprocess.CalledProcessError(2, argv)
 
         with (
-            patch.object(consumers.sys, "platform", "win32"),
-            patch.object(consumers.windows, "host_architecture", return_value="arm64"),
+            patch.object(sys, "platform", "win32"),
+            patch.object(windows, "host_architecture", return_value="arm64"),
             patch.object(
-                consumers.subprocess,
+                subprocess,
                 "check_output",
                 side_effect=["Host:\n  Architecture: arm64\n", "10.0.403"],
             ),
             patch.object(
-                consumers, "subprocess_environment", return_value={"DOTNET_BIN": "dotnet"}
+                binding_checks, "subprocess_environment", return_value={"DOTNET_BIN": "dotnet"}
             ),
             patch.object(dotnet_tools, "build_managed"),
-            patch.object(consumers.subprocess, "run", side_effect=run),
+            patch.object(subprocess, "run", side_effect=run),
             self.assertRaises(subprocess.CalledProcessError),
         ):
-            consumers.check_dotnet(
+            binding_checks.check_dotnet(
                 project=self.project,
                 nuget_config=self.root / "NuGet.Config",
                 framework=self.root / "Native.framework/Native",
@@ -347,13 +349,13 @@ class ManagedQualityTests(unittest.TestCase):
     def test_windows_managed_consumer_rejects_emulated_dotnet_before_build(self):
         work = self.root / "work"
         with (
-            patch.object(consumers.sys, "platform", "win32"),
-            patch.object(consumers.windows, "host_architecture", return_value="arm64"),
+            patch.object(sys, "platform", "win32"),
+            patch.object(windows, "host_architecture", return_value="arm64"),
             patch.object(
-                consumers, "subprocess_environment", return_value={"DOTNET_BIN": "dotnet-x64"}
+                binding_checks, "subprocess_environment", return_value={"DOTNET_BIN": "dotnet-x64"}
             ),
             patch.object(
-                consumers.subprocess,
+                subprocess,
                 "check_output",
                 side_effect=["Host:\n  Architecture: x64\n", "10.0.403"],
             ) as probe,
@@ -361,10 +363,10 @@ class ManagedQualityTests(unittest.TestCase):
                 dotnet_tools, "build_managed", side_effect=AssertionError("Managed build started")
             ) as build,
             patch.object(artifacts, "stage_native") as stage,
-            patch.object(consumers.subprocess, "run") as run,
+            patch.object(subprocess, "run") as run,
             self.assertRaisesRegex(ValueError, "target-native .NET 10 SDK"),
         ):
-            consumers.check_dotnet(
+            binding_checks.check_dotnet(
                 project=self.project,
                 nuget_config=self.root / "NuGet.Config",
                 framework=self.root / "Native.framework/Native",
@@ -414,7 +416,7 @@ class ManagedQualityTests(unittest.TestCase):
             cleanup.side_effect = [error, DEFAULT]
 
         def managed():
-            consumers.check_dotnet(
+            binding_checks.check_dotnet(
                 project=self.project,
                 nuget_config=self.root / "NuGet.Config",
                 framework=self.root / "Native.framework/Native",
@@ -426,11 +428,11 @@ class ManagedQualityTests(unittest.TestCase):
             )
 
         with (
-            patch.object(consumers.sys, "platform", "win32"),
-            patch.object(consumers.windows, "host_architecture", return_value="arm64"),
-            patch.object(consumers, "subprocess_environment", side_effect=environment.copy),
+            patch.object(sys, "platform", "win32"),
+            patch.object(windows, "host_architecture", return_value="arm64"),
+            patch.object(binding_checks, "subprocess_environment", side_effect=environment.copy),
             patch.object(
-                consumers.subprocess,
+                subprocess,
                 "check_output",
                 side_effect=["Host:\n  Architecture: x64\n", "10.0.403"] * 2,
             ),
@@ -439,7 +441,7 @@ class ManagedQualityTests(unittest.TestCase):
                 "build_managed",
                 side_effect=lambda *_, **__: write_pe(library, 0xAA64),
             ) as build,
-            patch.object(consumers.subprocess, "run", side_effect=run) as execute,
+            patch.object(subprocess, "run", side_effect=run) as execute,
             patch.object(
                 tempfile.TemporaryDirectory, "_rmtree", wraps=tempfile.TemporaryDirectory._rmtree
             ) as cleanup,
@@ -489,20 +491,22 @@ class ManagedQualityTests(unittest.TestCase):
             argv=[str(package), "--windows-architecture", "x64"],
         )
         with (
-            patch.object(consumers.sys, "platform", "win32"),
-            patch.object(consumers.windows, "host_architecture", return_value="arm64"),
+            patch.object(sys, "platform", "win32"),
+            patch.object(windows, "host_architecture", return_value="arm64"),
             patch.object(
-                consumers, "subprocess_environment", side_effect=lambda: {"DOTNET_BIN": str(dotnet)}
+                nuget_consumer,
+                "subprocess_environment",
+                side_effect=lambda: {"DOTNET_BIN": str(dotnet)},
             ),
             patch.object(
-                consumers.subprocess,
+                subprocess,
                 "check_output",
                 side_effect=["Host:\n  Architecture: x64\n", "10.0.403"],
             ) as probe,
             patch.object(nuget, "run_isolated_consumer") as run,
             patch("builtins.print") as report,
         ):
-            consumers.check_nuget(**arguments)
+            nuget_consumer.check_nuget(**arguments)
             self.assertEqual(run.call_args.args, (str(dotnet),))
             self.assertEqual(run.call_args.kwargs["runtime"], "win-x64")
             self.assertEqual(run.call_args.kwargs["packages"], [package])
@@ -513,7 +517,7 @@ class ManagedQualityTests(unittest.TestCase):
             probe.reset_mock()
             write_pe(dotnet, 0xAA64)
             with self.assertRaisesRegex(ValueError, "Expected target-native x64 PE image"):
-                consumers.check_nuget(**arguments)
+                nuget_consumer.check_nuget(**arguments)
             probe.assert_not_called()
             run.assert_not_called()
 
@@ -521,13 +525,13 @@ class ManagedQualityTests(unittest.TestCase):
         for platform, architecture in (("darwin", None), ("win32", "x64")):
             with (
                 self.subTest(platform=platform),
-                patch.object(consumers.sys, "platform", platform),
-                patch.object(consumers.windows, "host_architecture", return_value=architecture),
-                patch.object(consumers.windows, "native_dotnet") as dotnet,
+                patch.object(sys, "platform", platform),
+                patch.object(windows, "host_architecture", return_value=architecture),
+                patch.object(windows, "native_dotnet") as dotnet,
                 patch.object(dotnet_tools, "build_managed") as build,
                 self.assertRaises(ValueError),
             ):
-                consumers.check_dotnet(
+                binding_checks.check_dotnet(
                     project=self.project,
                     nuget_config=self.root / "NuGet.Config",
                     framework=self.root / "Native.framework/Native",

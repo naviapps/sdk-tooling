@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .artifacts import build_lock, files, hashes, publish, write_json
 from .dotnet import subprocess_environment
+from .ffi import tool_input_hashes
 
 MSVC_TARGETS = {
     "arm64": "aarch64-pc-windows-msvc",
@@ -368,8 +369,8 @@ def inspect_pe(path, machine, symbols, *, allow_import=None):
     return {"machine": hex(actual), "exports": named, "imports": sorted(set(imports))}
 
 
-def tool_inputs(builder):
-    return dict(builder.tool_inputs(), **hashes([Path(__file__)], Path(__file__).parent))
+def tool_inputs():
+    return tool_input_hashes(Path(__file__))
 
 
 def _output(builder, architecture, output_root):
@@ -406,7 +407,7 @@ def verify_artifact(
         receipt.get("schema") != 2
         or receipt.get("target") != target
         or receipt.get("inputs") != (source_inputs or builder.build_sources)()
-        or receipt.get("toolInputs") != tool_inputs(builder)
+        or receipt.get("toolInputs") != tool_inputs()
     ):
         raise ValueError("Windows native sources or build contract changed")
     if not receipt.get("compiler", "").startswith("rustc " + builder.compiler + " "):
@@ -497,6 +498,7 @@ def build_library(
     if cross and inspect is None:
         raise ValueError("Cross builds require a portable SDK DLL inspection policy")
     with build_lock(builder.root / ".native-build"):
+        tools_before = tool_inputs()
         command, toolchain = _build_driver(env, cross, parent)
         compiler = subprocess.check_output(
             [rustc, "--version", "--verbose"], cwd=builder.root, env=env, text=True
@@ -579,6 +581,8 @@ def build_library(
                 or builder.dependencies(dict(env), targets=[target]) != dependencies
             ):
                 raise ValueError("Native sources or dependencies changed during Windows staging")
+            if tool_inputs() != tools_before:
+                raise ValueError("Native build tooling changed during Windows staging")
             write_json(
                 stage / "native-build.json",
                 dict(
@@ -588,7 +592,7 @@ def build_library(
                     compiler=compiler,
                     inputs=inputs,
                     dependencies=dependencies,
-                    toolInputs=tool_inputs(builder),
+                    toolInputs=tools_before,
                     outputs=hashes(files(stage), stage),
                     inspection=inspection,
                     exports=inspection["exports"],

@@ -3,9 +3,11 @@
 import json
 import sys
 import tomllib
+from copy import copy
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from . import consumers, docs, installed_consumers
+from . import docs
+from .consumers import nuget, rust_c, rust_git, swiftpm
 
 CONFIGURATION = "sdk-checks.toml"
 
@@ -78,7 +80,7 @@ def swift_command(args, *, root):
     verify_dependencies = _boolean(
         config.get("verify_dependencies", False), "swift.verify_dependencies"
     )
-    consumers.run_swift_consumer(
+    swiftpm.run_swift_consumer(
         root=root,
         inputs=inputs,
         fixture=fixture,
@@ -156,18 +158,18 @@ def docs_command(args, *, root):
 def _c_fixture(config):
     if "c" not in config:
         return {}
-    c = _table(config["c"], "[installed.c]")
+    c = _table(config["c"], "[rust_c.c]")
     options = {
-        key: _relative(c[key], "installed.c." + key)
+        key: _relative(c[key], "rust_c.c." + key)
         for key in ("framework", "header", "c_fixture", "c_receipt")
         if key in c
     }
     for key in ("framework", "header"):
         if key not in options:
-            raise ValueError(f"installed.c.{key} is required")
+            raise ValueError(f"rust_c.c.{key} is required")
 
     if "options" in c:
-        report = _table(c["options"], "[installed.c.options]")
+        report = _table(c["options"], "[rust_c.c.options]")
 
         def file_arguments(client, owned):
             options_file = client / "file-options.json"
@@ -183,7 +185,7 @@ def _c_fixture(config):
 
 
 def _git_dependencies(root, config):
-    names = _strings(config.get("rust_git_dependencies", []), "installed.rust_git_dependencies")
+    names = _strings(config.get("rust_git_dependencies", []), "rust_c.rust_git_dependencies")
     if not names:
         return {}
     workspace = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
@@ -192,7 +194,7 @@ def _git_dependencies(root, config):
 
 def _registry_dependencies(root, config):
     table = _table(
-        config.get("rust_registry_dependencies", {}), "installed.rust_registry_dependencies"
+        config.get("rust_registry_dependencies", {}), "rust_c.rust_registry_dependencies"
     )
     if not table:
         return {}
@@ -202,7 +204,7 @@ def _registry_dependencies(root, config):
         (entry,) = (
             row
             for row in lock["package"]
-            if row["name"] == name and row.get("source") == installed_consumers._PUBLIC_REGISTRY
+            if row["name"] == name and row.get("source") == rust_git.PUBLIC_REGISTRY
         )
         dependencies[name] = {
             "version": "=" + entry["version"],
@@ -211,18 +213,42 @@ def _registry_dependencies(root, config):
     return dependencies
 
 
-def installed_command(args, *, root):
+def rust_c_command(args, *, root):
     root = Path(root).resolve(strict=True)
-    config = _section(root, "installed")
-    installed_consumers.check_installed(
+    config = _section(root, "rust_c")
+    rust_c.check_installed(
         root=root,
-        git_url=_string(config.get("git_url"), "installed.git_url"),
-        rust_packages=_strings(config.get("rust_packages"), "installed.rust_packages"),
+        git_url=_string(config.get("git_url"), "rust_c.git_url"),
+        rust_packages=_strings(config.get("rust_packages"), "rust_c.rust_packages"),
         rust_git_dependencies=_git_dependencies(root, config),
         rust_registry_dependencies=_registry_dependencies(root, config),
         args=args,
         **_c_fixture(config),
     )
+
+
+def nuget_command(args, *, root):
+    root = Path(root).resolve(strict=True)
+    config = _section(root, "nuget")
+    package_id = _string(config.get("package_id"), "nuget.package_id")
+    fixtures = _strings(config.get("fixtures"), "nuget.fixtures")
+    if not fixtures:
+        raise ValueError("nuget.fixtures must select at least one fixture")
+    if _boolean(config.get("windows_x64", False), "nuget.windows_x64"):
+        if args.windows_architecture not in (None, "x64"):
+            raise ValueError("This SDK tests NuGet packages on Windows x64")
+        if sys.platform == "win32":
+            args = copy(args)
+            args.windows_architecture = "x64"
+        elif args.windows_architecture is not None:
+            raise ValueError("--windows-architecture requires a Windows host")
+    for fixture in fixtures:
+        nuget.check_nuget(
+            package_id=package_id,
+            fixture=_inside(root, fixture, "nuget.fixtures"),
+            work_parent=root / ".native-build/packages",
+            args=args,
+        )
 
 
 def add_commands(commands):
@@ -231,15 +257,20 @@ def add_commands(commands):
     swift.add_argument("--git-config", type=Path, help="Explicit job-private Git configuration")
     swift.add_argument("--mirror-config", type=Path, help="Explicit SwiftPM mirrors.json")
     swift.add_argument(
-        "--build-system", choices=consumers.SWIFT_BUILD_SYSTEMS, help="SwiftPM build system"
+        "--build-system", choices=swiftpm.SWIFT_BUILD_SYSTEMS, help="SwiftPM build system"
     )
     swift.add_argument("--allow-warnings", action="store_true", help="Allow Swift warnings")
     swift.set_defaults(handler=swift_command)
     docc = commands.add_parser("docs", help="Validate SDK DocC catalogs against public symbols")
     docc.add_argument("--output", type=Path, help="Override the SDK documentation output")
     docc.set_defaults(handler=docs_command)
-    installed = commands.add_parser(
-        "installed-consumers", help="Check independently installed Rust/C clients"
+    rust_c_cli = commands.add_parser(
+        "rust-c-consumers", help="Check Rust from Git and C against a copied framework"
     )
-    installed_consumers.add_arguments(installed)
-    installed.set_defaults(handler=installed_command)
+    rust_c.add_arguments(rust_c_cli)
+    rust_c_cli.set_defaults(handler=rust_c_command)
+    nuget_cli = commands.add_parser(
+        "nuget-consumer", help="Restore and run a standalone .NET client from local packages"
+    )
+    nuget.add_arguments(nuget_cli)
+    nuget_cli.set_defaults(handler=nuget_command)

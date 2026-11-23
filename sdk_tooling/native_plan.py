@@ -1,24 +1,22 @@
-"""Select native C ABI products from the SDK's declared build specification."""
+"""Read an SDK's native build declaration and select its Rust C ABI products."""
 
 import re
 import tomllib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .native import NativeBuilder
+from .ffi import FfiProduct
 
 SPECIFICATION = "native.toml"
-_OPTIONS = {
+_FFI_OPTIONS = {
     "ffi",
     "symbol_prefix",
-    "minimum_macos",
-    "receipt",
     "notice_packages",
     "notice_directory",
-    "target_directory",
 }
+_PLATFORM_OPTIONS = {"minimum_macos", "receipt", "target_directory"}
 
 
-def _inside(root, path, label):
+def sdk_relative_path(root, path, label):
     relative = PurePosixPath(path)
     if (
         not relative.parts
@@ -33,7 +31,7 @@ def _inside(root, path, label):
     return path
 
 
-def builders(root=None, *, tooling=None):
+def product_options(root=None):
     root = Path(root or Path.cwd()).resolve(strict=True)
     spec = root / SPECIFICATION
     if spec.is_symlink() or not spec.is_file():
@@ -41,10 +39,11 @@ def builders(root=None, *, tooling=None):
     config = tomllib.loads(spec.read_text(encoding="utf-8"))
     if set(config) != {"artifacts"} or not isinstance(config["artifacts"], list):
         raise ValueError(f"Declare [[artifacts]] in {SPECIFICATION}")
-    constructor = tooling("native").NativeBuilder if tooling else NativeBuilder
     products = {}
     for artifact in config["artifacts"]:
-        if not isinstance(artifact, dict) or set(artifact) - (_OPTIONS | {"id"}):
+        if not isinstance(artifact, dict) or set(artifact) - (
+            _FFI_OPTIONS | _PLATFORM_OPTIONS | {"id"}
+        ):
             raise ValueError("Unknown native artifact setting")
         name = artifact.get("id")
         if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name):
@@ -52,9 +51,10 @@ def builders(root=None, *, tooling=None):
         if name in products:
             raise ValueError("Duplicate native artifact ID: " + name)
         options = {key: value for key, value in artifact.items() if key != "id"}
-        if not {"symbol_prefix", "minimum_macos"} <= options.keys():
-            raise ValueError("Native artifacts require a C prefix and minimum macOS version")
-        for key, value in options.items():
+        if "symbol_prefix" not in options:
+            raise ValueError("Native artifacts require a C symbol prefix")
+        for key in options.keys() & _FFI_OPTIONS:
+            value = options[key]
             if key == "notice_packages":
                 if (
                     not isinstance(value, list)
@@ -65,19 +65,15 @@ def builders(root=None, *, tooling=None):
                     raise ValueError("Native notice packages must be distinct Cargo package names")
             elif not isinstance(value, str) or not value:
                 raise ValueError(f"Native {key} must be a nonempty string")
-            elif key in {"ffi", "notice_directory", "target_directory"}:
-                _inside(root, value, key)
-        products[name] = constructor(root, specification=SPECIFICATION, **options)
+            elif key in {"ffi", "notice_directory"}:
+                sdk_relative_path(root, value, key)
+        products[name] = options
     if not products:
         raise ValueError("Declare at least one native artifact")
-    for key in ("module", "receipt"):
-        if len({getattr(product, key) for product in products.values()}) != len(products):
-            raise ValueError(f"Native artifacts must have distinct {key} values")
-    return products
+    return root, products
 
 
-def builder(root=None, kind=None, *, tooling=None):
-    products = builders(root, tooling=tooling)
+def select_product(products, kind):
     if kind is not None:
         if kind not in products:
             raise ValueError("Unknown native artifact: " + kind)
@@ -85,3 +81,13 @@ def builder(root=None, kind=None, *, tooling=None):
     if len(products) != 1:
         raise ValueError("Select one of the native artifacts: " + ", ".join(products))
     return next(iter(products.values()))
+
+
+def ffi_product(root=None, kind=None, *, factory=FfiProduct):
+    root, products = product_options(root)
+    options = select_product(products, kind)
+    return factory(
+        root,
+        specification=SPECIFICATION,
+        **{key: value for key, value in options.items() if key in _FFI_OPTIONS},
+    )

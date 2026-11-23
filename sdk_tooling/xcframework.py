@@ -1,6 +1,6 @@
-"""Build independent, source-bound universal macOS frameworks for Rust C ABIs."""
+"""Build and verify independent macOS XCFrameworks for Rust C ABIs."""
 
-import argparse
+import hashlib
 import json
 import os
 import plistlib
@@ -9,29 +9,52 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 from pathlib import Path, PurePosixPath
 
-from .artifacts import (
-    DEP_INFO_PARSER,
-    build_lock,
-    dep_info_sources,
-    files,
-    hashes,
-    publish,
-    write_json,
-)
-from .cargo import CargoDependencies, notice_root, runtime_notices
+from .artifacts import build_lock, files, hashes, publish, write_json
+from .cargo import CargoDependencies
+from .ffi import DARWIN_TARGETS, FfiProduct, tool_input_hashes
+from .native_plan import SPECIFICATION, product_options, sdk_relative_path, select_product
 
-DARWIN_TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin")
-NOTICE_TARGETS = (*DARWIN_TARGETS, "aarch64-pc-windows-msvc")
+DEP_INFO_PARSER = Path("crates/rustc-dep-info/src/main.rs")
+
+
+def dep_info_sources(paths, *, expected_sha256, cwd, env):
+    """Read compiler dependency rules using the producer's selected Rust compiler."""
+    parser = Path(__file__).resolve().parents[1] / DEP_INFO_PARSER
+    if parser.is_symlink():
+        raise ValueError("The Rust dependency parser must be an ordinary source file")
+    source = parser.read_bytes()
+    if hashlib.sha256(source).hexdigest() != expected_sha256:
+        raise ValueError("The Rust dependency parser differs from its build input")
+    with tempfile.TemporaryDirectory(prefix="sdk-dep-info-") as temporary:
+        checker = Path(temporary) / "sdk-rustc-dep-info"
+        compiler = [
+            "rustc",
+            "--edition=2024",
+            "--crate-name=sdk_rustc_dep_info",
+            "-o",
+            checker,
+            "-",
+        ]
+        subprocess.run(compiler, input=source, cwd=cwd, env=env, check=True, timeout=120)
+        result = subprocess.run([checker, "--files", *paths], capture_output=True, timeout=120)
+        if result.returncode == 2:
+            raise ValueError(result.stderr.decode().strip())
+        if result.returncode == 1 and result.stderr and not result.stdout:
+            raise OSError(result.stderr.decode().strip())
+        result.check_returncode()
+        if source != parser.read_bytes():
+            raise ValueError("The Rust dependency parser source changed during inspection")
+        if result.stdout:
+            yield from map(Path, result.stdout.decode().split("\n"))
 
 
 def run(*arguments, env=None, cwd=None):
     return subprocess.check_output(list(map(str, arguments)), env=env, cwd=cwd, text=True).strip()
 
 
-class NativeBuilder:
+class XcframeworkBuilder(FfiProduct):
     def __init__(
         self,
         root,
@@ -43,39 +66,34 @@ class NativeBuilder:
         target_directory="target/native",
         notice_packages=None,
         notice_directory="ThirdParty",
-        specification="tools/native.py",
+        specification="native.toml",
     ):
-        self.root = Path(root).resolve()
-        self.ffi = self.root / ffi
-        if not self.ffi.resolve().is_relative_to(self.root):
-            raise ValueError("FFI source must be inside its SDK")
-        self.manifest = tomllib.loads((self.ffi / "Cargo.toml").read_text())
-        self.package = self.manifest["package"]["name"]
-        self.notice_packages = tuple(notice_packages or [self.package])
-        self.notice_root = notice_root(self.root, notice_directory)
-        self.specification = self.root / specification
-        if not self.specification.resolve().is_relative_to(self.root):
-            raise ValueError("Native specification must be inside its repository")
-        self.library = self.manifest.get("lib", {}).get("name", self.package.replace("-", "_"))
-        self.module_map = self.ffi / "module.modulemap"
+        super().__init__(
+            root,
+            ffi,
+            symbol_prefix=symbol_prefix,
+            notice_packages=notice_packages,
+            notice_directory=notice_directory,
+            specification=specification,
+        )
         self.module = re.search(r"\bmodule\s+(\w+)", self.module_map.read_text())[1]
-        if not re.fullmatch(r"[A-Za-z_]\w*", symbol_prefix):
-            raise ValueError("A C identifier prefix is required")
-        if not re.fullmatch(r"\d+\.\d+", minimum_macos):
+        if not isinstance(minimum_macos, str) or not re.fullmatch(r"\d+\.\d+", minimum_macos):
             raise ValueError("The minimum macOS version must have major.minor form")
-        if Path(receipt).name != receipt or not receipt.endswith(".json"):
+        if (
+            not isinstance(receipt, str)
+            or Path(receipt).name != receipt
+            or not receipt.endswith(".json")
+        ):
             raise ValueError("A receipt filename is required")
-        self.symbol_prefix = symbol_prefix
         self.minimum_macos = minimum_macos
         self.artifact = self.root / "Artifacts" / (self.module + ".xcframework")
         self.receipt = self.root / "Artifacts" / receipt
         self.targets = DARWIN_TARGETS
-        self.target_directory = self.root / target_directory
-        if not self.target_directory.resolve().is_relative_to(self.root):
-            raise ValueError("Native build output must stay inside its SDK")
-        self.compiler = tomllib.loads((self.root / "rust-toolchain.toml").read_text())["toolchain"][
-            "channel"
-        ]
+        if not isinstance(target_directory, str):
+            raise ValueError("Native target_directory must be a nonempty string")
+        self.target_directory = self.root / sdk_relative_path(
+            self.root, target_directory, "target_directory"
+        )
 
     @property
     def configuration(self):
@@ -92,69 +110,9 @@ class NativeBuilder:
             specification=self.specification.relative_to(self.root).as_posix(),
         )
 
-    @property
-    def version(self):
-        version = self.manifest["package"]["version"]
-        if isinstance(version, dict) and version.get("workspace") is True:
-            version = tomllib.loads((self.root / "Cargo.toml").read_text())["workspace"]["package"][
-                "version"
-            ]
-        if not isinstance(version, str) or not version:
-            raise ValueError("The FFI package must declare or inherit its Cargo version")
-        return version
-
-    @property
-    def headers(self):
-        root = self.ffi / "include"
-        names = re.findall(r'\bheader\s+"([^"\n]+)"', self.module_map.read_text())
-        if not names:
-            raise ValueError("The C module map must declare its public headers")
-        paths = [root / name for name in names]
-        if any(not p.resolve().is_relative_to(root.resolve()) or not p.is_file() for p in paths):
-            raise ValueError("Public headers must be files inside the SDK include directory")
-        return paths
-
-    def hashes(self, paths, relative_to=None):
-        return hashes(paths, relative_to or self.root)
-
-    def _mandatory_sources(self):
-        paths = [self.root / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")]
-        paths += list((self.root / "crates").rglob("Cargo.toml"))
-        paths += list((self.root / "crates").rglob("build.rs"))
-        paths += self.headers + [self.module_map]
-        paths += [p for p in files(self.notice_root) if p.name != ".DS_Store"]
-        for path in (self.root / "LICENSE", self.specification):
-            if path.is_file():
-                paths.append(path)
-        return paths
-
     def tool_inputs(self):
-        root = Path(__file__).resolve().parent
-        return hashes([root / name for name in ("native.py", "artifacts.py", "cargo.py")], root) | (
-            hashes([root.parent / DEP_INFO_PARSER], root.parent)
-        )
-
-    def notices(self):
-        paths = [
-            p
-            for p in files(self.notice_root)
-            if p.name not in (".DS_Store", "registry-notices.json")
-        ]
-        if (self.root / "LICENSE").is_file():
-            paths.insert(0, self.root / "LICENSE")
-        return b"\n\n".join(
-            ("===== " + p.relative_to(self.root).as_posix() + " =====\n").encode() + p.read_bytes()
-            for p in paths
-        )
-
-    def build_sources(self):
-        # Conservative build-time guard. Test-only edits may invalidate a running
-        # build, but never force a later rebuild of an accepted production tree.
-        return hashes(
-            self._mandatory_sources()
-            + [p for p in files(self.root / "crates") if p.name != ".DS_Store"],
-            self.root,
-        )
+        root = Path(__file__).resolve().parents[1]
+        return tool_input_hashes(Path(__file__)) | hashes([root / DEP_INFO_PARSER], root)
 
     def _production_sources(self, parser_sha256, env=None):
         selected = set()
@@ -356,20 +314,6 @@ class NativeBuilder:
             if install_name != self._install_name + "\n":
                 raise ValueError(f"Native framework install name differs on {architecture}")
 
-    def retain_notices(self, env=None):
-        env = env or os.environ.copy()
-        relative = self.notice_root.relative_to(self.root).as_posix()
-        runtime_notices(self.root, env, notice_directory=relative)
-        CargoDependencies(self.root, self.notice_packages, NOTICE_TARGETS, env).retain_notices(
-            notice_directory=relative
-        )
-
-    def dependencies(self, env, targets=None):
-        graph = CargoDependencies(self.root, [self.package], targets or self.targets, env)
-        result = graph.provenance()
-        graph.configure_remaps(env)
-        return result
-
     def verify(self, env=None, *, inspect_native=True):
         env = env or os.environ.copy()
         receipt = json.loads(self.receipt.read_text())
@@ -562,7 +506,7 @@ class NativeBuilder:
                 record["tooling"] = json.loads(pins.read_text())
             write_json(stage / self.receipt.name, record)
             if (
-                self.dependencies(dict(env)) != dependencies
+                self.dependencies(dict(env), targets=self.targets) != dependencies
                 or self.build_sources() != before
                 or self.tool_inputs() != tool_inputs
                 or hashes(files(destination), self.root) != previous_outputs
@@ -575,9 +519,19 @@ class NativeBuilder:
             publish(stage, destination, lambda: self.verify(env))
 
 
-def main(builders, argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--verify", action="store_true")
-    args = parser.parse_args(argv)
-    for builder in builders:
-        builder.verify() if args.verify else builder.build()
+def xcframeworks(root=None):
+    root, products = product_options(root)
+    if any("minimum_macos" not in options for options in products.values()):
+        raise ValueError("XCFramework artifacts require a minimum macOS version")
+    builders = {
+        name: XcframeworkBuilder(root, specification=SPECIFICATION, **options)
+        for name, options in products.items()
+    }
+    for key in ("module", "receipt"):
+        if len({getattr(product, key) for product in builders.values()}) != len(builders):
+            raise ValueError(f"Native artifacts must have distinct {key} values")
+    return builders
+
+
+def xcframework(root=None, kind=None):
+    return select_product(xcframeworks(root), kind)

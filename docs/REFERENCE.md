@@ -163,10 +163,11 @@ only after all conversions pass.
 
 ### macOS builder specifications
 
-SDK-owned native specifications construct `native.NativeBuilder`. Cargo manifests
-and module maps supply package, library and module names; the SDK explicitly
-selects its C symbol prefix, minimum OS and component receipt. The module map
-selects macOS public headers. SDKs with several native libraries declare a shared
+SDK-owned native specifications describe the shared `ffi.FfiProduct`.
+Cargo manifests and module maps supply package, library and module names.
+`xcframework.XcframeworkBuilder` uses the declaration to build the macOS
+artifact. The SDK selects its C symbol prefix, minimum macOS version and
+component receipt. SDKs with several native libraries declare a shared
 `notice_packages` union so one library never prunes another library's notices.
 The builder checks locked dependencies/notices, native CPU/OS/export contracts and
 local anonymous signatures. It stages and verifies complete output before replacing the previous
@@ -230,7 +231,8 @@ exports and delay imports fail verification. The native verifier rejects the
 separately installed VC/UCRT runtime dependencies. SDKs can supply a narrower
 import policy to the portable verifier.
 
-Windows builds use `windows.build_library` for native MSVC or explicitly selected
+Windows builds use a shared `FfiProduct` and `windows.build_library` for native
+MSVC or explicitly selected
 cargo-xwin compilation. Native selection verifies that the developer shell puts
 the chosen toolchain's `cl.exe` and `link.exe` first on its search path and that
 their PE machine matches the worker architecture. Multi-library SDKs select separate
@@ -290,17 +292,13 @@ See [consumer verification](#consumer-verification) for independent package and 
 
 ## Consumer verification
 
-### Managed and C binding fixtures
+### C ABI and .NET project checks
 
 `c_compiler` invokes Clang or MSVC for C callers. `dotnet` runs, builds and
 packs managed projects. `artifacts.stage_native` stages verified native bytes.
-`nuget` audits packages and runs isolated NuGet package consumers. SDKs supply
-their fixture sources, selected runtime members, native overrides, dependency
-feeds and test arguments. Clean NuGet consumers ignore parent-directory MSBuild
-and central package settings, and discard inherited restore sources and caches.
-Before building or running, the gate verifies NuGet resolved only from the
-temporary feed and that every restored package archive matches a supplied file
-by SHA-256. Both Windows managed and NuGet consumers check the Windows host and
+`check-binding c` and `check-binding dotnet` run the SDK's C ABI and managed
+project fixtures. The `[bindings]` section in `sdk-checks.toml` selects their
+inputs. Both Windows managed and NuGet consumers check the Windows host and
 Python executable with `IsWow64Process2` and the Python PE machine, then require
 matching .NET 10 before restoring packages. Set `DOTNET_BIN` to the matching
 executable if several architectures are installed. Windows managed acceptance
@@ -325,8 +323,15 @@ native host. To run an x64 DLL on native ARM64 Windows, pass
 `--windows-architecture x64` and select an accepted x64 DLL with `--library`.
 Keep the MSVC import library beside the DLL. This uses ARM64-hosted MSVC and
 reports successful execution under x64 emulation.
-Their Makefiles select the default fixtures; clean SwiftPM/NuGet consumers and
-owned OS-effect fixtures remain SDK acceptance policy.
+The SDK selects its default fixtures and native acceptance policy.
+
+### Installed NuGet consumers
+
+`nuget-consumer` selects a package ID and independent fixtures from the
+`[nuget]` section in `sdk-checks.toml`. `consumers.nuget` runs each fixture
+against a private temporary feed. The restored packages must match the supplied
+archives by SHA-256. These consumer projects ignore parent-directory MSBuild
+and central package settings and discard inherited restore sources and caches.
 
 See [NuGet packing and recovery](#nuget-package-publication).
 
@@ -363,9 +368,10 @@ for dependency URL rewrites. Both checks remove their temporary state when done.
 
 ### Installed Rust and C consumers
 
-`installed_consumers.check_installed` runs independent Git Rust and copied-framework
-C fixtures. SDKs select their canonical repository, public Rust packages, framework
-and header. The Rust fixture owns `fixtures/consumers/rust/Cargo.toml.in` and `src/`.
+`rust-c-consumers` runs independent Git Rust and copied-framework C fixtures from
+the SDK's `[rust_c]` declaration. SDKs select their canonical repository, public Rust
+packages, framework and header. The Rust fixture owns
+`fixtures/consumers/rust/Cargo.toml.in` and `src/`.
 The C fixture owns `fixtures/consumers/c/main.c`. Both receive an absolute empty
 directory for runtime data unless the C caller supplies fixture-specific arguments.
 Their code owns the public API assertions.

@@ -5,12 +5,9 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-
-DEP_INFO_PARSER = Path("crates/rustc-dep-info/src/main.rs")
 
 
 @contextmanager
@@ -158,34 +155,3 @@ def publish(stage, destination, verify):
         raise
     if recovery is not None:
         shutil.rmtree(recovery)
-
-
-def dep_info_sources(paths, *, expected_sha256, cwd, env):
-    """Read compiler dependency rules using the producer's selected Rust compiler."""
-    parser = Path(__file__).resolve().parents[1] / DEP_INFO_PARSER
-    if parser.is_symlink():
-        raise ValueError("The Rust dependency parser must be an ordinary source file")
-    source = parser.read_bytes()
-    if hashlib.sha256(source).hexdigest() != expected_sha256:
-        raise ValueError("The Rust dependency parser differs from its build input")
-    with tempfile.TemporaryDirectory(prefix="sdk-dep-info-") as temporary:
-        checker = Path(temporary) / "sdk-rustc-dep-info"
-        compiler = [
-            "rustc",
-            "--edition=2024",
-            "--crate-name=sdk_rustc_dep_info",
-            "-o",
-            checker,
-            "-",
-        ]
-        subprocess.run(compiler, input=source, cwd=cwd, env=env, check=True, timeout=120)
-        result = subprocess.run([checker, "--files", *paths], capture_output=True, timeout=120)
-        if result.returncode == 2:
-            raise ValueError(result.stderr.decode().strip())
-        if result.returncode == 1 and result.stderr and not result.stdout:
-            raise OSError(result.stderr.decode().strip())
-        result.check_returncode()
-        if source != parser.read_bytes():
-            raise ValueError("The Rust dependency parser source changed during inspection")
-        if result.stdout:
-            yield from map(Path, result.stdout.decode().split("\n"))

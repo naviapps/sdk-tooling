@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from sdk_tooling import native_plan
+from sdk_tooling.xcframework import xcframework, xcframeworks
 
 
 class NativePlanTests(unittest.TestCase):
@@ -44,17 +45,28 @@ receipt = "{receipt}"
 
     def test_each_declarative_product_uses_its_own_framework_and_receipt(self):
         self.write_specs("beta.json")
-        products = native_plan.builders(self.root)
+        products = xcframeworks(self.root)
         self.assertEqual(list(products), ["alpha", "beta"])
-        selected = native_plan.builder(self.root, "beta")
+        selected = xcframework(self.root, "beta")
         self.assertEqual(selected.artifact.name, "Cbeta.xcframework")
         self.assertEqual(selected.receipt.name, "beta.json")
         self.assertEqual(selected.configuration["specification"], "native.toml")
         self.assertIn(self.root / "native.toml", selected._mandatory_sources())
         with self.assertRaisesRegex(ValueError, "Select one"):
-            native_plan.builder(self.root)
+            xcframework(self.root)
 
     def test_rejects_an_overlapping_publication_before_building(self):
         self.write_specs("alpha.json")
         with self.assertRaisesRegex(ValueError, "distinct receipt"):
-            native_plan.builders(self.root)
+            xcframeworks(self.root)
+
+    def test_ffi_product_selection_does_not_depend_on_macos_options(self):
+        self.write_specs("alpha.json")
+        recipe = self.root / "native.toml"
+        recipe.write_text(recipe.read_text().replace('minimum_macos = "26.0"\n', ""))
+        beta = native_plan.ffi_product(self.root, "beta")
+        self.assertEqual(beta.package, "beta")
+        self.assertEqual(beta.headers, [self.root / "crates/beta/include/example.h"])
+        self.assertIn(recipe, beta._mandatory_sources())
+        with self.assertRaisesRegex(ValueError, "minimum macOS"):
+            xcframeworks(self.root)

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sdk_tooling import artifacts
-from sdk_tooling.artifacts import build_lock, dep_info_sources, hashes, publish, write_json
+from sdk_tooling.artifacts import build_lock, hashes, publish, write_json
 
 
 class ArtifactTests(unittest.TestCase):
@@ -224,14 +224,6 @@ class ArtifactTests(unittest.TestCase):
         with patch("sdk_tooling.artifacts.json.dump", side_effect=dumping):
             write_json(destination, {"complete": True})
         self.assertEqual(json.loads(destination.read_text()), {"complete": True})
-
-    def test_dependency_parser_rejects_a_different_snapshot_before_compiling(self):
-        with (
-            patch("sdk_tooling.artifacts.subprocess.run") as run,
-            self.assertRaisesRegex(ValueError, "dependency parser differs from its build input"),
-        ):
-            list(dep_info_sources([], expected_sha256="0" * 64, cwd=self.root, env=os.environ))
-        run.assert_not_called()
 
     def test_json_write_preserves_another_publishers_pending_file(self):
         destination = self.root / "receipt.json"
