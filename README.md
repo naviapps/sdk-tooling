@@ -169,6 +169,12 @@ and Windows consumer verifies the same package and receipt bytes before and
 after running. Set `--field windows-on-arm=true` at dispatch to run the x64
 packages with x64 .NET on GitHub's Windows on Arm runner too.
 
+Unsigned NuGet packing uses deterministic managed builds and fixed archive
+timestamps. Repacking the same source, native inputs and toolchain can reproduce
+the archive bytes. Rebuilding the native inputs separately can change binary
+identifiers, debug metadata or signatures. Use the package and receipt from the
+same producer run for cross-platform verification.
+
 If the SDK distributes a separate Windows adapter, its Windows plan can export
 the verified adapter package and receipt under `sdk-nuget-companions` in the
 hosted acceptance output. Download the adapter and the combined core package
