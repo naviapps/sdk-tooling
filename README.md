@@ -43,6 +43,24 @@ to verify the full resolved dependency graph. The `docs` and
 Tooling receives the SDK's own API names, source paths and test clients from
 that description.
 
+Native SDKs describe their artifacts in `native.toml`. Each product identifies
+its C symbol namespace and minimum supported macOS version. Add the FFI path,
+receipt filename and notice packages for multi-product SDKs.
+
+```toml
+[[artifacts]]
+id = "sdk"
+symbol_prefix = "example_"
+minimum_macos = "26.0"
+```
+
+`sdk-tooling native` builds the declared frameworks and records the source
+specification in their receipts. Use `native --verify` to verify a checkout's
+existing frameworks, or `--product <id>` to select one declaration.
+`sdk-tooling python fixtures/distribution/example.py` runs an SDK-owned fixture
+with the same selected toolkit. Module commands use `python -m` after the CLI
+command, for example `sdk-tooling python -m unittest discover -s fixtures/distribution/tests`.
+
 ## Developer bootstrap
 
 Git and mise must already be available. Review this repository's
@@ -132,11 +150,11 @@ older checkouts need `MISE_ACTIVATE_AGGRESSIVE=1` before `mise exec`.
 Check Python against `mise.toml` and the formatter with `xcrun swift-format --version`.
 This tooling repository uses `mise run check` and has no Makefile.
 
-For distribution checks outside GitHub Actions, set `NAVI_SDK_TOOLING_SOURCE`
-to an absolute path to a clean checkout at the SDK's pinned revision before
-running the SDK's distribution command. Choose a separate checkout if the
-maintainer's working branch has changes or is at another revision. A prepared
-VM can use a checksummed source bundle and local Git mirror supplied by its host.
+SDKs that declare `native.toml` use the fixed CLI from `mise.toml` for local
+distribution checks and SDK-owned Python fixtures. Older SDK revisions that use
+their own source loader expect `NAVI_SDK_TOOLING_SOURCE` to select a clean
+checkout at the corresponding pin. A prepared VM can use a checksummed source
+bundle and local Git mirror supplied by its host.
 
 ### Tool ownership
 

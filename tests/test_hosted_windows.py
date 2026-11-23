@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sdk_tooling import hosted_windows
+from sdk_tooling import adapters, hosted_windows
 
 
 class HostedWindowsTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class HostedWindowsTests(unittest.TestCase):
                 hosted_windows.run(sdk, command)
 
             run.assert_called_once_with(
-                [sys.executable, "-E", "-S", "-B", *command],
+                adapters.python_command(sdk, *command),
                 cwd=sdk,
                 env=dict(env, DOTNET_BIN=dotnet, NAVI_CI_ARTIFACTS=str(root / "sdk-acceptance")),
                 check=True,

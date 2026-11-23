@@ -6,15 +6,14 @@ import tomllib
 from pathlib import Path
 
 from . import consumers
+from .adapters import tooling_command
 from .sdk_checks import _boolean, _inside, _section, _string, _strings
 
 KINDS = ("c", "dotnet", "nuget")
 
 
-def command(kind, *arguments):
-    """Return the child command for callers with a selected build environment."""
-    script = Path(__file__).resolve().parents[1] / "tasks/sdk"
-    return [sys.executable, "-I", "-B", script, "binding-consumer", kind, *arguments]
+def command(kind, *arguments, root=None):
+    return tooling_command("binding-consumer", kind, *arguments, root=root)
 
 
 def _options(argv, *, windows_x64):

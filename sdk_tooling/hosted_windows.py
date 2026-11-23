@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .adapters import python_command
+
 
 def run(sdk_root, command, *, legacy_candidate=False):
     if sys.platform != "win32":
@@ -31,8 +33,13 @@ def run(sdk_root, command, *, legacy_candidate=False):
             "--tooling-revision",
             pins["naviapps/sdk-tooling"],
         ]
+    argv = (
+        python_command(sdk_root, *command)
+        if not legacy_candidate
+        else [sys.executable, "-E", "-S", "-B", *command]
+    )
     subprocess.run(
-        [sys.executable, "-E", "-S", "-B", *command],
+        argv,
         cwd=sdk_root,
         env=dict(os.environ, DOTNET_BIN=dotnet, NAVI_CI_ARTIFACTS=str(temp / "sdk-acceptance")),
         check=True,
