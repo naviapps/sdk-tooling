@@ -9,22 +9,20 @@ use std::{
     process::ExitCode,
 };
 
+use toml_edit::Document;
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const REPOSITORY: &str = "naviapps/sdk-tooling";
-const BASE: [(&str, &str); 4] = [
-    ("_tooling.py", "tools/_tooling.py"),
+const BASE: [(&str, &str); 3] = [
     (".editorconfig", ".editorconfig"),
     (".gitattributes", ".gitattributes"),
     ("rust-toolchain.toml", "rust-toolchain.toml"),
 ];
-const QUALITY: [(&str, &str); 6] = [
+const QUALITY: [(&str, &str); 3] = [
     ("ruff.toml", "ruff.toml"),
     (".clang-format", ".clang-format"),
-    (".dprint.json", ".dprint.json"),
     (".swiftlint.yml", ".swiftlint.yml"),
-    ("mise.toml", "mise.toml"),
-    ("quality.py", "tools/quality.py"),
 ];
 
 #[derive(Default)]
@@ -60,7 +58,7 @@ impl Options {
             }
         }
         if options.roots.is_empty() {
-            return Err("Select at least one Rust SDK checkout".into());
+            return Err("Select at least one SDK checkout".into());
         }
         if match &options.revision {
             Some(revision) => !immutable_revision(revision),
@@ -171,6 +169,55 @@ fn check_pin(path: &Path, current: Option<Vec<u8>>, revision: Option<&str>) -> R
     Ok(())
 }
 
+fn modern_pin(source: &[u8]) -> Result<Option<(String, std::ops::Range<usize>)>> {
+    let source = std::str::from_utf8(source)?;
+    let document = Document::parse(source)?;
+    let Some(task) = document
+        .get("tasks")
+        .and_then(|tasks| tasks.get("sdk-tooling"))
+    else {
+        return Ok(None);
+    };
+    let prefix = format!("uvx --from git+https://github.com/{REPOSITORY}.git@");
+    let immutable = "SDK tooling task must run the shared CLI at a canonical immutable revision";
+    let run = task.get("run").ok_or(immutable)?;
+    let revision = run
+        .as_str()
+        .and_then(|command| command.strip_prefix(&prefix)?.strip_suffix(" sdk-tooling"))
+        .filter(|revision| immutable_revision(revision))
+        .ok_or(immutable)?;
+    let value = run.span().ok_or(immutable)?;
+    let start = source[value.clone()].find(revision).ok_or(immutable)? + value.start;
+    Ok(Some((revision.to_owned(), start..start + revision.len())))
+}
+
+fn mappings(options: &Options, modern: bool, rust: bool) -> Vec<(&'static str, &'static str)> {
+    let mut configs = BASE.to_vec();
+    if modern {
+        // Each SDK owns the rules that distinguish its source and shipped bytes.
+        configs.retain(|&(name, _)| {
+            name != ".gitattributes"
+                && (rust || !matches!(name, ".editorconfig" | "rust-toolchain.toml"))
+        });
+    } else {
+        configs.push(("_tooling.py", "tools/_tooling.py"));
+    }
+    if options.swift_format {
+        configs.push((".swift-format", ".swift-format"));
+    }
+    if options.quality {
+        configs.extend(QUALITY);
+        if !modern {
+            configs.extend([
+                (".dprint.json", ".dprint.json"),
+                ("mise.toml", "mise.toml"),
+                ("quality.py", "tools/quality.py"),
+            ]);
+        }
+    }
+    configs
+}
+
 struct Replacement {
     path: PathBuf,
     previous: Option<Vec<u8>>,
@@ -224,17 +271,6 @@ impl Replacement {
 }
 
 fn plan(options: &Options, templates: &Path) -> Result<Vec<Replacement>> {
-    let mut mappings = BASE.to_vec();
-    if options.swift_format {
-        mappings.push((".swift-format", ".swift-format"));
-    }
-    if options.quality {
-        mappings.extend(QUALITY);
-    }
-    let configs: Vec<_> = mappings
-        .into_iter()
-        .map(|(source, relative)| Ok((relative, fs::read(templates.join(source))?)))
-        .collect::<io::Result<_>>()?;
     let mut replacements = Vec::new();
     let mut seen = Vec::new();
     for path in &options.roots {
@@ -243,19 +279,33 @@ fn plan(options: &Options, templates: &Path) -> Result<Vec<Replacement>> {
             continue;
         }
         seen.push(root.clone());
+
+        let mise = root.join("mise.toml");
+        let current_mise = ordinary_contents(&mise)?;
+        let current_pin = current_mise
+            .as_deref()
+            .map(modern_pin)
+            .transpose()?
+            .flatten();
+        let modern = current_pin.is_some();
+        let rust = root.join("Cargo.toml").is_file();
         let tools = root.join("tools");
-        if !root.join("Cargo.toml").is_file()
-            || metadata(&tools)?.is_some_and(|info| !info.is_dir() || is_linked(&info))
+        if !(rust || modern && root.join("Package.swift").is_file())
+            || !modern && metadata(&tools)?.is_some_and(|info| !info.is_dir() || is_linked(&info))
         {
-            return Err("Select a Rust SDK checkout with ordinary tool files".into());
+            return Err("Select an SDK checkout with ordinary tool files".into());
         }
-        for (relative, template) in &configs {
+        for (source, relative) in mappings(options, modern, rust) {
             let path = root.join(relative);
             let previous = ordinary_contents(&path)?;
+            if modern && previous.is_none() && relative != ".swift-format" {
+                continue;
+            }
+            let template = fs::read(templates.join(source))?;
             let desired = if path.file_name() == Some(OsStr::new(".editorconfig")) {
-                editorconfig(template, previous.as_deref().unwrap_or_default())
+                editorconfig(&template, previous.as_deref().unwrap_or_default())
             } else {
-                template.clone()
+                template
             };
             if previous.as_deref() != Some(&desired) {
                 replacements.push(Replacement {
@@ -264,6 +314,27 @@ fn plan(options: &Options, templates: &Path) -> Result<Vec<Replacement>> {
                     desired,
                 });
             }
+        }
+        if let Some((actual, guard)) = current_pin {
+            if let Some(revision) = &options.revision
+                && actual != *revision
+            {
+                if options.check {
+                    return Err(format!(
+                        "SDK tooling pin differs from the requested revision: {} (expected {revision}, found {actual})",
+                        mise.display()
+                    ).into());
+                }
+                let previous = current_mise.ok_or("Missing SDK tooling task")?;
+                let mut desired = previous.clone();
+                desired.splice(guard, revision.bytes());
+                replacements.push(Replacement {
+                    path: mise,
+                    previous: Some(previous),
+                    desired,
+                });
+            }
+            continue;
         }
         let pin = tools.join("tooling-sources.json");
         let current = ordinary_contents(&pin)?;

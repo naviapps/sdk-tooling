@@ -151,6 +151,91 @@ fn check_detects_drift_without_repairing_files_or_pins() {
     assert_eq!(fs::read_to_string(&pin).unwrap(), equivalent);
 }
 
+fn modern_command(revision: &str) -> String {
+    format!("uvx --from git+https://github.com/naviapps/sdk-tooling.git@{revision} sdk-tooling")
+}
+
+#[test]
+fn modern_sdk_pin_updates_preserve_mise_tasks_and_sdk_owned_policies() {
+    for rust in [true, false] {
+        let root = temporary_sdk();
+        let path = root.path();
+        if !rust {
+            fs::remove_file(path.join("Cargo.toml")).unwrap();
+            fs::write(path.join("Package.swift"), "// swift-tools-version: 6.3\n").unwrap();
+            fs::write(path.join(".editorconfig"), "root = true\n").unwrap();
+        }
+        let command = modern_command(REVISION);
+        let mise = format!(
+            "# Keep {REVISION} in this comment\r\n[tasks.\"sdk-tooling\"]\r\nrun = '{command}' # review\r\n\r\n[tasks.check]\r\nrun = \"make test\"\r\n"
+        );
+        fs::write(path.join("mise.toml"), &mise).unwrap();
+        for policy in [".gitattributes", ".dprint.json"] {
+            fs::write(path.join(policy), "SDK-owned policy\n").unwrap();
+        }
+        fs::write(path.join("ruff.toml"), "line-length = 90\n").unwrap();
+
+        fails(
+            sync(&[path], &["--check", "--revision", OTHER]),
+            "differs from the requested revision",
+        );
+        assert_eq!(fs::read_to_string(path.join("mise.toml")).unwrap(), mise);
+
+        succeeds(sync(&[path], &["--quality", "--revision", OTHER]));
+        let expected = mise.replacen(&command, &modern_command(OTHER), 1);
+        assert_eq!(
+            fs::read_to_string(path.join("mise.toml")).unwrap(),
+            expected
+        );
+        for policy in [".gitattributes", ".dprint.json"] {
+            assert_eq!(
+                fs::read_to_string(path.join(policy)).unwrap(),
+                "SDK-owned policy\n"
+            );
+        }
+        let templates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        assert_eq!(
+            fs::read(path.join("ruff.toml")).unwrap(),
+            fs::read(templates.join("ruff.toml")).unwrap()
+        );
+        assert!(!path.join("tools").exists());
+        assert!(!path.join("rust-toolchain.toml").exists());
+        if !rust {
+            assert_eq!(
+                fs::read_to_string(path.join(".editorconfig")).unwrap(),
+                "root = true\n"
+            );
+        }
+        assert!(!path.join(".clang-format").exists());
+        succeeds(sync(
+            &[path],
+            &["--quality", "--check", "--revision", OTHER],
+        ));
+    }
+}
+
+#[test]
+fn malformed_modern_task_blocks_writes_and_never_uses_the_legacy_pin() {
+    let first = temporary_sdk();
+    let later = temporary_sdk();
+    let roots = &[first.path(), later.path()];
+    let mise = later.path().join("mise.toml");
+    fs::write(
+        &mise,
+        format!(
+            "[tasks.sdk-tooling]\nrun = '{cmd}'\n",
+            cmd = modern_command("main")
+        ),
+    )
+    .unwrap();
+    fails(
+        sync(roots, &["--revision", REVISION]),
+        "canonical immutable revision",
+    );
+    assert!(!first.path().join("tools").exists());
+    assert!(!later.path().join("tools").exists());
+}
+
 #[test]
 fn malformed_or_mutable_pins_fail_without_writes() {
     let root = temporary_sdk();

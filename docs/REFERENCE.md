@@ -128,17 +128,22 @@ Put tool options before the `--` that introduces the SDK paths. Relative paths
 resolve from the working directory. To use a prepared Cargo cache without
 network access, add `--offline` to the Cargo options.
 
-Add `--quality` to select the shared static-check entry point and quality
-templates. The tool preserves SDK-specific EditorConfig sections. Reapply SDK
-tool additions after synchronizing `mise.toml`. Select `--swift-format` only for
-SDKs that adopt that explicit formatting policy.
+For SDKs that declare `[tasks.sdk-tooling]` in `mise.toml`, the tool validates
+the pinned `uvx` command and rewrites only its literal commit SHA. It preserves
+the rest of the mise configuration, SDK-specific dprint and Git attributes,
+and SDK-specific EditorConfig sections. For Rust SDKs, it synchronizes adopted
+EditorConfig and Rust toolchain files. Add `--quality` to synchronize existing Ruff,
+SwiftLint and C formatting policies. Select `--swift-format` to opt into the
+shared Swift formatting policy. Swift-only SDKs can use the same command.
 
-The tool checks all selected checkout paths before replacing files
-individually and updates each pin after its templates. Pass
-`--revision FULL_COMMIT_SHA` with `--check` to verify that exact pin without
-rewriting it. Without a revision, the check accepts any canonical immutable pin.
-Git attributes keep source line endings canonical while preserving artifact and
-third-party notice bytes verbatim, including when a developer enables autocrlf.
+Legacy Rust SDKs without the mise task retain the JSON pin and Python loader
+templates. On those checkouts, `--quality` also replaces the legacy mise and
+static-check templates.
+
+The tool validates all selected checkout paths before replacing files and
+writes each updated pin after its templates. Pass `--revision FULL_COMMIT_SHA`
+with `--check` to require that revision. Without a revision, the check accepts
+any canonical immutable pin.
 
 ### DocC catalog acceptance
 
