@@ -63,6 +63,13 @@ jobs:
           ref: ${{ inputs.revision }}
           path: sdk
           fetch-depth: 0
+          sparse-checkout: |
+            /sdk-distribution.toml
+            /mise.toml
+            /global.json
+            /native.toml
+            /distribution/
+          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Read the verified SDK plan
         id: plan
