@@ -10,7 +10,45 @@ from sdk_tooling import hosted_windows
 
 
 class HostedWindowsTests(unittest.TestCase):
-    def test_runs_the_sdk_command_with_the_verified_tooling_and_runner_paths(self):
+    def test_runs_sdk_owned_command_without_loading_a_candidate_pin(self):
+        with tempfile.TemporaryDirectory(prefix="SDK fixture ") as temporary:
+            root = Path(temporary)
+            sdk = root / "sdk checkout"
+            sdk.mkdir()
+            command = ["-m", "tools.native_host", "--architecture", "x86_64"]
+            dotnet = str(root / "dotnet installation" / "dotnet.exe")
+            tooling = str(root / "pinned tooling")
+            env = {"RUNNER_TEMP": str(root), "NAVI_SDK_TOOLING_SOURCE": tooling}
+
+            with (
+                patch.object(hosted_windows.sys, "platform", "win32"),
+                patch.dict(os.environ, env, clear=True),
+                patch.object(hosted_windows.shutil, "which", return_value=dotnet),
+                patch.object(hosted_windows.subprocess, "run") as run,
+            ):
+                hosted_windows.run(sdk, command)
+
+            run.assert_called_once_with(
+                [sys.executable, "-E", "-S", "-B", *command],
+                cwd=sdk,
+                env=dict(env, DOTNET_BIN=dotnet, NAVI_CI_ARTIFACTS=str(root / "sdk-acceptance")),
+                check=True,
+            )
+
+    def test_rejects_a_relative_dotnet_path(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.object(hosted_windows.sys, "platform", "win32"),
+            patch.dict(os.environ, {"RUNNER_TEMP": temporary}, clear=True),
+            patch.object(hosted_windows.shutil, "which", return_value="dotnet.exe"),
+            patch.object(hosted_windows.subprocess, "run") as run,
+        ):
+            with self.assertRaisesRegex(SystemExit, "The pinned x64 .NET SDK was not installed"):
+                hosted_windows.run(Path(temporary), ["tools/windows.py"])
+
+        run.assert_not_called()
+
+    def test_legacy_template_forwards_the_verified_candidate(self):
         with tempfile.TemporaryDirectory(prefix="SDK fixture ") as temporary:
             root = Path(temporary)
             sdk = root / "sdk checkout"

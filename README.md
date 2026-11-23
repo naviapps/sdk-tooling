@@ -14,8 +14,34 @@ the SDK's distributed artifacts and do not install these developer tools.
 See the [reference](docs/REFERENCE.md) for static checks, SDK policy synchronization,
 native artifacts and consumer verification.
 
-Each SDK's README, Makefile and `tools` entry points select its supported interfaces,
-fixtures and acceptance commands.
+Each SDK selects its public fixtures and acceptance commands in its own
+check and distribution configurations.
+
+## Use a pinned revision
+
+Run the CLI from the SDK checkout. It requires Python 3.13 or newer when
+installed, and no third-party Python runtime packages.
+
+```sh
+uvx --from git+https://github.com/naviapps/sdk-tooling.git@ --help <full-sha >sdk-tooling
+```
+
+Place the file selections and fixtures for public API checks in
+`sdk-checks.toml` at the SDK root. A minimal Swift consumer declaration uses a
+SwiftPM fixture whose local SDK dependency is at `../sdk`:
+
+```toml
+[swift]
+inputs = ["Package.swift", "Sources", "Tests", "LICENSE"]
+executable = "ExampleConsumer"
+```
+
+`swift-consumer` stages the declared SDK inputs and
+`fixtures/swift-consumer` in a temporary directory. Add `--distribution`
+to verify the full resolved dependency graph. The `docs` and
+`installed-consumers` commands use their corresponding SDK-owned sections.
+Tooling receives the SDK's own API names, source paths and test clients from
+that description.
 
 ## Developer bootstrap
 
@@ -52,12 +78,38 @@ gh workflow run check-sdk-distribution.yml --repo naviapps/sdk-tooling \
   --field sdk=configuration-storage --field revision="$SDK_COMMIT"
 ```
 
-Both jobs run the SDK's distribution checks on the same commit and select the
-tooling revision from that SDK's `tools/tooling-sources.json`. The dispatcher
-uses a separate checkout, so updating the workflow alone requires no SDK pins
-to change. Private repository access is used during tooling checkout and is
-removed before SDK commands run. The Swift-only SetappAccess SDK checks its
-standalone consumer in its own workflow.
+The jobs read `sdk-distribution.toml` from a clean SDK checkout at the requested
+commit. Each platform has a `commands` array of argument arrays. A project can
+declare either platform or both. For example:
+
+```toml
+[macos]
+commands = [
+  ["cargo", "fetch", "--locked"],
+  ["make", "check-distribution"],
+]
+```
+
+On macOS the dispatcher runs the commands through the SDK's mise environment
+when it has a `mise.toml`. On Windows the command name `python` uses the runner's
+pinned interpreter, and a `[tools].dotnet` pin selects the x64 .NET SDK. Commands can use `{tooling}` for the pinned tooling checkout
+or `{temp}` for a temporary directory shared across commands. An optional
+`[[macos.archives]]` or `[[windows.archives]]` table provides an HTTPS `url`,
+a verified `sha256` and a directory named by `bin` inside the tar archive to
+prepend to `PATH`.
+
+The tooling revision comes from the `[tasks.sdk-tooling]` task in the SDK's
+`mise.toml`:
+
+```toml
+[tasks.sdk-tooling]
+run = "uvx --from git+https://github.com/naviapps/sdk-tooling.git@<full-sha> sdk-tooling"
+```
+
+Repositories without the task can declare an exact revision in
+`tools/tooling-sources.json`. The dispatcher keeps its own checkout so workflow
+changes can ship independently. SDK commands receive the exact selected SDK
+commit and run after the setup steps remove their checkout credentials.
 
 ### SDK checkouts
 

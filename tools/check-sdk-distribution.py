@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a published SDK revision's distribution checks from a trusted dispatcher."""
+"""Run distribution commands from a verified SDK checkout."""
 
 import argparse
 import hashlib
@@ -10,45 +10,32 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from pathlib import Path
+import tomllib
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
-REPOSITORY = "naviapps/sdk-tooling"
-REVISION = re.compile(r"[0-9a-f]{40}\Z")
-WINDOWS_DRIVERS = {
-    "configuration-storage": ("tools/windows.py",),
-    "desktop-actions": ("tools/check-windows.py",),
-    "desktop-applications": ("tools/windows.py",),
-    "pointer-gestures": ("-m", "tools.native_host", "--architecture", "x86_64"),
-    "preset-documents": ("tools/windows.py",),
-    "software-licensing": ("tools/windows.py",),
-    "software-licensing-polar": ("tools/windows.py",),
-    "system-permissions": ("tools/windows.py",),
-    "window-management": ("tools/check-ci.py", "--skip-desktop"),
-}
-MACOS_TARGETS = {
-    "desktop-applications": ("test-installed-consumers",),
-    "pointer-gestures": ("check-rust-consumer", "check-c-consumer", "check-dotnet"),
-    "software-licensing": ("test-installed-consumers",),
-    "system-permissions": ("test-installed-consumers",),
-    "window-management": ("test-installed-consumers", "test-c", "test-dotnet"),
-}
-DEPENDENCY_CHECKOUTS = {
-    "desktop-actions": "window-management",
-    "software-licensing-polar": "software-licensing",
-}
-RUST_FORMAT_ON_WINDOWS = {"desktop-actions", "pointer-gestures", "window-management"}
-WASM_BINDGEN_VERSION = "0.2.104"
-WASM_BINDGEN_SHA256 = "167c0dd3366b42c3475d8b2f3c97472fecdf98ced4c234ffe6a86ec741f7dad8"
+REVISION = re.compile(r"[a-f0-9]{40}")
+REPOSITORY = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
+PLATFORMS = ("macos", "windows")
 CREDENTIAL_VARIABLES = {
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_URL",
     "ACTIONS_RUNTIME_TOKEN",
     "GH_ENTERPRISE_TOKEN",
     "GH_TOKEN",
+    "GIT_ASKPASS",
     "GITHUB_ENTERPRISE_TOKEN",
     "GITHUB_TOKEN",
     "MISE_GITHUB_TOKEN",
+    "SSH_ASKPASS",
     "SSH_AUTH_SOCK",
+}
+SOURCE_VARIABLES = {
+    "NAVI_CI_SOURCE_COMMIT",
+    "NAVI_CI_SOURCE_FINGERPRINT",
+    "NAVI_CI_SOURCES",
+    "NAVI_SDK_TOOLING_SOURCE",
+    "SDK_DISTRIBUTION_TEMP",
 }
 
 
@@ -57,25 +44,28 @@ def run(root, env, *command, stdout=None):
     return subprocess.run(command, cwd=root, env=env, stdout=stdout, text=True, check=True).stdout
 
 
-def child_environment(revision, tooling=None):
+def child_environment(revision, tooling=None, *, temp=None):
     env = {
         key: value
         for key, value in os.environ.items()
-        if key.upper() not in CREDENTIAL_VARIABLES and not key.startswith("GIT_CONFIG_")
+        if key.upper() not in CREDENTIAL_VARIABLES | SOURCE_VARIABLES
+        and not key.upper().startswith("GIT_CONFIG_")
     }
-    for key in ("NAVI_CI_SOURCE_COMMIT", "NAVI_CI_SOURCE_FINGERPRINT", "NAVI_CI_SOURCES"):
-        env.pop(key, None)
     env.update(
         GITHUB_SHA=revision,
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0="credential.helper",
         GIT_CONFIG_VALUE_0="",
+        GIT_CONFIG_GLOBAL=os.devnull,
+        GIT_CONFIG_NOSYSTEM="1",
         GIT_NO_LAZY_FETCH="1",
         GIT_NO_REPLACE_OBJECTS="1",
         GIT_TERMINAL_PROMPT="0",
     )
     if tooling is not None:
         env["NAVI_SDK_TOOLING_SOURCE"] = str(tooling)
+    if temp is not None:
+        env["SDK_DISTRIBUTION_TEMP"] = str(temp)
     return env
 
 
@@ -101,136 +91,260 @@ def verify_checkout(root, revision, repository, env, *, require_main=False):
     ):
         raise ValueError(f"Distribution requires a clean checkout of {repository}")
     if require_main:
-        # Only approved SDK commits may run alongside the private tooling source.
+        # Run SDK code only after its commit is known to belong to the default release branch.
         run(root, env, "git", "merge-base", "--is-ancestor", revision, "refs/remotes/origin/main")
 
 
-def tooling_revision(source):
-    path = source / "tools/tooling-sources.json"
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("SDK revision must declare its distribution tooling pin")
-    pins = json.loads(path.read_bytes())
+def read_regular(source, relative):
+    path = source.resolve() / relative
+    if path.resolve() != path or not path.is_file():
+        raise ValueError(f"Expected an ordinary SDK file: {relative}")
+    return path.read_bytes()
+
+
+def mise_configuration(source):
+    if (source / "mise.toml").exists():
+        return tomllib.loads(read_regular(source, "mise.toml").decode("utf-8"))
+    return {}
+
+
+def tooling_revision(source, repository):
+    tasks = mise_configuration(source).get("tasks", {})
+    if not isinstance(tasks, dict):
+        raise ValueError("SDK mise tasks must be a table")
+    task = tasks.get("sdk-tooling")
+    if task is not None:
+        command = task.get("run") if isinstance(task, dict) else None
+        prefix = f"uvx --from git+https://github.com/{repository}.git@"
+        suffix = " sdk-tooling"
+        if (
+            not isinstance(command, str)
+            or not command.startswith(prefix)
+            or not command.endswith(suffix)
+        ):
+            raise ValueError("SDK tooling task must run the shared CLI at a full Git SHA")
+        pin = command.removeprefix(prefix).removesuffix(suffix)
+        if not REVISION.fullmatch(pin):
+            raise ValueError("SDK tooling task must pin one full lowercase Git SHA")
+        return pin
+    pins = json.loads(read_regular(source, "tools/tooling-sources.json"))
     if (
         not isinstance(pins, dict)
-        or set(pins) != {REPOSITORY}
-        or not isinstance(pins[REPOSITORY], str)
-        or not REVISION.fullmatch(pins[REPOSITORY])
+        or set(pins) != {repository}
+        or not isinstance(pins[repository], str)
+        or not REVISION.fullmatch(pins[repository])
     ):
         raise ValueError("SDK distribution tooling pin must be one full lowercase Git SHA")
-    return pins[REPOSITORY]
+    return pins[repository]
 
 
-def check_web(source, env, temp):
-    name = f"wasm-bindgen-{WASM_BINDGEN_VERSION}-aarch64-apple-darwin"
-    url = f"https://github.com/wasm-bindgen/wasm-bindgen/releases/download/{WASM_BINDGEN_VERSION}"
-    archive = temp / f"{name}.tar.gz"
-    run(source, env, "curl", "-fsSL", "--retry", "3", "-o", archive, f"{url}/{archive.name}")
+def windows_dotnet_version(source):
+    tools = mise_configuration(source).get("tools", {})
+    if not isinstance(tools, dict):
+        raise ValueError("SDK mise tools must be a table")
+    if "dotnet" not in tools:
+        return ""
+    version = tools["dotnet"]
+    if isinstance(version, dict):
+        systems = version.get("os", ["windows"])
+        if not isinstance(systems, list) or not all(isinstance(item, str) for item in systems):
+            raise ValueError("SDK .NET operating systems must be an array")
+        if "windows" not in systems:
+            return ""
+        version = version.get("version")
+    if not isinstance(version, str) or not re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?", version
+    ):
+        raise ValueError("Windows distribution requires one exact .NET SDK version in mise.toml")
+    return version
+
+
+def clean_text(value):
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and all(character.isprintable() for character in value)
+    )
+
+
+def archive_entry(value):
+    if (
+        not isinstance(value, dict)
+        or value.keys() != {"url", "sha256", "bin"}
+        or not all(clean_text(item) for item in value.values())
+        or not re.fullmatch(r"[a-f0-9]{64}", value["sha256"])
+    ):
+        raise ValueError("Tool archives require url, sha256 and bin")
+    parsed = urlsplit(value["url"])
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or any(character.isspace() for character in value["url"])
+    ):
+        raise ValueError("Tool archive URL must use HTTPS without credentials or a fragment")
+    bindir = PurePosixPath(value["bin"])
+    if (
+        not bindir.parts
+        or bindir.is_absolute()
+        or bindir.as_posix() != value["bin"]
+        or ".." in bindir.parts
+        or any(character in value["bin"] for character in "\\:;")
+    ):
+        raise ValueError("Tool archive bin must be a canonical relative directory")
+    return value
+
+
+def distribution_plan(source):
+    plan = tomllib.loads(read_regular(source, "sdk-distribution.toml").decode("utf-8"))
+    if not plan or not plan.keys() <= set(PLATFORMS):
+        raise ValueError("Declare macos or windows distribution commands")
+    selected = {}
+    for platform, settings in plan.items():
+        if not isinstance(settings, dict) or not settings.keys() <= {"commands", "archives"}:
+            raise ValueError(f"Unknown distribution settings for {platform}")
+        commands = settings.get("commands")
+        if (
+            not isinstance(commands, list)
+            or not commands
+            or not all(
+                isinstance(argv, list)
+                and argv
+                and all(clean_text(argument) for argument in argv)
+                and argv[0].strip()
+                for argv in commands
+            )
+        ):
+            raise ValueError(f"Distribution commands for {platform} must be nonempty argv arrays")
+        archives = settings.get("archives", [])
+        if not isinstance(archives, list):
+            raise ValueError(f"Tool archives for {platform} must be an array")
+        selected[platform] = {
+            "commands": commands,
+            "archives": [archive_entry(entry) for entry in archives],
+        }
+    return selected
+
+
+def install_archive(source, env, temp, index, configuration):
+    root = temp / f"tool-{index}"
+    root.mkdir()
+    archive = root / "tool.tar"
+    run(
+        source,
+        env,
+        "curl",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "-fsSL",
+        "--retry",
+        "3",
+        "-o",
+        archive,
+        configuration["url"],
+    )
     with archive.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != WASM_BINDGEN_SHA256:
-            raise ValueError("Pinned wasm-bindgen download checksum differs")
+        if hashlib.file_digest(stream, "sha256").hexdigest() != configuration["sha256"]:
+            raise ValueError("Pinned tool archive checksum differs")
+    extracted = root / "contents"
     with tarfile.open(archive) as package:
-        package.extractall(temp, filter="data")
-    env = dict(env, PATH=os.pathsep.join((str(temp / name), env["PATH"])))
-    mise = ("mise", "exec", "--")
-    run(source, env, *mise, "rustup", "target", "add", "wasm32-unknown-unknown")
-    run(
-        source,
-        env,
-        *mise,
-        "cargo",
-        "fetch",
-        "--locked",
-        "--manifest-path",
-        "bindings/web/rust/Cargo.toml",
-    )
-    run(source, env, *mise, "make", "check-web")
-    run(
-        source,
-        env,
-        *mise,
-        "python3",
-        "-I",
-        "-B",
-        ".github/scripts/check-web-browser.py",
-        "--artifacts",
-        str(temp / "pointer-gestures-artifacts"),
-    )
+        package.extractall(extracted, filter="data")
+    binary_path = extracted / configuration["bin"]
+    if not binary_path.is_dir() or not binary_path.resolve().is_relative_to(extracted):
+        raise ValueError("Pinned tool archive does not provide the expected bin directory")
+    return binary_path
 
 
-def check_macos(source, sdk, env, temp):
-    mise = ("mise", "exec", "--")
-    run(source, env, "mise", "trust", "mise.toml")
-    run(source, env, "mise", "install")
-    run(source, env, "xcrun", "swift", "--version")
-    run(source, env, *mise, "cargo", "fetch", "--locked")
-    if sdk == "desktop-applications":
-        run(
-            source,
-            env,
-            *mise,
-            "cargo",
-            "fetch",
-            "--locked",
-            "--manifest-path",
-            "fixtures/windows/Cargo.toml",
-        )
-    run(source, env, *mise, "make", "check-distribution", *MACOS_TARGETS.get(sdk, ()))
-    if sdk in DEPENDENCY_CHECKOUTS:
-        dependency = "naviapps/" + DEPENDENCY_CHECKOUTS[sdk]
-        checkout = temp / DEPENDENCY_CHECKOUTS[sdk]
-        run(source, env, "git", "clone", f"https://github.com/{dependency}.git", checkout)
-        run(
-            source,
-            env,
-            *mise,
-            "python3",
-            "-B",
-            "tools/install-consumers.py",
-            "--git-dependency-source",
-            f"{dependency}={checkout}",
-        )
-    if sdk == "pointer-gestures":
-        run(source, env, *mise, "make", "check-consumer")
-        check_web(source, env, temp)
-    else:
-        run(source, env, *mise, "python3", "-B", "tools/consumer.py", "--distribution")
+def execute(source, platform, settings, env, temp, tooling):
+    tool_dirs = [
+        str(install_archive(source, env, temp, index, archive))
+        for index, archive in enumerate(settings["archives"])
+    ]
+    if tool_dirs:
+        env = dict(env, PATH=os.pathsep.join((*tool_dirs, env["PATH"])))
+
+    prefix = ()
+    if platform == "macos" and (source / "mise.toml").is_file():
+        run(source, env, "mise", "trust", "mise.toml")
+        run(source, env, "mise", "install")
+        prefix = ("mise", "exec", "--")
+
+    for argv in settings["commands"]:
+        command = [
+            argument.replace("{temp}", str(temp)).replace("{tooling}", str(tooling))
+            for argument in argv
+        ]
+        if platform == "windows" and command[0] == "python":
+            command[0] = sys.executable
+        run(source, env, *prefix, *command)
 
 
-def check_windows(source, sdk, env):
-    if sdk in RUST_FORMAT_ON_WINDOWS:
-        run(source, env, "cargo", "fmt", "--all", "--", "--check")
-    python = (sys.executable, "-E", "-S", "-B")
-    run(source, env, *python, "-m", "unittest", "discover", "-s", "tools/tests")
-    run(source, env, *python, "tools/windows-ci.py", *WINDOWS_DRIVERS[sdk])
+def write_output(**values):
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+        for name, value in values.items():
+            print(f"{name}={value}", file=output)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("pin", "macos", "windows"))
-    parser.add_argument("sdk", choices=WINDOWS_DRIVERS)
+    parser.add_argument("mode", choices=("identity", "pin", *PLATFORMS))
+    parser.add_argument("sdk")
     parser.add_argument("revision")
+    parser.add_argument("--platform", choices=PLATFORMS)
     parser.add_argument("--tooling", type=Path)
+    parser.add_argument("--tooling-repository", default=os.environ.get("GITHUB_REPOSITORY"))
     args = parser.parse_args(argv)
+    repository = args.tooling_repository or ""
+    owner = repository.partition("/")[0]
+    sdk_repository = f"{owner}/{args.sdk}"
+    if (
+        not REPOSITORY.fullmatch(repository)
+        or not REPOSITORY.fullmatch(sdk_repository)
+        or ".." in sdk_repository
+        or sdk_repository.endswith(".git")
+        or not REVISION.fullmatch(args.revision)
+        or repository.casefold() == sdk_repository.casefold()
+    ):
+        parser.error("Specify a repository in the tooling owner and its full lowercase Git SHA")
+    if args.mode == "identity":
+        write_output(repository=sdk_repository)
+        return
+
     source = Path.cwd().resolve()
     env = child_environment(args.revision)
-    verify_checkout(source, args.revision, "naviapps/" + args.sdk, env, require_main=True)
-    pin = tooling_revision(source)
+    verify_checkout(source, args.revision, sdk_repository, env, require_main=True)
+    plan = distribution_plan(source)
+    pin = tooling_revision(source, repository)
     if args.mode == "pin":
-        with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
-            print(f"revision={pin}", file=output)
+        if args.platform is None:
+            parser.error("Reading the plan requires --platform")
+        enabled = args.platform in plan
+        dotnet = windows_dotnet_version(source) if enabled and args.platform == "windows" else ""
+        write_output(revision=pin, enabled=str(enabled).lower(), dotnet=dotnet)
         return
+
+    if args.mode not in plan:
+        parser.error("SDK distribution configuration does not declare this platform")
     if args.tooling is None:
         parser.error("Distribution checks require --tooling with the pinned checkout")
     tooling = args.tooling.resolve(strict=True)
-    verify_checkout(tooling, pin, REPOSITORY, env)
-    env = child_environment(args.revision, tooling)
-    if args.mode == "windows":
-        check_windows(source, args.sdk, env)
-    else:
-        with tempfile.TemporaryDirectory(
-            dir=env.get("RUNNER_TEMP"), prefix="sdk-distribution-"
-        ) as temporary:
-            check_macos(source, args.sdk, env, Path(temporary))
+    verify_checkout(tooling, pin, repository, env)
+    with tempfile.TemporaryDirectory(
+        dir=env.get("RUNNER_TEMP"), prefix="sdk-distribution-"
+    ) as work:
+        temp = Path(work).resolve()
+        execute(
+            source,
+            args.mode,
+            plan[args.mode],
+            child_environment(args.revision, tooling, temp=temp),
+            temp,
+            tooling,
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sdk-tooling"
+version = "0.1.0"
+description = "Build and validation tools for native SDKs"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+
+[project.scripts]
+sdk-tooling = "sdk_tooling.__main__:main"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/LICENSE",
+  "/README.md",
+  "/sdk_tooling",
+  "/tasks/sdk",
+  "/tools/consumer-identity/src/main.rs",
+  "/tools/native-dep-info/src/main.rs",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["sdk_tooling"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"tools/consumer-identity/src/main.rs" = "tools/consumer-identity/src/main.rs"
+"tools/native-dep-info/src/main.rs" = "tools/native-dep-info/src/main.rs"

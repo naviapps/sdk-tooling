@@ -807,24 +807,7 @@ def _run_c(
     }
 
 
-def check_installed(
-    *,
-    root,
-    git_url,
-    rust_packages,
-    framework=None,
-    header=None,
-    c_arguments=None,
-    c_fixture=_C_FIXTURE,
-    c_receipt=_C_RECEIPT,
-    argv=None,
-    rust_git_dependencies=None,
-    rust_modes=None,
-    rust_mode_check=None,
-    rust_registry_dependencies=None,
-):
-    """Run the SDK's own Rust/C API assertions using only independently delivered inputs."""
-    parser = argparse.ArgumentParser(description=__doc__)
+def add_arguments(parser):
     parser.add_argument("--revision", help="Exact tested SDK commit; defaults to clean HEAD")
     parser.add_argument(
         "--git-source",
@@ -848,7 +831,32 @@ def check_installed(
         type=Path,
         help="Retain a JSON report and the client's own Cargo.lock/metadata outside the SDK",
     )
-    args = parser.parse_args(argv)
+
+
+def check_installed(
+    *,
+    root,
+    git_url,
+    rust_packages,
+    framework=None,
+    header=None,
+    c_arguments=None,
+    c_fixture=_C_FIXTURE,
+    c_receipt=_C_RECEIPT,
+    argv=None,
+    args=None,
+    rust_git_dependencies=None,
+    rust_modes=None,
+    rust_mode_check=None,
+    rust_registry_dependencies=None,
+):
+    """Run the SDK's own Rust/C API assertions using only independently delivered inputs."""
+    if args is None:
+        parser = argparse.ArgumentParser(description=__doc__)
+        add_arguments(parser)
+        args = parser.parse_args(argv)
+    elif argv is not None:
+        raise ValueError("Supply either parsed consumer arguments or argv")
     root = Path(root).resolve(strict=True)
     revision, tree = _source_revision(root, args.revision)
     default_languages = ("rust", "c") if framework and not args.windows_architecture else ("rust",)
