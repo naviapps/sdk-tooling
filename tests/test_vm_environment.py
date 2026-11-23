@@ -28,10 +28,7 @@ class VMEnvironmentTests(unittest.TestCase):
         self.assertEqual(env, {str(variable): str(path), "OTHER": "retained"})
         self.assertEqual(vm.artifacts_dir(env), path)
 
-        vm.set_value(env, variable, path, legacy=True)
-        self.assertEqual(env, {variable.legacy_name: str(path), "OTHER": "retained"})
-        self.assertEqual(vm.artifacts_dir(env), path)
-
+        env[variable.legacy_name] = str(path)
         vm.set_value(env, variable, None)
         self.assertEqual(env, {"OTHER": "retained"})
 

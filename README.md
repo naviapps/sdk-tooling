@@ -95,9 +95,10 @@ removing any output.
 
 Public SDKs run contributor checks in their own repositories. They can call the
 [Swift matrix](.github/workflows/check-swift.yml) and the
-[Windows x64 Rust step](.github/actions/test-rust-windows/action.yml) at an
+[Windows x64 check step](.github/actions/test-rust-windows/action.yml) at an
 immutable SDK Tooling revision. The Swift matrix runs the SDK's `make test` and
-`make test-consumer` targets on macOS 26 and 27.
+`make test-consumer` targets on macOS 26 and 27. Windows checks can opt in to
+installing the x64 .NET SDK declared in the SDK's `mise.toml`.
 
 The shared
 [SDK distribution checks](.github/workflows/check-sdk-distribution.yml) are run
@@ -150,14 +151,13 @@ The tooling revision comes from the `[tasks.sdk-tooling]` task in the SDK's
 run = "uvx --from git+https://github.com/naviapps/sdk-tooling.git@<full-sha> sdk-tooling"
 ```
 
-Repositories without the task can declare an exact revision in
-`tools/tooling-sources.json`. The dispatcher keeps its own checkout so workflow
-changes can ship independently. The hosted job sets `GITHUB_SHA` to the selected
-SDK commit and uses Git to select the source files. It clears inherited VM Runner
-snapshot settings and checkout credentials. The Windows fixture launcher supplies
-`DOTNET_BIN` and `VM_RUNNER_ARTIFACTS_DIR` from the runner's x64 tool and temporary
-directory. Older checkouts using a JSON pin or `tools/_tooling.py` still receive
-`NAVI_SDK_TOOLING_SOURCE` for their SDK-owned loaders.
+The dispatcher keeps its own checkout so workflow changes can ship independently.
+The hosted job sets `GITHUB_SHA` to the selected SDK commit and uses Git to select
+the source files. It clears inherited VM Runner snapshot settings and checkout
+credentials. The Windows fixture launcher supplies `DOTNET_BIN` and
+`VM_RUNNER_ARTIFACTS_DIR` from the runner's x64 tool and temporary directory.
+To reproduce checks for an older SDK commit with a different loader layout,
+follow that commit's instructions with its pinned tooling revision.
 
 ### SDK checkouts
 
@@ -180,11 +180,9 @@ older checkouts need `MISE_ACTIVATE_AGGRESSIVE=1` before `mise exec`.
 Check Python against `mise.toml` and the formatter with `xcrun swift-format --version`.
 This tooling repository uses `mise run check` and has no Makefile.
 
-SDKs that declare `native.toml` use the fixed CLI from `mise.toml` for local
-distribution checks and SDK-owned Python fixtures. Older SDK revisions that use
-their own source loader expect `NAVI_SDK_TOOLING_SOURCE` to select a clean
-checkout at the corresponding pin. A prepared VM can use a checksummed source
-bundle and local Git mirror supplied by its host.
+SDKs that declare `native.toml` use the pinned CLI from `mise.toml` for local
+distribution checks and SDK-owned Python fixtures. A prepared VM can use a
+checksummed source bundle and local Git mirror supplied by its host.
 
 ### Tool ownership
 

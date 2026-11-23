@@ -1,21 +1,95 @@
-"""Identify Windows acceptance inputs and publish one verified package transactionally."""
+"""Build and validate Windows x64 SDKs and publish verified package evidence."""
 
-import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from contextlib import ExitStack
 from pathlib import Path
 
-from . import vm_environment
+from . import artifacts, c_compiler, vm_environment, windows
+from .artifacts import file_sha256
+
+TARGET = windows.MSVC_TARGETS["x64"]
+RID = "win-x64"
 
 
-def _sha256(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+class X64Acceptance:
+    """Build and exercise one native SDK on a Windows x64 or ARM64 worker."""
+
+    def __init__(self, root):
+        self.root = root
+        self.host = windows.host_architecture()
+        environment = {
+            key.upper(): value
+            for key, value in os.environ.items()
+            if key.upper() != "DOTNET_HOST_PATH"
+        }
+        self.env, self.tools, self.dotnet = windows.native_environment(
+            self.host, environment, target_architecture="x64"
+        )
+        self.env["RUSTUP_AUTO_INSTALL"] = "0"
+        self.toolchain = {
+            "backend": "msvc",
+            "host": windows.MSVC_TARGETS[self.host],
+            "target": TARGET,
+        }
+        self.dotnet_version = subprocess.check_output(
+            [str(self.dotnet), "--version"], cwd=root, env=self.env, text=True
+        ).strip()
+        if (
+            self.dotnet_version
+            != tomllib.loads((root / "mise.toml").read_text())["tools"]["dotnet"]
+        ):
+            raise ValueError("Use the pinned x64 .NET SDK version from mise.toml")
+
+    def run(self, *args):
+        subprocess.run([str(value) for value in args], cwd=self.root, env=self.env, check=True)
+
+    def build(self, native, *, fetch_all=False):
+        fetch_target = () if fetch_all else ("--target", TARGET)
+        self.run("cargo", "fetch", "--locked", *fetch_target)
+        self.run("cargo", "fmt", "--all", "--", "--check")
+        built = windows.build_library(native, self.env, self.tools, "x64", native_host=self.host)
+        workspace = ("--workspace", "--target", TARGET, "--locked", "--offline")
+        self.run("cargo", "clippy", *workspace, "--all-targets", "--", "-D", "warnings")
+        self.run("cargo", "test", *workspace)
+        return built
+
+    def stage(self, native, built, candidate):
+        """Stage the verified DLL and import library under the caller's build lock."""
+        verified, receipt = windows.verify_artifact(native, "x64", environment=self.env)
+        if verified != built or receipt.get("toolchain") != self.toolchain:
+            raise ValueError("Windows x64 library differs from the selected host build")
+        dll = native.library + ".dll"
+        names = (dll, dll + ".lib")
+        library, import_library = (
+            artifacts.stage_native(built / name, candidate / name) for name in names
+        )
+        expected = {name: receipt["outputs"][name] for name in names}
+        if artifacts.hashes([library, import_library], candidate) != expected:
+            raise ValueError("Staged DLL or import library differs from its verified receipt")
+        return library, import_library, receipt
+
+    def run_c(self, source, *, include_directory, import_library):
+        # Windows searches the executable directory before PATH.
+        candidate = import_library.parent
+        executable = candidate / "abi.exe"
+        c_compiler.compile_c(
+            source,
+            output=executable,
+            compiler=[self.tools / "cl.exe"],
+            include_dirs=[include_directory],
+            libraries=[import_library],
+            style="msvc",
+            cwd=candidate,
+            env=self.env,
+        )
+        windows.require_pe_machine(executable, "x64")
+        self.run(executable)
 
 
 def acceptance_source(root, *, match_actions=False, environment=None):
@@ -54,7 +128,7 @@ def publish_x64(package, receipt, *, receipt_name, output_dir, artifact_root, to
         or receipt_name == package.name
     ):
         raise ValueError("Windows evidence requires local version and receipt component names")
-    evidence_path = Path("win-x64") / version
+    evidence_path = Path(RID) / version
     local = output_dir / evidence_path
     external = artifact_root / evidence_path if artifact_root else None
     local_path = local.resolve()
@@ -72,7 +146,7 @@ def publish_x64(package, receipt, *, receipt_name, output_dir, artifact_root, to
         if (
             {entry.name for entry in directory.iterdir()} != names
             or json.loads((directory / receipt_name).read_bytes()) != receipt
-            or _sha256(directory / package.name) != digest
+            or file_sha256(directory / package.name) != digest
         ):
             raise ValueError("Windows x64 evidence differs from the accepted package and receipt")
 

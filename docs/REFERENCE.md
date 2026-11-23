@@ -269,6 +269,11 @@ source/tool policy; the caller supplies `inspect` for PE inspection and
 `environment` for dependency-source verification. It never executes Windows code.
 SDKs still own native input/rendering fixtures.
 
+SDKs with one native Windows x64 product can use
+`windows_delivery.X64Acceptance` for the host toolchain, locked Rust checks,
+receipt-verified DLL staging and C fixture execution. The SDK selects its
+fixtures, managed build properties and package acceptance rules.
+
 Windows receipts use schema 2; macOS framework receipts use schema 3.
 
 Tooling can select x64 with ARM64-hosted MSVC through

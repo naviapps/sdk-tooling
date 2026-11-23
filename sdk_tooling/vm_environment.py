@@ -39,14 +39,12 @@ def set_value(
     environment: MutableMapping[str, str],
     variable: Variable,
     selected: str | Path | None,
-    *,
-    legacy: bool = False,
 ) -> None:
-    """Replace both aliases in a child environment. Write legacy only when requested."""
+    """Replace both aliases in a child environment with the canonical name."""
     environment.pop(variable, None)
     environment.pop(variable.legacy_name, None)
     if selected is not None:
-        environment[variable.legacy_name if legacy else str(variable)] = str(selected)
+        environment[variable] = str(selected)
 
 
 def _optional_path(variable: Variable, environment: Mapping[str, str] | None) -> Path | None:

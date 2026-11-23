@@ -3,7 +3,6 @@
 
 import argparse
 import hashlib
-import json
 import os
 import re
 import shlex
@@ -113,29 +112,21 @@ def tooling_revision(source, repository):
     if not isinstance(tasks, dict):
         raise ValueError("SDK mise tasks must be a table")
     task = tasks.get("sdk-tooling")
-    if task is not None:
-        command = task.get("run") if isinstance(task, dict) else None
-        prefix = f"uvx --from git+https://github.com/{repository}.git@"
-        suffix = " sdk-tooling"
-        if (
-            not isinstance(command, str)
-            or not command.startswith(prefix)
-            or not command.endswith(suffix)
-        ):
-            raise ValueError("SDK tooling task must run the shared CLI at a full Git SHA")
-        pin = command.removeprefix(prefix).removesuffix(suffix)
-        if not REVISION.fullmatch(pin):
-            raise ValueError("SDK tooling task must pin one full lowercase Git SHA")
-        return pin
-    pins = json.loads(read_regular(source, "tools/tooling-sources.json"))
+    command = task.get("run") if isinstance(task, dict) else None
+    prefix = f"uvx --from git+https://github.com/{repository}.git@"
+    suffix = " sdk-tooling"
     if (
-        not isinstance(pins, dict)
-        or set(pins) != {repository}
-        or not isinstance(pins[repository], str)
-        or not REVISION.fullmatch(pins[repository])
+        not isinstance(command, str)
+        or not command.startswith(prefix)
+        or not command.endswith(suffix)
     ):
-        raise ValueError("SDK distribution tooling pin must be one full lowercase Git SHA")
-    return pins[repository]
+        raise ValueError(
+            "Declare the shared CLI at a full Git SHA in mise.toml [tasks.sdk-tooling]"
+        )
+    pin = command.removeprefix(prefix).removesuffix(suffix)
+    if not REVISION.fullmatch(pin):
+        raise ValueError("SDK tooling task must pin one full lowercase Git SHA")
+    return pin
 
 
 def windows_dotnet_version(source):
@@ -263,9 +254,6 @@ def execute(source, platform, settings, env, temp, tooling, *, xcframework_outpu
     if platform == "windows" and env.get("RUNNER_TEMP"):
         # Cargo clones can contain macOS framework paths even on Windows.
         env = dict(env, TMPDIR=env["RUNNER_TEMP"])
-    pinned_cli = "sdk-tooling" in mise_configuration(source).get("tasks", {})
-    if not pinned_cli or (source / "tools/_tooling.py").is_file():
-        env = dict(env, NAVI_SDK_TOOLING_SOURCE=str(tooling))
     tool_dirs = [
         str(install_archive(source, env, temp, index, archive))
         for index, archive in enumerate(settings["archives"])
@@ -276,17 +264,15 @@ def execute(source, platform, settings, env, temp, tooling, *, xcframework_outpu
     prefix = ()
     launcher = tooling / "ci/run_sdk_tooling.py"
     if not launcher.is_file():
-        # Published SDK revisions may pin the previous checkout layout.
-        launcher = tooling / "tasks/sdk"
+        raise ValueError("Pinned SDK Tooling must provide ci/run_sdk_tooling.py")
     sdk_cli = [sys.executable, "-I", "-B", str(launcher)]
     make_env = env
     if platform == "macos" and (source / "mise.toml").is_file():
         run(source, env, "mise", "trust", "mise.toml")
         run(source, env, "mise", "install")
         prefix = ("mise", "exec", "--")
-        if pinned_cli:
-            # Make expands dollar signs before passing the command to the shell.
-            make_env = dict(env, SDK_TOOLING=shlex.join(sdk_cli).replace("$", "$$"))
+        # Make expands dollar signs before passing the command to the shell.
+        make_env = dict(env, SDK_TOOLING=shlex.join(sdk_cli).replace("$", "$$"))
 
     for argv in settings["commands"]:
         # Test the generated Swift dependency instead of testing the committed one twice.
@@ -352,6 +338,14 @@ def write_output(**values):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if list(argv) == ["dotnet-version"]:
+        version = windows_dotnet_version(Path.cwd().resolve())
+        if not version:
+            raise SystemExit("Declare an exact Windows .NET SDK version in mise.toml")
+        write_output(dotnet=version)
+        return
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("identity", "pin", *PLATFORMS))
     parser.add_argument("sdk")

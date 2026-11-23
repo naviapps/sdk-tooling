@@ -501,9 +501,6 @@ class XcframeworkBuilder(FfiProduct):
                 inputs=source_inputs,
                 outputs=hashes(files(output), work),
             )
-            pins = self.root / "tools/tooling-sources.json"
-            if pins.is_file():
-                record["tooling"] = json.loads(pins.read_text())
             write_json(stage / self.receipt.name, record)
             if (
                 self.dependencies(dict(env), targets=self.targets) != dependencies

@@ -1,11 +1,96 @@
-name: Test Rust on Windows x64
-description: Install the workspace's pinned Rust toolchain and test its locked x64 build.
+name: Test SDK on Windows x64
+description: Test the locked Rust workspace and optionally set up or test its .NET bindings.
+inputs:
+  dotnet:
+    description: Install the .NET SDK pinned in mise.toml for separate binding checks.
+    default: "false"
+  managed-project:
+    description: Managed console fixture project to build and run with the native DLL.
+    default: ""
+  native-package:
+    description: Cargo package providing the managed fixture's one cdylib target.
+    default: ""
+  native-property:
+    description: MSBuild property that stages the DLL beside the managed fixture.
+    default: ""
+  managed-argument:
+    description: Optional argument passed to the managed fixture.
+    default: ""
 runs:
   using: composite
   steps:
+    - name: Select the Windows x64 build target
+      shell: pwsh
+      run: |
+        'CARGO_BUILD_TARGET=x86_64-pc-windows-msvc' >> $env:GITHUB_ENV
+        'GIT_TERMINAL_PROMPT=0' >> $env:GITHUB_ENV
     - name: Install pinned Rust
       shell: pwsh
       run: rustup install --no-self-update
     - name: Test x64 Rust workspace
       shell: pwsh
-      run: cargo test --workspace --locked --target x86_64-pc-windows-msvc
+      run: cargo test --workspace --locked --target $env:CARGO_BUILD_TARGET
+    - name: Select the .NET SDK pinned in mise.toml
+      if: inputs.dotnet == 'true' || inputs.managed-project != ''
+      id: dotnet
+      shell: python
+      env:
+        SDK_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        dispatcher = Path(os.environ['SDK_ACTION_PATH']).parents[2] / 'ci/check_distribution.py'
+        subprocess.run([sys.executable, '-I', '-B', dispatcher, 'dotnet-version'], check=True)
+        with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as environment:
+            environment.write('DOTNET_CLI_TELEMETRY_OPTOUT=1\n')
+            environment.write('DOTNET_CLI_USE_MSBUILD_SERVER=0\n')
+            environment.write('MSBUILDDISABLENODEREUSE=1\n')
+    - name: Install pinned x64 .NET SDK
+      if: steps.dotnet.outputs.dotnet != ''
+      uses: actions/setup-dotnet@v6.0.0
+      env:
+        DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+      with:
+        dotnet-version: ${{ steps.dotnet.outputs.dotnet }}
+        architecture: x64
+    - name: Test .NET bindings
+      if: inputs.managed-project != ''
+      shell: python
+      env:
+        SDK_MANAGED_PROJECT: ${{ inputs.managed-project }}
+        SDK_NATIVE_PACKAGE: ${{ inputs.native-package }}
+        SDK_NATIVE_PROPERTY: ${{ inputs.native-property }}
+        SDK_MANAGED_ARGUMENT: ${{ inputs.managed-argument }}
+      run: |
+        import json
+        import os
+        import subprocess
+        from pathlib import Path
+
+        package = os.environ['SDK_NATIVE_PACKAGE']
+        property_name = os.environ['SDK_NATIVE_PROPERTY']
+        if not package or not property_name:
+            raise SystemExit('A managed fixture needs a native Cargo package and MSBuild property.')
+        metadata = json.loads(subprocess.check_output(
+            ['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1']
+        ))
+        targets = [
+            target['name'] for item in metadata['packages'] if item['name'] == package
+            for target in item['targets'] if 'cdylib' in target['crate_types']
+        ]
+        if len(targets) != 1:
+            raise SystemExit(f'Expected one cdylib target in {package}.')
+        target = os.environ['CARGO_BUILD_TARGET']
+        subprocess.run(['cargo', 'build', '--locked', '--package', package, '--target', target], check=True)
+        native = Path(metadata['target_directory']) / target / 'debug'
+        library = (native / (targets[0] + '.dll')).resolve(strict=True)
+        command = [
+            'dotnet', 'run', '--project', os.environ['SDK_MANAGED_PROJECT'],
+            '--configuration', 'Release', f'-p:{property_name}={library}',
+        ]
+        if argument := os.environ['SDK_MANAGED_ARGUMENT']:
+            command += ['--', argument]
+        subprocess.run(command, check=True)

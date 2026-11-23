@@ -1,6 +1,5 @@
 """Launch SDK-owned Windows acceptance from verified tooling on a hosted runner."""
 
-import json
 import os
 import shutil
 import subprocess
@@ -11,7 +10,7 @@ from . import vm_environment
 from .adapters import python_command
 
 
-def run(sdk_root, command, *, legacy_candidate=False):
+def run(sdk_root, command):
     if sys.platform != "win32":
         raise SystemExit("Hosted Windows SDK acceptance requires Windows.")
     if not command:
@@ -24,33 +23,11 @@ def run(sdk_root, command, *, legacy_candidate=False):
     if not dotnet or not Path(dotnet).is_absolute():
         raise SystemExit("The pinned x64 .NET SDK was not installed.")
 
-    if legacy_candidate:
-        tooling = Path(__file__).resolve().parent.parent
-        pins = json.loads((sdk_root / "tools/tooling-sources.json").read_text(encoding="utf-8"))
-        command = [
-            *command,
-            "--tooling-source",
-            str(tooling),
-            "--tooling-revision",
-            pins["naviapps/sdk-tooling"],
-        ]
-    argv = (
-        python_command(sdk_root, *command)
-        if not legacy_candidate
-        else [sys.executable, "-E", "-S", "-B", *command]
-    )
     env = dict(os.environ, DOTNET_BIN=dotnet)
-    vm_environment.set_value(
-        env, vm_environment.Variable.ARTIFACTS_DIR, temp / "sdk-acceptance", legacy=legacy_candidate
-    )
+    vm_environment.set_value(env, vm_environment.Variable.ARTIFACTS_DIR, temp / "sdk-acceptance")
     subprocess.run(
-        argv,
+        python_command(sdk_root, *command),
         cwd=sdk_root,
         env=env,
         check=True,
     )
-
-
-def main(sdk_root, command):
-    """Support the historical loader template's explicit candidate arguments."""
-    run(sdk_root, command, legacy_candidate=True)

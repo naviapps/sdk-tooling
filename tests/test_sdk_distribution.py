@@ -183,8 +183,10 @@ class DistributionTests(unittest.TestCase):
     def test_macos_commands_use_the_pinned_cli_and_leave_explicit_make_arguments_intact(self):
         with tempfile.TemporaryDirectory() as disposable:
             root = Path(disposable)
-            config = root / "mise.toml"
-            tooling = root / "shared $tooling's path"
+            (root / "mise.toml").touch()
+            launcher = root / "shared $tooling's path" / "ci/run_sdk_tooling.py"
+            launcher.parent.mkdir(parents=True)
+            launcher.touch()
             settings = {
                 "commands": [
                     ["sdk-tooling", "swift-consumer", "--distribution"],
@@ -195,65 +197,45 @@ class DistributionTests(unittest.TestCase):
             }
             env = {"PATH": "fixture path"}
             execute = DISPATCH["execute"]
-            loader = root / "tools/_tooling.py"
-            loader.parent.mkdir()
-            for pinned_cli, legacy_loader in ((False, True), (True, True), (True, False)):
-                with (
-                    self.subTest(pinned_cli=pinned_cli, legacy_loader=legacy_loader),
-                    patch.dict(execute.__globals__) as globals_,
-                ):
-                    config.write_text(
-                        '[tasks.sdk-tooling]\nrun = "uvx ..."\n' if pinned_cli else "",
-                        encoding="utf-8",
-                    )
-                    if legacy_loader:
-                        loader.touch()
-                    else:
-                        loader.unlink(missing_ok=True)
-                    launcher = tooling / ("tasks/sdk" if legacy_loader else "ci/run_sdk_tooling.py")
-                    launcher.parent.mkdir(parents=True, exist_ok=True)
-                    launcher.touch()
-                    invocations = []
+            with patch.dict(execute.__globals__) as globals_:
+                invocations = []
 
-                    def run(source, environment, *command):
-                        self.assertEqual(source, root)
-                        invocations.append((environment, command))
+                def run(source, environment, *command):
+                    self.assertEqual(source, root)
+                    invocations.append((environment, command))
 
-                    globals_["run"] = run
-                    execute(root, "macos", settings, env, root, tooling)
-                    prefix = ("mise", "exec", "--")
-                    self.assertEqual(
-                        [command for _, command in invocations],
-                        [
-                            ("mise", "trust", "mise.toml"),
-                            ("mise", "install"),
-                            (
-                                *prefix,
-                                sys.executable,
-                                "-I",
-                                "-B",
-                                str(launcher),
-                                "swift-consumer",
-                                "--distribution",
-                            ),
-                            (*prefix, "make", "check-distribution"),
-                            (*prefix, "make", "SDK_TOOLING=explicit command"),
-                        ],
-                    )
-                    child = (
-                        dict(env, NAVI_SDK_TOOLING_SOURCE=str(tooling)) if legacy_loader else env
-                    )
-                    self.assertEqual(
-                        [environment for environment, _ in invocations[:3]], [child] * 3
-                    )
-                    for environment, _ in invocations[3:]:
-                        self.assertEqual("SDK_TOOLING" in environment, pinned_cli)
-                        self.assertEqual(
-                            environment.get("NAVI_SDK_TOOLING_SOURCE"),
-                            str(tooling) if legacy_loader else None,
-                        )
-                        if pinned_cli:
-                            self.assertIn("shared $$tooling", environment["SDK_TOOLING"])
+                globals_["run"] = run
+                execute(root, "macos", settings, env, root, launcher.parents[1])
+
+            prefix = ("mise", "exec", "--")
+            self.assertEqual(
+                [command for _, command in invocations],
+                [
+                    ("mise", "trust", "mise.toml"),
+                    ("mise", "install"),
+                    (
+                        *prefix,
+                        sys.executable,
+                        "-I",
+                        "-B",
+                        str(launcher),
+                        "swift-consumer",
+                        "--distribution",
+                    ),
+                    (*prefix, "make", "check-distribution"),
+                    (*prefix, "make", "SDK_TOOLING=explicit command"),
+                ],
+            )
+            self.assertEqual([environment for environment, _ in invocations[:3]], [env] * 3)
+            for environment, _ in invocations[3:]:
+                self.assertIn("shared $$tooling", environment["SDK_TOOLING"])
+
+    def test_missing_pinned_launcher_fails_before_running_commands(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            root = Path(disposable)
+            execute = DISPATCH["execute"]
+            with self.assertRaisesRegex(ValueError, "must provide ci/run_sdk_tooling.py"):
+                execute(root, "windows", {"archives": []}, {}, root, root / "tooling")
 
     def test_native_generation_runs_only_for_macos_with_a_regular_declaration(self):
         with tempfile.TemporaryDirectory() as disposable:
@@ -373,31 +355,10 @@ class DistributionTests(unittest.TestCase):
             & actual.keys()
         )
 
-    def test_pin_is_one_full_tooling_commit(self):
-        with tempfile.TemporaryDirectory() as disposable:
-            root = Path(disposable)
-            manifest = root / "tools/tooling-sources.json"
-            manifest.parent.mkdir()
-            repository = "example-org/verification-tools"
-            expected = "a" * 40
-            manifest.write_text(json.dumps({repository: expected}), encoding="utf-8")
-            self.assertEqual(DISPATCH["tooling_revision"](root, repository), expected)
-            for invalid in (
-                {repository: "main"},
-                {repository: expected, "naviapps/other": expected},
-            ):
-                with self.subTest(invalid=invalid):
-                    manifest.write_text(json.dumps(invalid), encoding="utf-8")
-                    with self.assertRaisesRegex(ValueError, "one full lowercase Git SHA"):
-                        DISPATCH["tooling_revision"](root, repository)
-
-    def test_pin_uses_the_exact_mise_task_when_declared(self):
+    def test_pin_requires_the_exact_mise_task(self):
         with tempfile.TemporaryDirectory() as disposable:
             root = Path(disposable)
             repository = "example-org/verification-tools"
-            legacy = root / "tools/tooling-sources.json"
-            legacy.parent.mkdir()
-            legacy.write_text(json.dumps({repository: "a" * 40}), encoding="utf-8")
             config = root / "mise.toml"
             prefix = f"uvx --from git+https://github.com/{repository}.git@"
             suffix = " sdk-tooling"
@@ -408,6 +369,8 @@ class DistributionTests(unittest.TestCase):
                     f"[tasks.sdk-tooling]\nrun = {json.dumps(location)}\n", encoding="utf-8"
                 )
 
+            with self.assertRaisesRegex(ValueError, "mise.toml"):
+                DISPATCH["tooling_revision"](root, repository)
             write(prefix + revision + suffix)
             self.assertEqual(DISPATCH["tooling_revision"](root, repository), revision)
             for location in (
@@ -436,6 +399,19 @@ class DistributionTests(unittest.TestCase):
             settings.write_text('[tools]\ndotnet = "10.0.x"\n', encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "one exact .NET SDK version"):
                 read_pin(source)
+
+    def test_windows_check_writes_the_shared_dotnet_pin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            output = source / "github-output"
+            env = dict(os.environ, GITHUB_OUTPUT=str(output))
+            command = [sys.executable, "-I", "-B", str(SCRIPT), "dotnet-version"]
+            missing = subprocess.run(command, cwd=source, env=env, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("exact Windows .NET SDK version", missing.stderr)
+            (source / "mise.toml").write_text('[tools]\ndotnet = "10.0.403"\n', encoding="utf-8")
+            subprocess.run(command, cwd=source, env=env, check=True)
+            self.assertEqual(output.read_text(encoding="utf-8"), "dotnet=10.0.403\n")
 
     def test_sdk_checkout_rejects_off_main_commit(self):
         with tempfile.TemporaryDirectory() as disposable:
