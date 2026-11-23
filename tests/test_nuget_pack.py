@@ -214,6 +214,26 @@ class NativePackageTests(unittest.TestCase):
             {"win-arm64": hashlib.sha256(receipt.read_bytes()).hexdigest()},
         )
 
+    def test_windows_runtime_can_use_a_named_product_build_and_source_contract(self):
+        dll, receipt, accepted = self.windows_runtime("rendering/win-x64")
+        output_root = dll.parent.parent
+        inputs = Mock()
+        with patch(
+            "sdk_tooling.windows.verify_artifact", return_value=(dll.parent, accepted)
+        ) as verify:
+            self.invoke(
+                runtimes=["osx-arm64", "win-x64"],
+                windows_output_root=output_root,
+                windows_source_inputs=inputs,
+            )
+        verify.assert_called_once_with(
+            self.native, architecture="x64", output_root=output_root, source_inputs=inputs
+        )
+        self.assertEqual(
+            json.loads(self.previous_record.read_text())["nativeReceipts"]["win-x64"],
+            hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        )
+
     def windows_runtime(self, runtime, data=b"owned bytes"):
         directory = ".native-build/windows/" + runtime
         dll = self.file(directory + "/example.dll", data)

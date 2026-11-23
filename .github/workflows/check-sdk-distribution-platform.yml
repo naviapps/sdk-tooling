@@ -127,7 +127,7 @@ jobs:
         uses: actions/download-artifact@v8.0.2
         with:
           artifact-ids: ${{ inputs.windows-native-id }}
-          path: sdk/.native-build/windows/win-x64
+          path: sdk/.native-build/windows
       - name: Run SDK distribution checks
         id: check
         env:
@@ -159,7 +159,7 @@ jobs:
         uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ inputs.sdk }}-nuget-windows-native-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/sdk-acceptance/sdk-windows/win-x64
+          path: ${{ runner.temp }}/sdk-acceptance/sdk-windows
           if-no-files-found: error
           retention-days: 7
       - name: Upload the accepted Windows NuGet packages

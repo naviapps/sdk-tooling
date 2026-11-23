@@ -264,9 +264,14 @@ def _native_receipt_bytes(path):
     return data
 
 
-def _verified_package_libraries(native, runtimes):
+def _verified_package_libraries(native, runtimes, windows_output_root, windows_source_inputs):
     root = native.root.resolve()
     libraries, receipt_paths, accepted = {}, {}, {}
+    windows_options = {}
+    if windows_output_root is not None:
+        windows_options["output_root"] = windows_output_root
+    if windows_source_inputs is not None:
+        windows_options["source_inputs"] = windows_source_inputs
 
     # The macOS and Windows native producers use this same checkout lock.
     with build_lock(native.root / ".native-build"):
@@ -280,7 +285,7 @@ def _verified_package_libraries(native, runtimes):
                 filename = "lib" + native.library + ".dylib"
             else:
                 architecture = rid.removeprefix("win-")
-                directory, _ = windows._output(native, architecture, None)
+                directory, _ = windows._output(native, architecture, windows_output_root)
                 inventory_root = directory.resolve()
                 receipt_path = directory / "native-build.json"
                 filename = native.library + ".dll"
@@ -295,7 +300,9 @@ def _verified_package_libraries(native, runtimes):
                 if macos:
                     native.verify(inspect_native=sys.platform == "darwin")
                 else:
-                    verified, result = windows.verify_artifact(native, architecture=architecture)
+                    verified, result = windows.verify_artifact(
+                        native, architecture=architecture, **windows_options
+                    )
                     if verified != directory or result != record:
                         raise ValueError("Native receipt changed during verification")
                 if _native_receipt_bytes(receipt_path) != raw:
@@ -390,8 +397,10 @@ def pack_native(
     sources=(),
     input_files=(),
     environment=None,
+    windows_output_root=None,
+    windows_source_inputs=None,
 ):
-    """Build a standard managed project with verified native assets and publish its receipt."""
+    """Pack verified native assets, optionally using a product-specific Windows receipt."""
     runtimes = sorted(set(runtimes))
     if not runtimes or any(
         rid not in ("osx-arm64", "osx-x64", "win-arm64", "win-x64") for rid in runtimes
@@ -449,7 +458,9 @@ def pack_native(
     ):
         inputs, managed_inputs = native.build_sources(), managed_sources()
         tool_inputs = packer_inputs()
-        libraries, receipt_paths, receipt_hashes = _verified_package_libraries(native, runtimes)
+        libraries, receipt_paths, receipt_hashes = _verified_package_libraries(
+            native, runtimes, windows_output_root, windows_source_inputs
+        )
         stage = Path(temporary)
         properties = {
             "Version": version,

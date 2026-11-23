@@ -151,14 +151,23 @@ gh run download RUN_ID --repo naviapps/sdk-tooling --pattern 'desktop-actions-nu
 
 To verify one cross-platform NuGet package, add `[nuget]` with a
 `pack = "distribution/pack_nuget.py"` entry. Both platform plans must be
-present. The Windows plan exports its accepted native build at
-`sdk-windows/win-x64`. The packer accepts repeated `--runtime` options and
-reports the generated package filename to `--result`. The macOS distribution
-job combines the accepted Windows build and the regenerated macOS framework
-into one package and runs it with arm64 .NET and a separate x64 .NET under
-Rosetta. Each macOS and Windows consumer verifies the same bytes
-before and after running. Use `--field windows-on-arm=true` at dispatch to run
-the x64 package with x64 .NET on GitHub's Windows on Arm runner too.
+present. The Windows plan exports its accepted builds under `sdk-windows`,
+typically at `sdk-windows/win-x64`. The workflow restores that tree under
+`.native-build/windows` on macOS, keeping any SDK-owned native dependency
+directories intact.
+
+The packer accepts repeated `--runtime` options and reports the primary
+package filename to `--result`, followed by any already-verified dependency
+package filenames separated by LF. Each file and its `.nupkg.json` receipt
+must be under `.native-build/packages` and cover the same three runtimes.
+The macOS job combines the accepted Windows build and regenerated macOS
+framework, then runs the independent consumer with arm64 .NET and x64 .NET
+under Rosetta. Downloaded artifacts retain the primary package at the root and
+any dependencies under `dependencies/`. To install from a local feed, place
+the primary and dependency packages together in its directory. Each macOS
+and Windows consumer verifies the same package and receipt bytes before and
+after running. Set `--field windows-on-arm=true` at dispatch to run the x64
+packages with x64 .NET on GitHub's Windows on Arm runner too.
 
 If the SDK distributes a separate Windows adapter, its Windows plan can export
 the verified adapter package and receipt under `sdk-nuget-companions` in the

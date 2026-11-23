@@ -252,14 +252,13 @@ class DistributionTests(unittest.TestCase):
                 self.assertEqual(
                     pack(source, {}, cli, script, output, macos_x64_env=x64_env), checksum
                 )
-                artifact = output / package_name
                 for host in ("x64", "arm64"):
                     self.assertEqual(
-                        consume(source, {}, cli, artifact, expected=checksum, windows_host=host),
+                        consume(source, {}, cli, output, expected=checksum, windows_host=host),
                         checksum,
                     )
-                with self.assertRaisesRegex(ValueError, "accepted receipt"):
-                    consume(source, {}, cli, artifact, expected="0" * 64)
+                with self.assertRaisesRegex(ValueError, "accepted digest"):
+                    consume(source, {}, cli, output, expected="0" * 64)
 
             self.assertEqual(hosts, ["x64", "arm64"])
             self.assertEqual(
@@ -273,6 +272,106 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(
                 {path.name for path in output.iterdir()}, {package_name, f"{package_name}.json"}
             )
+
+    def test_combined_nuget_preserves_the_whole_dependency_feed_across_hosts(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            work = Path(disposable).resolve()
+            source = work / "checkout"
+            builds = source / ".native-build/packages"
+            builds.mkdir(parents=True)
+            output = work / "accepted"
+            primary = "Z.Sdk.0.1.0.nupkg"
+            dependencies = ("A.First.0.1.0.nupkg", "B.Second.0.1.0.nupkg")
+            pack, consume = DISPATCH["pack_combined_nuget"], DISPATCH["consume_package"]
+            x64_env = {"DOTNET_BIN": "/opt/dotnet-x64/dotnet"}
+            calls = []
+
+            def publish(path, data, *, rid="win-x64"):
+                path.write_bytes(data)
+                path.with_suffix(".nupkg.json").write_text(
+                    json.dumps(
+                        {
+                            "package": path.name,
+                            "runtimes": ["osx-arm64", "osx-x64", rid],
+                            "sha256": hashlib.sha256(data).hexdigest(),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            def run(_, env, mode, *argv):
+                if mode == "python":
+                    names = (primary, *reversed(dependencies))
+                    for name in names:
+                        publish(builds / name, name.encode("ascii"))
+                    Path(argv[-1]).write_bytes(("\n".join(names) + "\n").encode("ascii"))
+                    return
+                self.assertEqual(mode, "nuget-consumer")
+                self.assertEqual(Path(argv[0]).name, primary)
+                self.assertEqual(Path(argv[0]).read_bytes(), primary.encode("ascii"))
+                paths = [Path(argv[0]).parent / "dependencies" / name for name in dependencies]
+                supplied = tuple(
+                    argument for path in paths for argument in ("--dependency", str(path))
+                )
+                self.assertEqual(argv[1:5], supplied)
+                self.assertEqual(
+                    [path.read_bytes() for path in paths],
+                    [name.encode("ascii") for name in dependencies],
+                )
+                calls.append((env, argv[5:]))
+
+            with patch.dict(
+                pack.__globals__,
+                run=run,
+                require_windows_host=lambda host: self.assertEqual(host, "arm64"),
+            ):
+                checksum = pack(
+                    source, {}, (), "distribution/pack.py", output, macos_x64_env=x64_env
+                )
+                consume(source, {}, (), output, expected=checksum, windows_host="arm64")
+                self.assertEqual(
+                    calls, [({}, ()), (x64_env, ()), ({}, ("--windows-architecture", "x64"))]
+                )
+                candidate = output / "dependencies" / dependencies[0]
+                publish(candidate, b"replacement package with a replacement receipt")
+                with self.assertRaisesRegex(ValueError, "accepted digest"):
+                    consume(source, {}, (), output, expected=checksum)
+                publish(candidate, dependencies[0].encode("ascii"), rid="win-arm64")
+                with self.assertRaisesRegex(ValueError, "accepted receipt"):
+                    consume(source, {}, (), output, expected=checksum)
+                publish(candidate, dependencies[0].encode("ascii"))
+
+                extra = candidate.with_suffix(".tmp")
+                extra.touch()
+                with self.assertRaisesRegex(ValueError, "unexpected or missing members"):
+                    consume(source, {}, (), output, expected=checksum)
+                extra.unlink()
+
+                def mutate(*_):
+                    publish(candidate, b"replacement during the independent test")
+
+                with (
+                    patch.dict(pack.__globals__, run=mutate),
+                    self.assertRaisesRegex(ValueError, "changed during consumer acceptance"),
+                ):
+                    consume(source, {}, (), output, expected=checksum)
+
+    def test_combined_nuget_rejects_ambiguous_or_nonportable_packer_output(self):
+        validate = DISPATCH["validate_package_names"]
+        for names in (
+            [],
+            ["Example.nupkg", "example.nupkg"],
+            ["Example.nupkg", ""],
+            [".nupkg"],
+            ["../Example.nupkg"],
+            ["subdir/Example.nupkg"],
+            [r"subdir\Example.nupkg"],
+            ["Example.nupkg "],
+            ["Example.nupkg\r"],
+            ["NUL.1.0.nupkg"],
+        ):
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, "ordinary"):
+                validate(names)
 
     def test_macos_x64_consumer_checks_the_exact_host_version_and_rid(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -345,7 +444,7 @@ class DistributionTests(unittest.TestCase):
                 patch.dict(consume.__globals__, run=run),
                 self.assertRaisesRegex(ValueError, "changed during consumer acceptance"),
             ):
-                consume(work, {}, (), artifact, expected=checksum)
+                consume(work, {}, (), work, expected=checksum)
 
     def test_windows_commands_use_literal_arguments_and_share_one_scratch_directory(self):
         revision = "a" * 40

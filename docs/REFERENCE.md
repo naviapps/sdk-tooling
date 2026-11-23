@@ -323,6 +323,9 @@ runtime's slice from the staged universal library, ad-hoc signs the standalone
 dylib and verifies its architecture and signature.
 The package receipt records both the verified native source digest and the digest
 of each delivered member, and the package audit checks those delivered bytes.
+When one SDK builds multiple Windows products, its packer can select the
+product's accepted output directory with `windows_output_root` and the exact
+verified inventory with `windows_source_inputs`.
 The package and its JSON receipt are staged before replacement; a failed
 replacement restores both previous files. If restoration itself fails, the error
 identifies a retained rollback directory beside the package. Preserve that directory

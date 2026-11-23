@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import ntpath
 import os
 import re
 import shlex
@@ -327,37 +328,85 @@ def require_windows_host(expected):
         raise ValueError(f"NuGet consumer requires a native Windows {expected} worker")
 
 
-def package_digest(package, receipt, *, expected=None):
+def package_snapshot(package):
+    receipt_path = package.with_suffix(".nupkg.json")
+    receipt_bytes = read_regular(receipt_path.parent, receipt_path.name)
+    receipt = json.loads(receipt_bytes)
     checksum = file_digest(package)
     if (
         not isinstance(receipt, dict)
         or receipt.get("package") != package.name
         or receipt.get("runtimes") != list(NUGET_RUNTIMES)
         or receipt.get("sha256") != checksum
-        or (expected is not None and checksum != expected)
     ):
-        raise ValueError("Combined NuGet package differs from its accepted receipt")
-    return checksum
+        raise ValueError(f"NuGet package differs from its accepted receipt: {package.name}")
+    return checksum, receipt_bytes
 
 
-def consume_package(source, env, sdk_cli, package, *, expected=None, windows_host=None):
-    if not PACKAGE_NAME.fullmatch(package.name) or ".." in package.name:
-        raise ValueError("Invalid combined NuGet package name")
-    receipt_path = package.with_suffix(".nupkg.json")
-    receipt_bytes = read_regular(receipt_path.parent, receipt_path.name)
-    receipt = json.loads(receipt_bytes)
-    checksum = package_digest(package, receipt, expected=expected)
+def validate_package_names(names):
+    if (
+        not names
+        or any(
+            not PACKAGE_NAME.fullmatch(name) or ".." in name or ntpath.isreserved(name)
+            for name in names
+        )
+        or len({name.casefold() for name in names}) != len(names)
+    ):
+        raise ValueError("Expected distinct ordinary NuGet package names")
+
+
+def artifact_packages(directory, *, extra=()):
+    if directory.resolve() != directory or not directory.is_dir():
+        raise ValueError("Combined NuGet artifact must use ordinary directories")
+    entries = {entry.name for entry in directory.iterdir()}
+    packages = sorted(name for name in entries if name.endswith(".nupkg"))
+    validate_package_names(packages)
+    if entries != set(packages) | {name + ".json" for name in packages} | set(extra):
+        raise ValueError("Combined NuGet artifact contains unexpected or missing members")
+    return tuple(directory / name for name in packages)
+
+
+def artifact_snapshot(artifact):
+    dependencies = artifact / "dependencies"
+    has_dependencies = dependencies.exists() or dependencies.is_symlink()
+    primary = artifact_packages(artifact, extra=("dependencies",) if has_dependencies else ())
+    if len(primary) != 1:
+        raise ValueError("Combined NuGet artifact must contain exactly one primary package")
+    packages = primary + (artifact_packages(dependencies) if has_dependencies else ())
+    validate_package_names([path.name for path in packages])
+    return {package: package_snapshot(package) for package in packages}
+
+
+def artifact_digest(snapshot):
+    if len(snapshot) == 1:
+        return next(iter(snapshot.values()))[0]
+    # The primary is first; dependencies are sorted by filename on every host.
+    members = [
+        (package.name, checksum, hashlib.sha256(receipt).hexdigest())
+        for package, (checksum, receipt) in snapshot.items()
+    ]
+    return hashlib.sha256(json.dumps(members, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def consume_package(source, env, sdk_cli, artifact, *, expected, windows_host=None):
+    snapshot = artifact_snapshot(artifact)
+    checksum = artifact_digest(snapshot)
+    if checksum != expected:
+        raise ValueError("Combined NuGet artifact differs from its accepted digest")
+    primary, *dependencies = snapshot
     target = ()
     if windows_host is not None:
         require_windows_host(windows_host)
         target = ("--windows-architecture", "x64")
-    run(source, env, *sdk_cli, "nuget-consumer", str(package), *target)
-    if (
-        file_digest(package) != checksum
-        or read_regular(receipt_path.parent, receipt_path.name) != receipt_bytes
-    ):
+    arguments = [argument for path in dependencies for argument in ("--dependency", str(path))]
+    run(source, env, *sdk_cli, "nuget-consumer", str(primary), *arguments, *target)
+    try:
+        final = artifact_snapshot(artifact)
+    except (ValueError, OSError) as error:
+        raise ValueError("Combined NuGet artifact changed during consumer acceptance") from error
+    if final != snapshot:
         raise ValueError("Combined NuGet package or receipt changed during consumer acceptance")
-    print(f"Verified identical NuGet package bytes: {package.name} sha256:{checksum}")
+    print(f"Verified identical NuGet artifact bytes: {primary.name} sha256:{checksum}")
     return checksum
 
 
@@ -378,20 +427,24 @@ def pack_combined_nuget(source, env, sdk_cli, script, output, *, macos_x64_env=N
             "--result",
             str(result),
         )
-        name = read_regular(stage, result.name).decode("utf-8")
-        if not PACKAGE_NAME.fullmatch(name) or ".." in name:
-            raise ValueError("SDK packer did not return one ordinary NuGet package name")
+        names = read_regular(stage, result.name).decode("utf-8").removesuffix("\n").split("\n")
+        validate_package_names(names)
         result.unlink()
-        built = source / ".native-build/packages" / name
-        receipt = built.with_suffix(".nupkg.json")
-        candidate = stage / name
-        checksum = package_digest(built, json.loads(read_regular(receipt.parent, receipt.name)))
-        shutil.copyfile(built, candidate)
-        candidate.with_suffix(".nupkg.json").write_bytes(read_regular(receipt.parent, receipt.name))
-        consume_package(source, env, sdk_cli, candidate, expected=checksum)
+        if len(names) > 1:
+            (stage / "dependencies").mkdir()
+        primary, *dependencies = names
+        snapshot = {}
+        for index, name in enumerate((primary, *sorted(dependencies))):
+            built = source / ".native-build/packages" / name
+            candidate = (stage / "dependencies" if index else stage) / name
+            snapshot[candidate] = package_snapshot(built)
+            shutil.copyfile(built, candidate)
+            candidate.with_suffix(".nupkg.json").write_bytes(snapshot[candidate][1])
+        checksum = artifact_digest(snapshot)
+        consume_package(source, env, sdk_cli, stage, expected=checksum)
         if macos_x64_env is not None:
-            print("Check the same NuGet package with macOS x64 .NET", flush=True)
-            consume_package(source, macos_x64_env, sdk_cli, candidate, expected=checksum)
+            print("Check the same NuGet artifact with macOS x64 .NET", flush=True)
+            consume_package(source, macos_x64_env, sdk_cli, stage, expected=checksum)
         if output.exists() or output.is_symlink():
             raise ValueError("Combined NuGet artifact output appeared during consumer acceptance")
         stage.rename(output)
@@ -415,7 +468,7 @@ def main(argv=None):
     parser.add_argument("--windows-host", choices=("x64", "arm64"), help="Require a Windows host")
     parser.add_argument("--tooling", type=Path)
     parser.add_argument("--nuget-artifact", type=Path, help="Combined NuGet artifact directory")
-    parser.add_argument("--nuget-sha256", help="Digest of the package accepted on macOS")
+    parser.add_argument("--nuget-sha256", help="Digest of the NuGet artifact accepted on macOS")
     parser.add_argument(
         "--macos-x64-dotnet",
         type=Path,
@@ -501,15 +554,11 @@ def main(argv=None):
             require_macos_dotnet_rid(source, env, "osx-arm64")
             macos_x64_env = macos_x64_environment(source, env, args.macos_x64_dotnet)
     if args.mode == "nuget-consume":
-        packages = list(artifact.glob("*.nupkg"))
-        if len(packages) != 1:
-            raise ValueError("Combined NuGet artifact must contain exactly one package")
-        [package] = packages
         consume_package(
             source,
             env,
             sdk_cli,
-            package,
+            artifact,
             expected=args.nuget_sha256,
             windows_host=args.windows_host,
         )
