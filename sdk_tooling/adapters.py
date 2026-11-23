@@ -109,7 +109,13 @@ def support_inputs(root=None):
     inputs = {"@sdk-tooling/" + key: value for key, value in hashes(tooling, _TOOLING_ROOT).items()}
     declarations = [
         root / name
-        for name in (SPECIFICATION, "mise.toml", "sdk-checks.toml", "sdk-distribution.toml")
+        for name in (
+            SPECIFICATION,
+            "global.json",
+            "mise.toml",
+            "sdk-checks.toml",
+            "sdk-distribution.toml",
+        )
         if (root / name).is_file()
     ]
     distribution_scripts = sorted((root / "distribution").glob("*.py"))

@@ -6,11 +6,10 @@ import re
 import shutil
 import subprocess
 import tempfile
-import tomllib
 from contextlib import ExitStack
 from pathlib import Path
 
-from . import artifacts, c_compiler, vm_environment, windows
+from . import artifacts, c_compiler, dotnet, vm_environment, windows
 from .artifacts import file_sha256
 
 TARGET = windows.MSVC_TARGETS["x64"]
@@ -40,11 +39,8 @@ class X64Acceptance:
         self.dotnet_version = subprocess.check_output(
             [str(self.dotnet), "--version"], cwd=root, env=self.env, text=True
         ).strip()
-        if (
-            self.dotnet_version
-            != tomllib.loads((root / "mise.toml").read_text())["tools"]["dotnet"]
-        ):
-            raise ValueError("Use the pinned x64 .NET SDK version from mise.toml")
+        if self.dotnet_version != dotnet.pinned_sdk_version(root):
+            raise ValueError("Use the pinned x64 .NET SDK version from global.json")
 
     def run(self, *args):
         subprocess.run([str(value) for value in args], cwd=self.root, env=self.env, check=True)

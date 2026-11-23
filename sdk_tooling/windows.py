@@ -12,7 +12,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .artifacts import build_lock, files, hashes, publish, write_json
+from .artifacts import build_lock, file_sha256, files, hashes, publish, stage_native, write_json
+from .cargo import CargoDependencies
+from .cargo_build import compile_units, verify_units
 from .dotnet import subprocess_environment
 from .ffi import tool_input_hashes
 
@@ -412,9 +414,24 @@ def verify_artifact(
         raise ValueError("Windows native sources or build contract changed")
     if not receipt.get("compiler", "").startswith("rustc " + builder.compiler + " "):
         raise ValueError("Windows native compiler differs from its pin")
+    verify_units(
+        receipt.get("cargoBuild"),
+        receipt.get("dependencies"),
+        [target],
+        builder.package,
+        builder.library,
+    )
     outputs = hashes([p for p in files(destination) if p != receipt_path], destination)
     if receipt.get("outputs") != outputs:
         raise ValueError("Windows native artifact differs from its receipt")
+    versions = receipt.get("abiVersions")
+    if (
+        not isinstance(versions, dict)
+        or any(type(value) is not int for value in versions.values())
+        or versions != builder.abi_versions(windows=True)
+        or receipt.get("abiProbeArchitecture") != architecture
+    ):
+        raise ValueError("Windows native ABI receipt differs from the public headers or target")
     if inspect and receipt.get("inspection") != inspect(destination / (builder.library + ".dll")):
         raise ValueError("Windows native inspection differs from its receipt")
     if environment is not None and receipt.get("dependencies") != builder.dependencies(
@@ -424,28 +441,28 @@ def verify_artifact(
     return destination, receipt
 
 
-def _build_driver(env, cross, parent):
-    if not cross:
-        if sys.platform != "win32":
-            raise ValueError(
-                "A selected native Windows worker is required; cross builds require explicit opt-in"
-            )
-        return ["cargo", "build"], {"backend": "msvc"}
-    driver = shutil.which("cargo-xwin", path=env.get("PATH"))
-    clang = shutil.which("clang-cl", path=env.get("PATH"))
-    if not driver or not clang:
-        raise ValueError("Cross builds require preinstalled cargo-xwin and LLVM clang-cl")
-    env.setdefault("XWIN_CACHE_DIR", str(parent / "xwin"))
-    return ["cargo", "xwin", "build"], {
-        "backend": "cargo-xwin",
-        "version": subprocess.check_output([driver, "--version"], env=env, text=True).strip(),
-        "clang-cl": subprocess.check_output([clang, "--version"], env=env, text=True).strip(),
-        "requestedMicrosoftVersions": {
-            key: env[key]
-            for key in ("XWIN_VERSION", "XWIN_SDK_VERSION", "XWIN_CRT_VERSION")
-            if key in env
-        },
-    }
+def probe_abi(builder, library, import_library, tools, env, architecture):
+    """Execute only version getters with the exact staged target DLL bytes."""
+    expected = file_sha256(library), file_sha256(import_library)
+    with tempfile.TemporaryDirectory(prefix="abi-", dir=library.parent.parent) as temporary:
+        work = Path(temporary)
+        dll = stage_native(library, work / library.name)
+        lib = stage_native(import_library, work / import_library.name)
+        executable = builder.compile_abi_probe(
+            work / "probe.exe",
+            compiler=[tools / "cl.exe"],
+            libraries=[lib],
+            env=env,
+            windows=True,
+            flags=["/MT"],
+        )
+        require_pe_machine(executable, architecture)
+        builder.run_abi_probe(executable, env)
+        if (file_sha256(dll), file_sha256(lib)) != expected or (
+            file_sha256(library),
+            file_sha256(import_library),
+        ) != expected:
+            raise ValueError("Windows DLL or import library changed during the ABI probe")
 
 
 def build_library(
@@ -455,7 +472,6 @@ def build_library(
     architecture="arm64",
     *,
     output_root=None,
-    cross=False,
     native_host=None,
     source_inputs=None,
     inspect=None,
@@ -465,17 +481,17 @@ def build_library(
 
     SDK callbacks own extra layout and PE/import policy. The common mechanism owns
     pinned compilation, source/dependency drift checks, receipts and rollback.
-    Native and cross compilation produce candidates, never runtime test results.
+    Compilation produces a candidate for the separate Windows acceptance checks.
     """
+    if sys.platform != "win32":
+        raise ValueError("A native Windows worker is required to build a Windows DLL")
     destination, target = _output(builder, architecture, output_root)
     parent = destination.parent
     env = dict(env, CARGO_TARGET_DIR=str(parent / "target"), CARGO_PROFILE_RELEASE_STRIP="none")
     compiler_host = target
     rustc = "rustc"
     if native_host is not None:
-        if cross or (
-            native_host != architecture and (native_host, architecture) != ("arm64", "x64")
-        ):
+        if native_host != architecture and (native_host, architecture) != ("arm64", "x64"):
             raise ValueError("Select native MSVC for the native Windows target or x64 on ARM64")
         if host_architecture() != native_host:
             raise ValueError(f"Use native {native_host.upper()} Windows to build {architecture}")
@@ -495,20 +511,16 @@ def build_library(
     flags.append("-Ctarget-feature=+crt-static")
     env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
     inputs_for = source_inputs or (lambda: builder.build_sources())
-    if cross and inspect is None:
-        raise ValueError("Cross builds require a portable SDK DLL inspection policy")
     with build_lock(builder.root / ".native-build"):
         tools_before = tool_inputs()
-        command, toolchain = _build_driver(env, cross, parent)
+        command, toolchain = ["cargo", "build"], {"backend": "msvc"}
         compiler = subprocess.check_output(
             [rustc, "--version", "--verbose"], cwd=builder.root, env=env, text=True
         )
         if not compiler.startswith("rustc " + builder.compiler + " ") or (
-            not cross and f"host: {compiler_host}" not in compiler.splitlines()
+            f"host: {compiler_host}" not in compiler.splitlines()
         ):
-            raise ValueError(
-                "Use the pinned native Rust compiler, or explicitly select a cross build"
-            )
+            raise ValueError("Use the pinned native Rust compiler")
         if compiler_host != target:
             require_rust_target_stdlib(
                 subprocess.check_output(
@@ -522,16 +534,28 @@ def build_library(
         if native_host is not None:
             toolchain.update(host=compiler_host, target=target)
         builder.retain_notices(env)
-        dependencies = builder.dependencies(env, targets=[target])
+        graph = CargoDependencies(builder.root, [builder.package], [target], env)
+        dependencies = graph.provenance()
+        graph.configure_remaps(env)
         inputs = inputs_for()
-        subprocess.run(
-            command
-            + ["-p", builder.package, "--release", "--target", target, "--locked", "--offline"],
-            cwd=builder.root,
-            env=env,
-            check=True,
-        )
         library = Path(env["CARGO_TARGET_DIR"]) / target / "release" / (builder.library + ".dll")
+        units = compile_units(
+            command
+            + [
+                "-p",
+                builder.package,
+                "--release",
+                "--target",
+                target,
+                "--locked",
+                "--offline",
+                "--message-format=json-render-diagnostics",
+            ],
+            graph=graph,
+            target=target,
+            library=library,
+            env=env,
+        )
         inspection = (
             inspect(library)
             if inspect
@@ -576,6 +600,14 @@ def build_library(
                 shutil.copytree(builder.root / "ThirdParty", stage / "ThirdParty")
                 if (builder.root / "LICENSE").is_file():
                     shutil.copyfile(builder.root / "LICENSE", stage / "LICENSE")
+            probe_abi(
+                builder,
+                stage / library.name,
+                stage / (library.name + ".lib"),
+                tools,
+                env,
+                architecture,
+            )
             if (
                 inputs_for() != inputs
                 or builder.dependencies(dict(env), targets=[target]) != dependencies
@@ -592,10 +624,13 @@ def build_library(
                     compiler=compiler,
                     inputs=inputs,
                     dependencies=dependencies,
+                    cargoBuild={target: units},
                     toolInputs=tools_before,
                     outputs=hashes(files(stage), stage),
                     inspection=inspection,
                     exports=inspection["exports"],
+                    abiVersions=builder.abi_versions(windows=True),
+                    abiProbeArchitecture=architecture,
                     toolchain=toolchain,
                     crt="static",
                     windowsRuntimeTested=False,

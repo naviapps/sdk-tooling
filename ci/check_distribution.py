@@ -125,25 +125,12 @@ def tooling_revision(source, repository):
     return pin
 
 
-def windows_dotnet_version(source):
-    tools = mise_configuration(source).get("tools", {})
-    if not isinstance(tools, dict):
-        raise ValueError("SDK mise tools must be a table")
-    if "dotnet" not in tools:
-        return ""
-    version = tools["dotnet"]
-    if isinstance(version, dict):
-        systems = version.get("os", ["windows"])
-        if not isinstance(systems, list) or not all(isinstance(item, str) for item in systems):
-            raise ValueError("SDK .NET operating systems must be an array")
-        if "windows" not in systems:
-            return ""
-        version = version.get("version")
-    if not isinstance(version, str) or not re.fullmatch(
-        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?", version
-    ):
-        raise ValueError("Windows distribution requires one exact .NET SDK version in mise.toml")
-    return version
+def has_dotnet_pin(source):
+    path = source / "global.json"
+    if not (path.exists() or path.is_symlink()):
+        return False
+    read_regular(source, "global.json")
+    return True
 
 
 def clean_text(value):
@@ -257,14 +244,6 @@ def write_output(**values):
 
 
 def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    if list(argv) == ["dotnet-version"]:
-        version = windows_dotnet_version(Path.cwd().resolve())
-        if not version:
-            raise SystemExit("Declare an exact Windows .NET SDK version in mise.toml")
-        write_output(dotnet=version)
-        return
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("identity", "pin", *PLATFORMS))
     parser.add_argument("sdk")
@@ -305,12 +284,12 @@ def main(argv=None):
         if args.platform is None:
             parser.error("Reading the plan requires --platform")
         enabled = args.platform in plan
-        dotnet = windows_dotnet_version(source) if enabled and args.platform == "windows" else ""
+        dotnet = enabled and args.platform == "windows" and has_dotnet_pin(source)
         xcframeworks = enabled and builds_xcframeworks(source, args.platform)
         write_output(
             revision=pin,
             enabled=str(enabled).lower(),
-            dotnet=dotnet,
+            dotnet=str(dotnet).lower(),
             xcframeworks=str(xcframeworks).lower(),
         )
         return

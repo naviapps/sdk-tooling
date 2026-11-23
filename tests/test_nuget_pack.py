@@ -52,6 +52,7 @@ class NativePackageTests(unittest.TestCase):
         self.native = SimpleNamespace(
             root=self.root,
             module="Example",
+            version="1.2.3",
             library="example",
             artifact=artifact,
             receipt=self.file("Artifacts/native.json", self.mac_record),
@@ -64,6 +65,14 @@ class NativePackageTests(unittest.TestCase):
             str(self.output.relative_to(self.root)) + ".json", b"previous receipt"
         )
         self.mutate = lambda: None
+        self.dependency_range = "[2.0.0]"
+        self.managed_outputs = {
+            f"lib/net10.0/Example.{extension}": self.root / f"out/managed Example.{extension}"
+            for extension in ("dll", "xml")
+        }
+        self.evaluate = patch.object(
+            dotnet, "run_command", side_effect=self.evaluate_project
+        ).start()
         self.build = patch.object(dotnet, "build_managed", side_effect=self.build_managed).start()
         self.pack = patch.object(dotnet, "pack_project", side_effect=self.pack_project).start()
         self.addCleanup(patch.stopall)
@@ -75,27 +84,56 @@ class NativePackageTests(unittest.TestCase):
         return path
 
     def build_managed(self, *args, **options):
-        self.file("bindings/src/bin/Release/net10.0/Example.dll", b"managed assembly")
-        self.file("bindings/src/bin/Release/net10.0/Example.xml", b"managed documentation")
+        for member, source in self.managed_outputs.items():
+            self.file(source.relative_to(self.root), f"managed {member}".encode())
+
+    def evaluate_project(self, command, **options):
+        self.assertIn("-getProperty:TargetFramework,PackageId", command)
+        output = {
+            "Properties": {"TargetFramework": "net10.0", "PackageId": "Example"},
+            "Items": {
+                group + "Output": [
+                    {"FinalOutputPath": str(source), "TargetPath": Path(member).name}
+                ]
+                for group, (member, source) in zip(
+                    ("BuiltProjectOutputGroup", "DocumentationProjectOutputGroup"),
+                    self.managed_outputs.items(),
+                    strict=True,
+                )
+            },
+        }
+        output["Items"]["PackageReference"] = [
+            {"Identity": "Example.Dependency", "Version": "[2.0.0]"}
+        ]
+        return SimpleNamespace(stdout=json.dumps(output))
 
     def pack_project(self, *args, **options):
-        spec = ET.parse(options["properties"]["NuspecFile"]).getroot()
-        metadata = ET.Element("package")
-        metadata.append(spec.find("metadata"))
+        properties = options["properties"]
+        self.assertNotIn("NuspecFile", properties)
+        self.assertEqual(properties["Version"], "1.2.3")
+        self.assertTrue(options["no_build"])
+        runtimes = Path(properties["SdkNativeRuntimeAssets"])
         with zipfile.ZipFile(options["output"] / self.output.name, "w") as archive:
-            archive.writestr("Example.nuspec", ET.tostring(metadata))
-            for selected in spec.findall("files/file"):
-                archive.write(selected.get("src"), selected.get("target"))
+            archive.writestr(
+                "Example.nuspec",
+                f"""<package><metadata><authors>Owned Author</authors>
+                <description>Owned test SDK</description><dependencies><group targetFramework="net10.0">
+                <dependency id="Example.Dependency" version="{self.dependency_range}" />
+                </group></dependencies></metadata></package>""",
+            )
+            for member, source in (self.selected | self.managed_outputs).items():
+                archive.write(source, member)
+            for source in runtimes.rglob("*"):
+                if source.is_file():
+                    archive.write(source, source.relative_to(runtimes.parent).as_posix())
         self.mutate()
 
     def invoke(self, **options):
         arguments = dict(
             project=self.project,
-            version="1.2.3",
-            authors="Owned Author",
             package_files=self.selected,
             nuget_config=self.config,
-            argv=["--runtime", "osx-arm64"],
+            runtimes=["osx-arm64"],
             environment={"DOTNET_BIN": "owned-dotnet"},
         )
         arguments.update(options)
@@ -108,16 +146,7 @@ class NativePackageTests(unittest.TestCase):
 
     def test_exact_files_runtimes_metadata_and_private_feeds_are_preserved(self):
         result = self.invoke(
-            argv=[
-                "--runtime",
-                "osx-x64",
-                "--runtime",
-                "osx-arm64",
-                "--runtime",
-                "osx-arm64",
-                "--package-source",
-                "owned local feed",
-            ]
+            runtimes=["osx-x64", "osx-arm64", "osx-arm64"], sources=["owned local feed"]
         )
         self.assertEqual(result, self.output)
         self.native.verify.assert_called_once()
@@ -160,7 +189,7 @@ class NativePackageTests(unittest.TestCase):
         with patch(
             "sdk_tooling.windows.verify_artifact", return_value=(dll.parent, accepted)
         ) as verify:
-            result = self.invoke(argv=["--runtime", "win-arm64"])
+            result = self.invoke(runtimes=["win-arm64"])
         verify.assert_called_once_with(self.native, architecture="arm64")
         self.native.verify.assert_not_called()
         with zipfile.ZipFile(result) as archive:
@@ -182,21 +211,22 @@ class NativePackageTests(unittest.TestCase):
     def test_native_library_replaced_between_verification_and_staging_is_rejected(self):
         dll, _, accepted = self.windows_runtime("win-x64")
         for runtime, path in (("osx-arm64", self.library), ("win-x64", dll)):
+            stage_file = nuget.stage_file
 
-            def replace_after_managed_build(*args, **options):
-                self.build_managed(*args, **options)
+            def replace_before_stage(source, destination):
                 path.write_bytes(b"newer bytes")
+                return stage_file(source, destination)
 
             with (
                 self.subTest(runtime=runtime),
+                patch.object(nuget, "stage_file", side_effect=replace_before_stage),
                 patch("sdk_tooling.windows.verify_artifact", return_value=(dll.parent, accepted)),
             ):
-                self.build.side_effect = replace_after_managed_build
                 self.pack.reset_mock()
                 with self.assertRaisesRegex(
                     ValueError, "Native library differs from its verified receipt"
                 ):
-                    self.invoke(argv=["--runtime", runtime])
+                    self.invoke(runtimes=[runtime])
                 self.pack.assert_not_called()
                 self.assert_previous()
 
@@ -217,7 +247,7 @@ class NativePackageTests(unittest.TestCase):
                     self.subTest(runtime=runtime),
                     self.assertRaisesRegex(ValueError, "Native receipt changed"),
                 ):
-                    self.invoke(argv=["--runtime", runtime])
+                    self.invoke(runtimes=[runtime])
                 self.assert_previous()
         self.build.assert_not_called()
 
@@ -262,13 +292,8 @@ class NativePackageTests(unittest.TestCase):
         replacement = b"newer bytes"
 
         def replace_staged_library(*args, **options):
-            spec = ET.parse(options["properties"]["NuspecFile"]).getroot()
-            runtime = next(
-                entry
-                for entry in spec.findall("files/file")
-                if entry.get("target").startswith("runtimes/")
-            )
-            Path(runtime.get("src")).write_bytes(replacement)
+            staged = Path(options["properties"]["SdkNativeRuntimeAssets"])
+            (staged / "osx-arm64/native/libexample.dylib").write_bytes(replacement)
             self.library.write_bytes(replacement)
             self.pack_project(*args, **options)
 
@@ -325,13 +350,13 @@ class NativePackageTests(unittest.TestCase):
                 self.config.write_bytes(b"<configuration />")
                 self.mutate = action
                 with self.assertRaisesRegex(ValueError, "changed"):
-                    self.invoke(argv=["--runtime", "osx-arm64", "--runtime", "osx-x64"])
+                    self.invoke(runtimes=["osx-arm64", "osx-x64"])
                 self.assert_previous()
 
     def test_selected_input_mutation_is_not_published(self):
         self.mutate = lambda: self.library.write_bytes(b"changed native library")
         with self.assertRaisesRegex(ValueError, "bytes differ"):
-            self.invoke(argv=["--runtime", "osx-arm64", "--runtime", "osx-x64"])
+            self.invoke(runtimes=["osx-arm64", "osx-x64"])
         self.assert_previous()
 
     def test_generated_trees_are_skipped_but_explicit_inputs_still_detect_drift(self):
@@ -367,11 +392,10 @@ class NativePackageTests(unittest.TestCase):
         self.build.assert_not_called()
         self.assert_previous()
 
-    def test_dynamic_dependency_requirement_fails_before_build(self):
-        self.project.write_text(self.project.read_text().replace("[2.0.0]", "$(DependencyVersion)"))
-        with self.assertRaisesRegex(ValueError, "explicit IDs and version requirements"):
+    def test_changed_packaged_dependency_is_rejected(self):
+        self.dependency_range = "2.0.0"
+        with self.assertRaisesRegex(ValueError, "Packaged dependencies differ"):
             self.invoke()
-        self.build.assert_not_called()
         self.assert_previous()
 
     def test_another_publisher_is_not_overwritten(self):

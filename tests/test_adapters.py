@@ -46,6 +46,7 @@ class AdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             sources = [
+                "global.json",
                 "distribution/verify_windows.py",
                 "fixtures/consumers/dotnet/Program.cs",
                 "fixtures/consumers/rust/Cargo.toml.in",

@@ -188,6 +188,24 @@ tree after resolving the filesystem error before removing the rollback directory
 
 ### Production source receipts
 
+The macOS and Windows producers record Cargo `compiler-artifact` messages in
+`cargoBuild`, grouped by requested target triple. Each entry identifies its
+verified package, Cargo target kind and name, host or target compilation, and
+enabled features. Build scripts and procedural macros compile on the host.
+Different feature sets for the same package stay separate. Paths and Cargo's
+cache freshness flag are omitted so the record describes the same build on
+another checkout. The selected linked library must appear in the build output.
+The `dependencies` section separately records the locked dependency graph and
+source bytes. Verification checks each recorded package and feature against that
+graph. It does not rerun the compilation to reproduce the recorded feature sets.
+
+Each public ABI getter has a version macro in its C header. The producer links
+a small C caller to the selected library and checks the returned version against
+that header. macOS runs the caller for the host architecture and inspects both
+slices of the universal framework. Windows runs it for the DLL's target
+architecture, including x64 emulation on ARM64. The receipt records the expected
+versions and the architecture that ran the caller.
+
 The macOS producer uses its pinned Rust compiler to build the dependency-rule
 reader. It reads the first Make rule from every selected target's compiler
 output in one invocation. The receipt records the reader's source hash and the
@@ -252,8 +270,7 @@ separately installed VC/UCRT runtime dependencies. SDKs can supply a narrower
 import policy to the portable verifier.
 
 Windows builds use a shared `FfiProduct` and `windows.build_library` for native
-MSVC or explicitly selected
-cargo-xwin compilation. Native selection verifies that the developer shell puts
+MSVC compilation. Native selection verifies that the developer shell puts
 the chosen toolchain's `cl.exe` and `link.exe` first on its search path and that
 their PE machine matches the worker architecture. Multi-library SDKs select separate
 `output_root` paths under their `.native-build` directory. The lock remains per checkout. SDK callbacks
@@ -264,8 +281,8 @@ cannot restore the previous artifacts, the error identifies a retained rollback
 directory beside the destination. The failed build's staging cleanup does not
 remove it. After resolving the filesystem error, inspect and recover that tree
 before removing the rollback directory. Receipts use
-`native-build.json` and record the backend; cross compilation never establishes
-Windows runtime acceptance. `verify_artifact` always rechecks retained bytes and
+`native-build.json` and record the backend. Windows runtime acceptance is a
+separate check. `verify_artifact` always rechecks retained bytes and
 source/tool policy; the caller supplies `inspect` for PE inspection and
 `environment` for dependency-source verification. It never executes Windows code.
 SDKs still own native input/rendering fixtures.
@@ -303,8 +320,10 @@ and artifacts.
 
 ### NuGet package publication
 
-`nuget.pack_native` builds receipt-checked NuGet packages. SDK entry points
-select the project, version, authors and exact notice/file set.
+`nuget.pack_native` builds receipt-checked NuGet packages with the standard
+MSBuild Pack target. SDK entry points select the project, runtimes and exact
+notice/file set. The project owns package metadata and layout. The packer
+compares its emitted dependency requirements to the evaluated project.
 It preserves private feed selection and rejects input changes before publication.
 The native producer lock covers receipt capture and verification. Staging uses
 the library digest from that receipt, and the package audit checks each selected

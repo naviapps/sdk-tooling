@@ -21,6 +21,23 @@ def write_pe(path, machine):
 
 
 class ManagedQualityTests(unittest.TestCase):
+    def test_exact_sdk_version_requires_roll_forward_disabled(self):
+        path = self.root / "global.json"
+        for selection in (
+            {},
+            {"version": "10.0.403"},
+            {"version": "10.0.x", "rollForward": "disable"},
+        ):
+            with self.subTest(selection=selection):
+                path.write_text(json.dumps({"sdk": selection}), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "exact .NET SDK version"):
+                    dotnet_tools.pinned_sdk_version(self.root)
+        path.write_text(
+            '{"sdk":{"version":"10.0.403","rollForward":"disable"}}',
+            encoding="utf-8",
+        )
+        self.assertEqual(dotnet_tools.pinned_sdk_version(self.root), "10.0.403")
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="managed-quality-")
         self.addCleanup(temporary.cleanup)

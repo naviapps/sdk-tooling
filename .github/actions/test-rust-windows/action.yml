@@ -2,7 +2,7 @@ name: Test SDK on Windows x64
 description: Test the locked Rust workspace and optionally set up or test its .NET bindings.
 inputs:
   dotnet:
-    description: Install the .NET SDK pinned in mise.toml for separate binding checks.
+    description: Install the .NET SDK pinned in global.json for separate binding checks.
     default: "false"
   managed-project:
     description: Managed console fixture project to build and run with the native DLL.
@@ -19,42 +19,27 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Select the Windows x64 build target
+    - name: Configure Windows x64 checks
       shell: pwsh
       run: |
         'CARGO_BUILD_TARGET=x86_64-pc-windows-msvc' >> $env:GITHUB_ENV
         'GIT_TERMINAL_PROMPT=0' >> $env:GITHUB_ENV
+        'DOTNET_CLI_TELEMETRY_OPTOUT=1' >> $env:GITHUB_ENV
+        'DOTNET_CLI_USE_MSBUILD_SERVER=0' >> $env:GITHUB_ENV
+        'MSBUILDDISABLENODEREUSE=1' >> $env:GITHUB_ENV
     - name: Install pinned Rust
       shell: pwsh
       run: rustup install --no-self-update
     - name: Test x64 Rust workspace
       shell: pwsh
       run: cargo test --workspace --locked --target $env:CARGO_BUILD_TARGET
-    - name: Select the .NET SDK pinned in mise.toml
-      if: inputs.dotnet == 'true' || inputs.managed-project != ''
-      id: dotnet
-      shell: python
-      env:
-        SDK_ACTION_PATH: ${{ github.action_path }}
-      run: |
-        import os
-        import subprocess
-        import sys
-        from pathlib import Path
-
-        dispatcher = Path(os.environ['SDK_ACTION_PATH']).parents[2] / 'ci/check_distribution.py'
-        subprocess.run([sys.executable, '-I', '-B', dispatcher, 'dotnet-version'], check=True)
-        with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as environment:
-            environment.write('DOTNET_CLI_TELEMETRY_OPTOUT=1\n')
-            environment.write('DOTNET_CLI_USE_MSBUILD_SERVER=0\n')
-            environment.write('MSBUILDDISABLENODEREUSE=1\n')
     - name: Install pinned x64 .NET SDK
-      if: steps.dotnet.outputs.dotnet != ''
+      if: inputs.dotnet == 'true' || inputs.managed-project != ''
       uses: actions/setup-dotnet@v6.0.0
       env:
         DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
       with:
-        dotnet-version: ${{ steps.dotnet.outputs.dotnet }}
+        global-json-file: global.json
         architecture: x64
     - name: Test .NET bindings
       if: inputs.managed-project != ''

@@ -1,6 +1,5 @@
 """Build, audit, and exercise NuGet packages containing accepted native assets."""
 
-import argparse
 import hashlib
 import json
 import os
@@ -108,6 +107,7 @@ def audit_package(
     expected_files=None,
     expected_sha256=None,
     runtime_files=None,
+    expected_dependencies=None,
     forbidden_suffixes=(".pdb", ".cs", ".rs", ".py"),
     forbidden_names=("registry-notices.json",),
     forbidden_markers=(
@@ -162,6 +162,11 @@ def audit_package(
             actual = {name for name in files if name.casefold().startswith("runtimes/")}
             if actual != set(runtime_files):
                 raise ValueError("Package runtime assets differ from the selected set")
+        if (
+            expected_dependencies is not None
+            and sum(name.lower().endswith(".nuspec") for name in files) != 1
+        ):
+            raise ValueError("Expected one NuGet package manifest")
         for name in files:
             if (
                 name.lower().endswith(tuple(suffix.lower() for suffix in forbidden_suffixes))
@@ -184,6 +189,13 @@ def audit_package(
                 for element in metadata.iter()
             ):
                 raise ValueError("Forbidden package metadata in: " + name)
+            if expected_dependencies is not None:
+                dependencies = sorted(
+                    (item.get("id", ""), item.get("version", ""))
+                    for item in metadata.findall("./{*}metadata/{*}dependencies//{*}dependency")
+                )
+                if dependencies != expected_dependencies:
+                    raise ValueError("Packaged dependencies differ from the managed project")
             if (digest is not None and hashlib.sha256(data).hexdigest() != digest) or any(
                 data != Path(source).read_bytes() for source in sources
             ):
@@ -298,56 +310,78 @@ def _verified_package_libraries(native, runtimes):
     return libraries, receipt_paths, {path: values[0] for path, values in accepted.items()}
 
 
+def _managed_package_inputs(dotnet, project, *, root, env, properties):
+    groups = ("BuiltProjectOutputGroup", "DocumentationProjectOutputGroup")
+    evaluation = dotnet_tools.run_command(
+        [
+            dotnet,
+            "msbuild",
+            project,
+            "-nologo",
+            "-p:Configuration=Release",
+            *(f"-p:{name}={value}" for name, value in properties.items()),
+            "-target:" + ";".join(groups),
+            "-getProperty:TargetFramework,PackageId",
+            "-getItem:" + ",".join([*(group + "Output" for group in groups), "PackageReference"]),
+        ],
+        cwd=root,
+        env=env,
+        runner=None,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(evaluation.stdout)
+    framework = result["Properties"]["TargetFramework"]
+    package_id = result["Properties"]["PackageId"]
+    if not re.fullmatch(r"net[0-9]+\.[0-9]+", framework) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]*", package_id
+    ):
+        raise ValueError("Select a managed SDK package with one target framework")
+    inputs = {}
+    for group, extension in zip(groups, (".dll", ".xml"), strict=True):
+        items = result["Items"][group + "Output"]
+        if len(items) != 1:
+            raise ValueError("Expected one managed package output: " + group)
+        member = items[0]["TargetPath"]
+        source = Path(items[0]["FinalOutputPath"])
+        if (
+            Path(member).name != member
+            or not member.endswith(extension)
+            or not source.is_absolute()
+            or not source.resolve().is_relative_to(root.resolve())
+        ):
+            raise ValueError("Invalid managed package output: " + group)
+        inputs[f"lib/{framework}/{member}"] = source
+    dependencies = sorted(
+        (item["Identity"], item.get("Version", "")) for item in result["Items"]["PackageReference"]
+    )
+    return package_id, inputs, dependencies
+
+
 def pack_native(
     native,
     *,
     project,
-    version,
-    authors,
     package_files,
     nuget_config,
+    runtimes,
+    sources=(),
     input_files=(),
-    argv=None,
+    pack_targets=None,
     environment=None,
 ):
-    """Pack explicit SDK files and accepted native assets through the developer CLI.
-
-    The SDK selects its project, version, metadata and notice/file policy. This
-    driver verifies receipts, builds managed output, stages/audits exact bytes and
-    rejects changed inputs before replacing a previously accepted package.
-    """
-    parser = argparse.ArgumentParser(description=pack_native.__doc__.splitlines()[0])
-    parser.add_argument(
-        "--runtime",
-        action="append",
-        required=True,
-        choices=("osx-arm64", "osx-x64", "win-arm64", "win-x64"),
-    )
-    parser.add_argument(
-        "--package-source", action="append", default=[], help="Private/local NuGet source"
-    )
-    args = parser.parse_args(argv)
-    runtimes = sorted(set(args.runtime))
+    """Build a standard managed project with verified native assets and publish its receipt."""
+    runtimes = sorted(set(runtimes))
+    if not runtimes or any(
+        rid not in ("osx-arm64", "osx-x64", "win-arm64", "win-x64") for rid in runtimes
+    ):
+        raise ValueError("Select at least one supported native package runtime")
     root, project = native.root, Path(project)
+    version = native.version
     env = dotnet_tools.subprocess_environment(environment)
     dotnet = env.get("DOTNET_BIN") or shutil.which("dotnet", path=env.get("PATH"))
     if not dotnet:
         raise ValueError("Install .NET 10 or provide DOTNET_BIN.")
-    properties = ET.parse(project).getroot()
-    framework = properties.findtext(".//TargetFramework")
-    description = properties.findtext(".//Description")
-    if not framework or not re.fullmatch(r"net[0-9]+\.[0-9]+", framework) or not description:
-        raise ValueError(
-            "The managed SDK project must declare one target framework and its Description."
-        )
-    dependencies = []
-    for reference in properties.findall(".//PackageReference"):
-        identifier, requirement = reference.get("Include"), reference.get("Version")
-        if not identifier or not requirement or "$" in identifier + requirement:
-            raise ValueError(
-                "Package references must declare explicit IDs and version requirements."
-            )
-        dependencies.append((identifier, requirement))
     package_files = {member: Path(source) for member, source in package_files.items()}
     for member in package_files:
         path = PurePosixPath(member)
@@ -367,6 +401,8 @@ def pack_native(
 
     def managed_sources():
         paths = [*input_files, *package_files.values(), project, nuget_config]
+        if (root / "global.json").is_file():
+            paths.append(root / "global.json")
         for directory, subdirectories, names in project.parent.walk():
             # Generated output is excluded from both snapshots; don't traverse it.
             subdirectories[:] = [name for name in subdirectories if name not in {"bin", "obj"}]
@@ -379,129 +415,111 @@ def pack_native(
         return hashes(paths, root)
 
     output = root / ".native-build/packages"
-    tool_sources = [
-        Path(module) for module in (__file__, artifacts.__file__, dotnet_tools.__file__)
-    ]
-    with build_lock(output):
+
+    def packer_inputs():
+        inputs = hashes(
+            [Path(__file__), Path(artifacts.__file__), Path(dotnet_tools.__file__)],
+            Path(__file__).parent,
+        )
+        if pack_targets is not None:
+            inputs["sdk-targets/" + pack_targets.name] = file_sha256(pack_targets)
+        return inputs
+
+    with (
+        build_lock(output),
+        tempfile.TemporaryDirectory(prefix="pack-", dir=output) as temporary,
+    ):
         inputs, managed_inputs = native.build_sources(), managed_sources()
-        tool_inputs = hashes(tool_sources, Path(__file__).parent)
+        tool_inputs = packer_inputs()
         libraries, receipt_paths, receipt_hashes = _verified_package_libraries(native, runtimes)
+        stage = Path(temporary)
+        properties = {
+            "Version": version,
+            "UseSharedCompilation": "false",
+            "SdkNativeRuntimeAssets": str(stage / "runtimes"),
+        }
+        if pack_targets is not None:
+            properties["CustomAfterMicrosoftCommonTargets"] = str(pack_targets)
+        runtime_files, accepted_bytes = {}, {}
+        for rid, (library, filename, digest) in libraries.items():
+            member = f"runtimes/{rid}/native/{filename}"
+            if stage_file(library, stage / member) != digest:
+                raise ValueError("Native library differs from its verified receipt")
+            runtime_files[member] = library
+            accepted_bytes[member] = digest
         dotnet_tools.build_managed(
             dotnet,
             project,
             env=env,
             cwd=root,
             nuget_config=nuget_config,
-            sources=args.package_source,
-            properties={"Version": version, "UseSharedCompilation": "false"},
+            sources=sources,
+            properties=properties,
             verify_style=True,
         )
-        with tempfile.TemporaryDirectory(prefix="pack-", dir=output) as temporary:
-            stage = Path(temporary)
-            package = ET.Element("package")
-            metadata = ET.SubElement(package, "metadata")
-            for key, value in {
-                "id": project.stem,
+        package_id, managed_outputs, dependencies = _managed_package_inputs(
+            dotnet, project, root=root, env=env, properties=properties
+        )
+        selected = package_files | managed_outputs
+        accepted_bytes.update((member, file_sha256(path)) for member, path in selected.items())
+        dotnet_tools.pack_project(
+            dotnet,
+            project,
+            output=stage,
+            env=env,
+            cwd=root,
+            no_build=True,
+            properties=properties,
+        )
+        archive = stage / f"{package_id}.{version}.nupkg"
+        if list(stage.glob("*.nupkg")) != [archive]:
+            raise ValueError("Packing must produce exactly one native SDK package at its version")
+        package_sha256 = audit_package(
+            archive,
+            expected_files=selected,
+            expected_sha256=accepted_bytes,
+            runtime_files=runtime_files,
+            expected_dependencies=dependencies,
+        )
+        if any(
+            file_sha256(source) != accepted_bytes[member]
+            for member, source in (selected | runtime_files).items()
+        ):
+            raise ValueError(
+                "Accepted package inputs changed while packing; no package was replaced."
+            )
+        if any(
+            hashlib.sha256(_native_receipt_bytes(path)).hexdigest() != digest
+            for path, digest in receipt_hashes.items()
+        ):
+            raise ValueError("Native receipt changed while packing; no package was replaced.")
+        if (
+            inputs != native.build_sources()
+            or managed_inputs != managed_sources()
+            or tool_inputs != packer_inputs()
+        ):
+            raise ValueError(
+                "Native, managed or packaging inputs changed while packing; no package was replaced."
+            )
+        destination = output / archive.name
+        _publish_package(
+            archive,
+            destination,
+            {
+                "package": destination.name,
+                "sha256": package_sha256,
                 "version": version,
-                "authors": authors,
-                "description": description,
-                "readme": "README.md",
-            }.items():
-                ET.SubElement(metadata, key).text = value
-            ET.SubElement(metadata, "license", {"type": "file"}).text = "LICENSE"
-            group = ET.SubElement(
-                ET.SubElement(metadata, "dependencies"), "group", {"targetFramework": framework}
-            )
-            for identifier, requirement in dependencies:
-                ET.SubElement(group, "dependency", {"id": identifier, "version": requirement})
-            files = ET.SubElement(package, "files")
-            selected, accepted_bytes, staged_sources = {}, {}, {}
-
-            def include(source, target, *, native_digest=None):
-                source = Path(source)
-                # Both macOS RIDs consume the same universal binary. Keep the
-                # staged basename equal to the target's for NuGet file mapping.
-                key = source, PurePosixPath(target).name
-                if key not in staged_sources:
-                    staged = stage / "payload" / target
-                    staged_sources[key] = staged, stage_file(source, staged)
-                staged, digest = staged_sources[key]
-                if native_digest is not None and digest != native_digest:
-                    raise ValueError("Native library differs from its verified receipt")
-                accepted_bytes[target] = digest
-                ET.SubElement(files, "file", {"src": str(staged), "target": target})
-                selected[target] = source
-
-            assembly = project.parent / "bin/Release" / framework
-            for extension in ("dll", "xml"):
-                member = project.stem + "." + extension
-                include(assembly / member, "lib/" + framework + "/" + member)
-            for member, source in package_files.items():
-                include(source, member)
-            runtime_files = {}
-            for rid, (library, filename, digest) in libraries.items():
-                member = f"runtimes/{rid}/native/{filename}"
-                include(library, member, native_digest=digest)
-                runtime_files[member] = library
-            nuspec = stage / "package.nuspec"
-            ET.ElementTree(package).write(nuspec, encoding="utf-8", xml_declaration=True)
-            dotnet_tools.pack_project(
-                dotnet,
-                project,
-                output=stage,
-                env=env,
-                cwd=root,
-                no_build=True,
-                properties={"IsPackable": "true", "NuspecFile": str(nuspec)},
-            )
-            archives = list(stage.glob("*.nupkg"))
-            if len(archives) != 1:
-                raise ValueError("Packing must produce exactly one native SDK package.")
-            archive = archives[0]
-            package_sha256 = audit_package(
-                archive,
-                expected_files=selected,
-                expected_sha256=accepted_bytes,
-                runtime_files=runtime_files,
-            )
-            if any(
-                file_sha256(source) != digest for (source, _), (_, digest) in staged_sources.items()
-            ):
-                raise ValueError(
-                    "Accepted package inputs changed while packing; no package was replaced."
-                )
-            if any(
-                hashlib.sha256(_native_receipt_bytes(path)).hexdigest() != digest
-                for path, digest in receipt_hashes.items()
-            ):
-                raise ValueError("Native receipt changed while packing; no package was replaced.")
-            if (
-                inputs != native.build_sources()
-                or managed_inputs != managed_sources()
-                or tool_inputs != hashes(tool_sources, Path(__file__).parent)
-            ):
-                raise ValueError(
-                    "Native, managed or packaging inputs changed while packing; no package was replaced."
-                )
-            destination = output / archive.name
-            _publish_package(
-                archive,
-                destination,
-                {
-                    "package": destination.name,
-                    "sha256": package_sha256,
-                    "version": version,
-                    "runtimes": runtimes,
-                    "nativeReceipts": {
-                        rid: receipt_hashes[path] for rid, path in receipt_paths.items()
-                    },
-                    "managedInputs": managed_inputs,
-                    "packagingToolInputs": tool_inputs,
-                    "files": accepted_bytes,
+                "runtimes": runtimes,
+                "nativeReceipts": {
+                    rid: receipt_hashes[path] for rid, path in receipt_paths.items()
                 },
-            )
-            print("Verified local package: " + str(destination))
-            return destination
+                "managedInputs": managed_inputs,
+                "packagingToolInputs": tool_inputs,
+                "files": accepted_bytes,
+            },
+        )
+        print("Verified local package: " + str(destination))
+        return destination
 
 
 _CONSUMER_RESTORE_OVERRIDES = {

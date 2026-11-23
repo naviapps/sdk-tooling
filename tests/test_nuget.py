@@ -614,6 +614,11 @@ class NuGetTests(unittest.TestCase):
 )
 class NativeConsumerTests(unittest.TestCase):
     @staticmethod
+    def select_sdk(root):
+        pin = Path(__file__).resolve().parents[1] / "global.json"
+        shutil.copyfile(pin, root / pin.name)
+
+    @staticmethod
     def package(folder, name, dependency=None):
         package = folder / f"{name}.1.0.0.nupkg"
         dependencies = (
@@ -637,6 +642,7 @@ class NativeConsumerTests(unittest.TestCase):
         self.assertIsNotNone(dotnet, "The prepared .NET SDK is required for native consumer tests")
         with tempfile.TemporaryDirectory(prefix="consumer-parent-fixture-") as directory:
             root = Path(directory)
+            self.select_sdk(root)
             package = self.package(root, "IsolationFixture")
             for name, value in {
                 "Directory.Build.props": '<Project><Import Project="missing-parent-props"/></Project>',
@@ -665,6 +671,7 @@ class NativeConsumerTests(unittest.TestCase):
         self.assertIsNotNone(dotnet, "The prepared .NET SDK is required for native consumer tests")
         with tempfile.TemporaryDirectory(prefix="consumer-restore-fixture-") as directory:
             root = Path(directory)
+            self.select_sdk(root)
             outside = root / "extra feed"
             outside.mkdir()
             dependency = self.package(outside, "ConsumerDependency")

@@ -98,12 +98,12 @@ jobs:
           cache: false
           add_shims_to_path: false
       - name: Install x64 .NET
-        if: steps.plan.outputs.dotnet != ''
+        if: steps.plan.outputs.dotnet == 'true'
         uses: actions/setup-dotnet@v6.0.0
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
-          dotnet-version: ${{ steps.plan.outputs.dotnet }}
+          global-json-file: sdk/global.json
           architecture: x64
       - name: Run SDK distribution checks
         if: steps.plan.outputs.enabled == 'true'

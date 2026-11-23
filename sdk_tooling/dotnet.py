@@ -2,9 +2,29 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+def pinned_sdk_version(root):
+    """Read the exact SDK selected by the checkout's own .NET version file."""
+    config = Path(root) / "global.json"
+    try:
+        sdk = json.loads(config.read_bytes())["sdk"]
+        version = sdk["version"]
+        if (
+            sdk.get("rollForward") == "disable"
+            and isinstance(version, str)
+            and re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?", version
+            )
+        ):
+            return version
+    except (KeyError, OSError, TypeError, ValueError):
+        pass
+    raise ValueError("Declare an exact .NET SDK version with rollForward=disable in global.json")
 
 
 def subprocess_environment(environment=None):

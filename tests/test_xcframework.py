@@ -1,11 +1,14 @@
 import json
 import os
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from cargo_build_fixtures import FIXTURE_UNIT, fixture_dependencies
 
 from sdk_tooling import ffi, windows, xcframework
 from sdk_tooling.artifacts import files, hashes
@@ -24,7 +27,7 @@ class NativeInputsTests(unittest.TestCase):
             "crates/ffi/Cargo.toml": '[package]\nname="fixture-ffi"\n[lib]\nname="fixture"\n',
             "crates/core/Cargo.toml": '[package]\nname="fixture"\n',
             "crates/ffi/module.modulemap": 'framework module CFixture { header "fixture.h" export * }\n',
-            "crates/ffi/include/fixture.h": "#define FIXTURE_ABI_VERSION 1U\nunsigned fixture_version(void);\n",
+            "crates/ffi/include/fixture.h": "#include <stdint.h>\n#define FIXTURE_ABI_VERSION 1u\nuint32_t fixture_abi_version(void);\n",
             "crates/ffi/src/lib.rs": "pub fn ffi() {}\n",
             "crates/core/src/lib.rs": "pub fn runtime() {}\n",
             "crates/core/src/tests.rs": "#[test] fn test_only() {}\n",
@@ -84,6 +87,10 @@ class NativeInputsTests(unittest.TestCase):
             inputs=inputs,
             outputs=hashes(files(self.builder.artifact), self.root),
             compiler="rustc 1.99.1 fixture",
+            abiVersion=1,
+            abiProbeArchitecture="arm64",
+            dependencies=fixture_dependencies(*self.builder.targets),
+            cargoBuild={target: [FIXTURE_UNIT] for target in self.builder.targets},
         )
         self.builder.receipt.write_text(json.dumps(receipt))
         return receipt
@@ -211,7 +218,14 @@ class NativeInputsTests(unittest.TestCase):
         tooling = self.root / "tooling"
         package = tooling / "sdk_tooling"
         package.mkdir(parents=True)
-        expected_shared = {"artifacts.py", "cargo.py", "ffi.py", "native_plan.py"}
+        expected_shared = {
+            "artifacts.py",
+            "c_compiler.py",
+            "cargo.py",
+            "cargo_build.py",
+            "ffi.py",
+            "native_plan.py",
+        }
         for name in expected_shared | {"windows.py", "xcframework.py"}:
             (package / name).write_text(name, encoding="utf-8")
         parser = tooling / DEP_INFO_PARSER
@@ -242,6 +256,10 @@ class NativeInputsTests(unittest.TestCase):
                         inputs=product.build_sources(),
                         toolInputs=windows_inputs,
                         outputs=hashes([destination / "fixture.dll"], destination),
+                        dependencies=fixture_dependencies("x86_64-pc-windows-msvc"),
+                        cargoBuild={"x86_64-pc-windows-msvc": [FIXTURE_UNIT]},
+                        abiVersions={"fixture_abi_version": 1},
+                        abiProbeArchitecture="x64",
                     )
                 ),
                 encoding="utf-8",
@@ -410,7 +428,7 @@ class NativeInputsTests(unittest.TestCase):
             patch("sdk_tooling.xcframework.run", return_value="rustc 1.99.1 fixture"),
             patch.object(self.builder, "retain_notices"),
             patch("sdk_tooling.xcframework.CargoDependencies") as dependencies,
-            patch("sdk_tooling.xcframework.subprocess.run", side_effect=cached_build) as cargo,
+            patch("sdk_tooling.xcframework.compile_units", side_effect=cached_build) as cargo,
             patch("sdk_tooling.xcframework.dep_info_sources", return_value=self.production),
             patch("sdk_tooling.xcframework.publish") as publish,
         ):
@@ -438,7 +456,7 @@ class NativeInputsTests(unittest.TestCase):
             patch.object(self.builder, "tool_inputs", side_effect=[before, after]),
             patch("sdk_tooling.xcframework.CargoDependencies") as dependencies,
             patch("sdk_tooling.xcframework.dep_info_sources", return_value=self.production),
-            patch("sdk_tooling.xcframework.subprocess.run"),
+            patch("sdk_tooling.xcframework.compile_units"),
             patch("sdk_tooling.xcframework.publish") as publish,
         ):
             graph = dependencies.return_value
@@ -577,14 +595,60 @@ class NativeInputsTests(unittest.TestCase):
     def test_build_configuration_is_derived_from_cargo_and_module_map(self):
         self.assertEqual(self.builder.configuration["library"], "fixture")
         self.assertEqual(self.builder.configuration["module"], "CFixture")
-        self.assertEqual(self.builder.public_symbols(), {"_fixture_version"})
+        self.assertEqual(self.builder.public_symbols(), {"_fixture_abi_version"})
+
+    def test_recorded_abi_must_match_the_exported_header_contract(self):
+        receipt = self.accept([])
+        receipt["abiVersion"] = 2
+        self.builder.receipt.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(ValueError, "ABI receipt"):
+            self.verify_without_tools()
+
+    def test_windows_abi_checks_the_optional_extension_with_the_portable_version(self):
+        self.write(
+            "crates/ffi/include/windows/fixture.h",
+            "#define FIXTURE_WINDOWS_ABI_VERSION 3U\nuint32_t fixture_windows_abi_version(void);\n",
+        )
+        self.assertEqual(self.builder.abi_versions(), {"fixture_abi_version": 1})
+        self.assertEqual(
+            self.builder.abi_versions(windows=True),
+            {"fixture_abi_version": 1, "fixture_windows_abi_version": 3},
+        )
+
+    @unittest.skipUnless(sys.platform == "darwin", "Requires native Clang and a dylib loader")
+    def test_native_abi_probe_rejects_the_wrong_runtime_version(self):
+        library = self.root / "CFixture.framework/CFixture"
+        library.parent.mkdir()
+        source = self.write(
+            "fixture.c", "#include <stdint.h>\nuint32_t fixture_abi_version(void) { return 1; }\n"
+        )
+        subprocess.run(
+            [
+                "xcrun",
+                "clang",
+                "-dynamiclib",
+                "-install_name",
+                "@rpath/CFixture.framework/CFixture",
+                str(source),
+                "-o",
+                str(library),
+            ],
+            check=True,
+        )
+        self.builder.probe_abi(library, os.environ)
+        self.write(
+            "crates/ffi/include/fixture.h",
+            "#include <stdint.h>\n#define FIXTURE_ABI_VERSION 2U\nuint32_t fixture_abi_version(void);\n",
+        )
+        with self.assertRaisesRegex(ValueError, "Native ABI runtime probe failed"):
+            self.builder.probe_abi(library, os.environ)
 
     def test_macos_contract_uses_module_headers_without_windows_only_apis(self):
         before = self.builder.inputs()
         header = self.write(
             "crates/ffi/include/windows/fixture.h", "void fixture_windows_start(void);\n"
         )
-        self.assertEqual(self.builder.public_symbols(), {"_fixture_version"})
+        self.assertEqual(self.builder.public_symbols(), {"_fixture_abi_version"})
         self.assertEqual(self.builder.inputs(), before)
         self.assertIn(header.relative_to(self.root).as_posix(), self.builder.build_sources())
 

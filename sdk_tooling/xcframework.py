@@ -11,8 +11,9 @@ import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from .artifacts import build_lock, files, hashes, publish, write_json
+from .artifacts import build_lock, file_sha256, files, hashes, publish, write_json
 from .cargo import CargoDependencies
+from .cargo_build import compile_units, verify_units
 from .ffi import DARWIN_TARGETS, FfiProduct, tool_input_hashes
 from .native_plan import SPECIFICATION, product_options, sdk_relative_path, select_product
 
@@ -52,6 +53,13 @@ def dep_info_sources(paths, *, expected_sha256, cwd, env):
 
 def run(*arguments, env=None, cwd=None):
     return subprocess.check_output(list(map(str, arguments)), env=env, cwd=cwd, text=True).strip()
+
+
+def abi_probe_architecture():
+    architecture = os.uname().machine
+    if architecture not in {"arm64", "x86_64"}:
+        raise ValueError("The macOS ABI probe requires an arm64 or x86_64 process")
+    return architecture
 
 
 class XcframeworkBuilder(FfiProduct):
@@ -332,8 +340,21 @@ class XcframeworkBuilder(FfiProduct):
             )
         if not receipt["compiler"].startswith("rustc " + self.compiler + " "):
             raise ValueError("Native compiler differs from rust-toolchain.toml")
+        verify_units(
+            receipt.get("cargoBuild"),
+            receipt.get("dependencies"),
+            self.targets,
+            self.package,
+            self.library,
+        )
         if receipt["outputs"] != hashes(files(self.artifact), self.root):
             raise ValueError("Native artifact differs from its receipt")
+        if (
+            type(receipt.get("abiVersion")) is not int
+            or receipt["abiVersion"] != self.abi_versions()[self.symbol_prefix + "abi_version"]
+            or receipt.get("abiProbeArchitecture") not in {"arm64", "x86_64"}
+        ):
+            raise ValueError("Native ABI receipt differs from the public headers")
         framework = self.artifact / "macos-arm64_x86_64" / (self.module + ".framework")
         info = plistlib.loads((framework / "Resources/Info.plist").read_bytes())
         if info["MinimumOSVersion"] != self.minimum_macos:
@@ -344,10 +365,36 @@ class XcframeworkBuilder(FfiProduct):
             subprocess.run(
                 ["codesign", "--verify", "--strict", str(framework)], env=env, check=True
             )
+            self.probe_abi(framework / self.module, env)
         print(
             "Native artifact matches production sources, toolchain, ABI and retained notices: "
             + self.module
         )
+
+    def probe_abi(self, library, env):
+        architecture = abi_probe_architecture()
+        framework_directory = library.parent.parent
+        probe_env = {name: value for name, value in env.items() if not name.startswith("DYLD_")}
+        digest = file_sha256(library)
+        with tempfile.TemporaryDirectory(prefix="sdk-abi-") as temporary:
+            probe = self.compile_abi_probe(
+                Path(temporary) / "probe",
+                compiler=["xcrun", "clang"],
+                libraries=[library],
+                env=probe_env,
+                flags=[
+                    "-arch",
+                    architecture,
+                    "-mmacosx-version-min=" + self.minimum_macos,
+                    "-Xlinker",
+                    "-rpath",
+                    "-Xlinker",
+                    str(framework_directory),
+                ],
+            )
+            self.run_abi_probe(probe, probe_env)
+        if file_sha256(library) != digest:
+            raise ValueError("Native framework changed during the ABI probe")
 
     def build(self, env=None):
         with build_lock(self.root / ".native-build"):
@@ -379,8 +426,9 @@ class XcframeworkBuilder(FfiProduct):
         before_directories = self._build_script_inventory(script_roots)[1]
         previous_outputs = hashes(files(self.root / "Artifacts"), self.root)
         # Let the final library link lay out Mach-O with its installed name.
+        cargo_build = {}
         for target in self.targets:
-            subprocess.run(
+            cargo_build[target] = compile_units(
                 [
                     "cargo",
                     "rustc",
@@ -392,6 +440,7 @@ class XcframeworkBuilder(FfiProduct):
                     target,
                     "--locked",
                     "--offline",
+                    "--message-format=json-render-diagnostics",
                     "--",
                     f"-Clink-arg=-Wl,-install_name,{self._install_name}",
                     "-Clink-arg=-Xlinker",
@@ -399,9 +448,13 @@ class XcframeworkBuilder(FfiProduct):
                     "-Clink-arg=-Xlinker",
                     f"-Clink-arg={self.target_directory.resolve()}/",
                 ],
-                cwd=self.root,
+                graph=graph,
+                target=target,
+                library=self.target_directory
+                / target
+                / "release"
+                / ("lib" + self.library + ".dylib"),
                 env=env,
-                check=True,
             )
         production = self._production_sources(tool_inputs[DEP_INFO_PARSER.as_posix()], env)
         source_inputs, script_directories = self._input_snapshot(
@@ -482,8 +535,6 @@ class XcframeworkBuilder(FfiProduct):
                 output,
                 env=env,
             )
-            header_text = "\n".join(p.read_text() for p in self.headers)
-            abi = re.search(r"#define\s+\w+_ABI_VERSION\s+(\d+)U?\b", header_text)
             record = dict(
                 schema=3,
                 configuration=self.configuration,
@@ -492,8 +543,10 @@ class XcframeworkBuilder(FfiProduct):
                 linkage="dynamic-framework",
                 architectures=["arm64", "x86_64"],
                 exportedSymbols=sorted(self.public_symbols()),
-                abiVersion=int(abi[1]) if abi else None,
+                abiVersion=self.abi_versions()[self.symbol_prefix + "abi_version"],
+                abiProbeArchitecture=abi_probe_architecture(),
                 dependencies=dependencies,
+                cargoBuild=cargo_build,
                 toolInputs=tool_inputs,
                 productionSources=[p.relative_to(self.root).as_posix() for p in production],
                 buildScriptInputRoots=script_roots,

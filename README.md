@@ -77,10 +77,15 @@ mise run check
 `mise install` may download the pinned tools. `mise run check` selects the pinned
 Python and Rust and tests both command paths without pip dependencies or .NET.
 The template sync crate may fetch its locked public Cargo dependencies on first use.
-Set `SDK_TOOLING_TEST_DOTNET=1` to run the clean NuGet consumer tests with a
-prepared .NET 10 SDK. The CI workflow sets it on standard macOS ARM64 and
-Windows x64 runners. See the
-[workflow](.github/workflows/check.yml) for the runtime versions.
+To opt in to the clean NuGet consumer tests, use the .NET SDK pinned in
+[`global.json`](global.json):
+
+```sh
+SDK_TOOLING_TEST_DOTNET=1 MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=dotnet mise run check
+```
+
+The [CI workflow](.github/workflows/check.yml) also runs these tests on standard
+macOS ARM64 and Windows x64 runners.
 
 After changing a workflow's action dependencies, regenerate its
 `actions.lock` with `gh actions-lock` and review the resolved commits.
@@ -98,7 +103,7 @@ Public SDKs run contributor checks in their own repositories. They can call the
 [Windows x64 check step](.github/actions/test-rust-windows/action.yml) at an
 immutable SDK Tooling revision. The Swift matrix runs the SDK's `make test` and
 `make test-consumer` targets on macOS 26 and 27. Windows checks can opt in to
-installing the x64 .NET SDK declared in the SDK's `mise.toml`.
+installing the x64 .NET SDK declared in the SDK's `global.json`.
 
 The shared
 [SDK distribution checks](.github/workflows/check-sdk-distribution.yml) are run
@@ -137,7 +142,7 @@ interpreter. The dispatcher also supplies this runner as `SDK_TOOLING` to Make,
 including Make launched by a mise task. An explicit Make argument can override
 it. Use task-scoped mise tools for release-only dependencies and pin the checksum
 for downloaded assets. On Windows, `python` uses the dispatcher's interpreter
-and `[tools].dotnet` selects the x64 .NET SDK. Commands can use `{tooling}` for
+and `global.json` selects the x64 .NET SDK when present. Commands can use `{tooling}` for
 the pinned tooling checkout or `{temp}` for a temporary directory shared across
 commands.
 
@@ -187,11 +192,11 @@ checksummed source bundle and local Git mirror supplied by its host.
 
 | Scope               | Tools and version authority                                                                                                                                                                                                                                                   |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repository checks   | Each repository's `mise.toml` selects Python, formatters, linters and .NET where applicable. `uv` supplies the PyPI tool backend.                                                                                                                                             |
+| Repository checks   | Each repository's `mise.toml` selects Python, formatters and linters. `global.json` pins the .NET SDK where applicable. `uv` supplies the PyPI tool backend.                                                                                                                  |
 | Rust producers      | `rust-toolchain.toml` selects Rust, rustfmt and Clippy. Install only the standard-library targets needed by the job: both Darwin targets for universal frameworks, the appropriate MSVC target for Windows, or the WebAssembly target for browser bindings.                   |
 | macOS SDKs          | Select full Xcode for Swift, SwiftPM, swift-format, DocC, Clang, `xcodebuild` and Mach-O inspection. Use the macOS signing tools for framework checks. Do not install separate copies of these tools through mise. The pinned C formatter is independent of Xcode's compiler. |
 | Native Windows SDKs | Use target-native Python, Rust, .NET 10 and Visual Studio C++ tools with the Windows SDK. The Windows driver selects the Visual Studio environment and checks the host and target architectures.                                                                              |
-| Optional jobs       | Web bindings, Windows cross compilation and release packaging have separate prerequisites. The explicit cross driver requires `cargo-xwin` and LLVM `clang-cl`; it does not replace native Windows acceptance.                                                                |
+| Optional jobs       | Web bindings and release packaging have separate prerequisites. Windows DLLs are built and exercised on Windows.                                                                                                                                                              |
 
 ## SDK repository layout
 

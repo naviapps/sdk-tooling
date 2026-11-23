@@ -339,31 +339,18 @@ class DistributionTests(unittest.TestCase):
     def test_windows_dotnet_is_optional_and_uses_the_project_pin(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
-            read_pin = DISPATCH["windows_dotnet_version"]
-            self.assertEqual(read_pin(source), "")
-            settings = source / "mise.toml"
-            settings.write_text('[tools]\ndotnet = "10.0.403"\n', encoding="utf-8")
-            self.assertEqual(read_pin(source), "10.0.403")
+            has_pin = DISPATCH["has_dotnet_pin"]
+            self.assertFalse(has_pin(source))
+            settings = source / "global.json"
             settings.write_text(
-                '[tools]\ndotnet = { version = "10.0.403", os = ["macos"] }\n', encoding="utf-8"
+                '{"sdk":{"version":"10.0.403","rollForward":"disable"}}',
+                encoding="utf-8",
             )
-            self.assertEqual(read_pin(source), "")
-            settings.write_text('[tools]\ndotnet = "10.0.x"\n', encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "one exact .NET SDK version"):
-                read_pin(source)
-
-    def test_windows_check_writes_the_shared_dotnet_pin(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            source = Path(temporary)
-            output = source / "github-output"
-            env = dict(os.environ, GITHUB_OUTPUT=str(output))
-            command = [sys.executable, "-I", "-B", str(SCRIPT), "dotnet-version"]
-            missing = subprocess.run(command, cwd=source, env=env, capture_output=True, text=True)
-            self.assertNotEqual(missing.returncode, 0)
-            self.assertIn("exact Windows .NET SDK version", missing.stderr)
-            (source / "mise.toml").write_text('[tools]\ndotnet = "10.0.403"\n', encoding="utf-8")
-            subprocess.run(command, cwd=source, env=env, check=True)
-            self.assertEqual(output.read_text(encoding="utf-8"), "dotnet=10.0.403\n")
+            self.assertTrue(has_pin(source))
+            settings.unlink()
+            settings.mkdir()
+            with self.assertRaisesRegex(ValueError, "ordinary SDK file"):
+                has_pin(source)
 
     def test_sdk_checkout_rejects_off_main_commit(self):
         with tempfile.TemporaryDirectory() as disposable:

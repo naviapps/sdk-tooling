@@ -7,13 +7,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, Mock, patch
 
+from cargo_build_fixtures import FIXTURE_UNIT, fixture_dependencies
+
 from sdk_tooling import binding_checks, c_compiler, workspaces
 from sdk_tooling.artifacts import files, hashes
 from sdk_tooling.windows import (
+    MSVC_TARGETS,
     build_library,
     host_architecture,
     native_environment,
     native_msvc_environment,
+    probe_abi,
     tool_inputs,
     verify_artifact,
 )
@@ -59,7 +63,10 @@ class WindowsToolsTests(unittest.TestCase):
             builder = SimpleNamespace(
                 root=root,
                 compiler="1.99.1",
+                package="fixture-ffi",
+                library="fixture",
                 build_sources=lambda: sources,
+                abi_versions=lambda windows: {"fixture_abi_version": 1},
             )
             destination = root / ".native-build/windows/win-arm64"
             destination.mkdir(parents=True)
@@ -72,9 +79,18 @@ class WindowsToolsTests(unittest.TestCase):
                 inputs=dict(sources),
                 toolInputs=tool_inputs(),
                 outputs=hashes(files(destination), destination),
+                dependencies=fixture_dependencies("aarch64-pc-windows-msvc"),
+                cargoBuild={"aarch64-pc-windows-msvc": [FIXTURE_UNIT]},
+                abiVersions={"fixture_abi_version": 1},
+                abiProbeArchitecture="arm64",
             )
             (destination / "native-build.json").write_text(json.dumps(receipt))
             self.assertEqual(verify_artifact(builder)[0], destination)
+            abi_probe = dict(receipt, abiProbeArchitecture="x64")
+            (destination / "native-build.json").write_text(json.dumps(abi_probe))
+            with self.assertRaisesRegex(ValueError, "ABI receipt"):
+                verify_artifact(builder)
+            (destination / "native-build.json").write_text(json.dumps(receipt))
             sources["runtime.rs"] = "changed source"
             with self.assertRaisesRegex(ValueError, "sources or build contract"):
                 verify_artifact(builder)
@@ -519,30 +535,64 @@ class WindowsPublicationTests(unittest.TestCase):
             ffi=root / "crates/ffi",
             symbol_prefix="fixture_",
             retain_notices=lambda env: None,
+            abi_versions=lambda windows: {"fixture_abi_version": 1},
             build_sources=lambda: {"runtime.rs": "first"},
-            dependencies=lambda env, targets: {"source": "first"},
+            dependencies=lambda env, targets: fixture_dependencies(*targets),
         )
 
-    def compile(self, command, *, cwd, env, check):
-        target = command[command.index("--target") + 1]
+    def test_abi_probe_runs_the_selected_machine_with_the_staged_dll(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        output = root / "win-x64"
+        output.mkdir()
+        library, imports = (output / name for name in ("fixture.dll", "fixture.dll.lib"))
+        library.write_bytes(b"known DLL")
+        imports.write_bytes(b"known import library")
+        builder = Mock()
+
+        def compile_probe(executable, *, libraries, **kwargs):
+            self.assertEqual(libraries[0].read_bytes(), imports.read_bytes())
+            self.assertEqual(libraries[0].parent, executable.parent)
+            self.assertTrue(kwargs["windows"])
+            write_pe(executable, 0x8664)
+            return executable
+
+        builder.compile_abi_probe.side_effect = compile_probe
+
+        def execute(executable, _env):
+            staged = executable.with_name(library.name)
+            self.assertEqual(staged.read_bytes(), library.read_bytes())
+            staged.write_bytes(b"changed after execution")
+
+        builder.run_abi_probe.side_effect = execute
+        with self.assertRaisesRegex(ValueError, "changed during the ABI probe"):
+            probe_abi(builder, library, imports, root / "msvc", {}, "x64")
+        self.assertEqual(library.read_bytes(), b"known DLL")
+        self.assertEqual(list(root.iterdir()), [output])
+
+    def compile(self, command, *, graph, target, library, env):
+        self.assertEqual(command[command.index("--target") + 1], target)
+        self.assertIn("--message-format=json-render-diagnostics", command)
         out = Path(env["CARGO_TARGET_DIR"]) / target / "release"
         out.mkdir(parents=True, exist_ok=True)
+        self.assertEqual(library, out / "fixture.dll")
         (out / "fixture.dll").write_bytes(b"DLL")
         (out / "fixture.dll.lib").write_bytes(b"import library")
         self.assertIn("+crt-static", env["CARGO_ENCODED_RUSTFLAGS"])
+        return [FIXTURE_UNIT]
 
     def build(self, builder, **options):
         with (
-            patch(
-                "sdk_tooling.windows._build_driver",
-                return_value=(["cargo", "build"], {"backend": "fixture"}),
-            ),
+            patch("sdk_tooling.windows.sys.platform", "win32"),
             patch(
                 "sdk_tooling.windows.subprocess.check_output",
                 return_value="rustc 1.99.1 fixture\nhost: aarch64-pc-windows-msvc\n",
             ),
-            patch("sdk_tooling.windows.subprocess.run", side_effect=self.compile),
+            patch("sdk_tooling.windows.CargoDependencies") as dependencies,
+            patch("sdk_tooling.windows.compile_units", side_effect=self.compile),
+            patch("sdk_tooling.windows.probe_abi"),
         ):
+            target = MSVC_TARGETS[options.get("architecture", "arm64")]
+            dependencies.return_value.provenance.return_value = builder.dependencies({}, [target])
             return build_library(
                 builder, {}, inspect=lambda path: {"exports": ["fixture_run"]}, **options
             )
@@ -598,15 +648,14 @@ class WindowsPublicationTests(unittest.TestCase):
                     self.build(builder, stage_extra=stage)
                 self.assertEqual(hashes(files(result), result), original)
 
-    def test_cross_build_is_explicit_and_never_native_acceptance(self):
+    def test_build_requires_a_windows_worker_and_checkout_local_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             builder = self.fixture(Path(temporary).resolve())
-            result = self.build(builder, cross=True)
-            self.assertFalse(
-                json.loads((result / "native-build.json").read_text())["windowsRuntimeTested"]
-            )
-            with self.assertRaisesRegex(ValueError, "portable SDK"):
-                build_library(builder, {}, cross=True)
+            with (
+                patch("sdk_tooling.windows.sys.platform", "darwin"),
+                self.assertRaisesRegex(ValueError, "native Windows worker"),
+            ):
+                build_library(builder, {})
             with self.assertRaisesRegex(ValueError, "native build directory"):
                 self.build(builder, output_root=builder.root / "user-files")
 
@@ -622,7 +671,7 @@ class WindowsPublicationTests(unittest.TestCase):
         arm64 = "aarch64-pc-windows-msvc"
         x64 = "x86_64-pc-windows-msvc"
 
-        def compile(command, *, cwd, env, check):
+        def compile(command, *, graph, target, library, env):
             self.assertEqual(command[:2], ["cargo", "build"])
             self.assertEqual(command[command.index("--target") + 1], x64)
             self.assertEqual(env["RUSTC"], str(rustc))
@@ -630,7 +679,7 @@ class WindowsPublicationTests(unittest.TestCase):
             self.assertEqual(
                 env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"], str(tools / "link.exe")
             )
-            self.compile(command, cwd=cwd, env=env, check=check)
+            return self.compile(command, graph=graph, target=target, library=library, env=env)
 
         for host, compiler_host, target_installed, selected_tools, failure in (
             ("x64", arm64, False, tools, "ARM64"),
@@ -655,8 +704,11 @@ class WindowsPublicationTests(unittest.TestCase):
                     "sdk_tooling.windows.subprocess.check_output",
                     side_effect=[f"rustc 1.99.1 fixture\nhost: {compiler_host}\n", str(std)],
                 ) as probe,
-                patch("sdk_tooling.windows.subprocess.run", side_effect=compile) as run,
+                patch("sdk_tooling.windows.CargoDependencies") as dependencies,
+                patch("sdk_tooling.windows.compile_units", side_effect=compile) as run,
+                patch("sdk_tooling.windows.probe_abi") as abi_probe,
             ):
+                dependencies.return_value.provenance.return_value = fixture_dependencies(x64)
 
                 def build():
                     return build_library(
@@ -689,6 +741,8 @@ class WindowsPublicationTests(unittest.TestCase):
                         receipt["toolchain"], {"backend": "msvc", "host": arm64, "target": x64}
                     )
                     self.assertFalse(receipt["windowsRuntimeTested"])
+                    self.assertEqual(receipt["abiProbeArchitecture"], "x64")
+                    abi_probe.assert_called_once()
 
 
 if __name__ == "__main__":
