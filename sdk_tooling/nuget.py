@@ -535,6 +535,75 @@ _CONSUMER_RESTORE_OVERRIDES = {
     "restoresources",
 }
 
+# The pinned .NET SDK selects the versions. Its toolchain restore has no SDK
+# package references and can obtain only these Windows x64 packs from NuGet.org.
+_NATIVE_AOT_PACKS = (
+    "Microsoft.AspNetCore.App.Runtime.win-x64",
+    "Microsoft.DotNet.ILCompiler",
+    "Microsoft.NET.ILLink.Tasks",
+    "Microsoft.NETCore.App.Host.win-x64",
+    "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64",
+    "Microsoft.NETCore.App.Runtime.win-x64",
+    "runtime.win-x64.Microsoft.DotNet.ILCompiler",
+)
+
+
+def _restore_native_aot_packs(dotnet, work, project, env, runner):
+    toolchain = work / "toolchain"
+    toolchain.mkdir()
+    compiler_project = toolchain / "Toolchain.csproj"
+    # Copy only the generated properties, never the consumer's SDK references.
+    settings = ET.Element("Project", Sdk="Microsoft.NET.Sdk")
+    settings.append(project.find("PropertyGroup"))
+    ET.ElementTree(settings).write(compiler_project, encoding="utf-8", xml_declaration=True)
+    config = ET.Element("configuration")
+    sources = ET.SubElement(config, "packageSources")
+    ET.SubElement(sources, "clear")
+    ET.SubElement(sources, "add", key="nuget.org", value="https://api.nuget.org/v3/index.json")
+    ET.SubElement(ET.SubElement(config, "fallbackPackageFolders"), "clear")
+    mapping = ET.SubElement(
+        ET.SubElement(config, "packageSourceMapping"), "packageSource", key="nuget.org"
+    )
+    for name in _NATIVE_AOT_PACKS:
+        ET.SubElement(mapping, "package", pattern=name)
+    config_path = toolchain / "NuGet.Config"
+    ET.ElementTree(config).write(config_path, encoding="utf-8", xml_declaration=True)
+    cache = toolchain / "packages"
+    dotnet_tools.run_command(
+        [dotnet, "restore", compiler_project, "--configfile", config_path, "--no-http-cache"],
+        cwd=toolchain,
+        env=dict(env, NUGET_PACKAGES=str(cache)),
+        runner=runner,
+    )
+    archives = sorted(cache.glob("*/*/*.nupkg"))
+    names = {name.lower() for name in _NATIVE_AOT_PACKS}
+    if not archives or any(
+        archive.resolve() != archive or archive.parent.parent.name.lower() not in names
+        for archive in archives
+    ):
+        raise ValueError("Native AOT toolchain restored unexpected packages")
+    return archives
+
+
+def _verify_published_native(publish, sdk_packages):
+    libraries = {}
+    for package in sdk_packages:
+        with zipfile.ZipFile(package) as archive:
+            for item in archive.namelist():
+                if not item.startswith("runtimes/win-x64/native/") or not item.endswith(".dll"):
+                    continue
+                name = PurePosixPath(item).name
+                if item != "runtimes/win-x64/native/" + name or name.casefold() in libraries:
+                    raise ValueError("Unexpected Windows native library member: " + item)
+                with archive.open(item) as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                libraries[name.casefold()] = (name, digest)
+    if not libraries or any(
+        not (publish / name).is_file() or file_sha256(publish / name) != digest
+        for name, digest in libraries.values()
+    ):
+        raise ValueError("Published native DLLs differ from the supplied SDK packages")
+
 
 def _verify_restored_packages(work, feed, cache, checksums):
     assets = json.loads((work / "obj/project.assets.json").read_text(encoding="utf-8"))
@@ -590,6 +659,7 @@ def run_isolated_consumer(
     runtime=None,
     properties=None,
     execute=True,
+    native_aot=False,
     runner=None,
 ):
     """Restore SDK-owned C# from only supplied local packages and a fresh cache.
@@ -597,6 +667,8 @@ def run_isolated_consumer(
     Native lookup overrides are caller-selected. Dynamic-library search variables
     are always removed. Package fixtures and runtime/portable policy stay local.
     With execute=False only restore/build run; that is not native acceptance.
+    Native AOT publishes and runs a Windows x64 executable after the same local
+    SDK package checks. The .NET packs are restored separately from NuGet.org.
     """
     packages = [Path(package).resolve(strict=True) for package in packages]
     if len({package.name.casefold() for package in packages}) != len(packages):
@@ -605,6 +677,8 @@ def run_isolated_consumer(
         raise ValueError("Provide local packages and explicit package references")
     if _CONSUMER_RESTORE_OVERRIDES.intersection(key.casefold() for key in (properties or {})):
         raise ValueError("Consumer project properties must use the isolated restore settings")
+    if native_aot and (not execute or runtime != "win-x64"):
+        raise ValueError("Native AOT acceptance requires execution of a win-x64 consumer")
     work_parent = Path(work_parent).resolve()
     work_parent.mkdir(parents=True, exist_ok=True)
     with temporary_workspace(work_parent, prefix="consumer-") as work:
@@ -643,6 +717,8 @@ def run_isolated_consumer(
         }
         if runtime is not None:
             values["RuntimeIdentifier"] = runtime
+        if native_aot:
+            values.update(PublishAot="true", SelfContained="true", UseAppHost="true")
         group = ET.SubElement(project, "PropertyGroup")
         for key, value in values.items():
             ET.SubElement(group, key).text = str(value)
@@ -671,6 +747,13 @@ def run_isolated_consumer(
                     for part in clean[key].split(os.pathsep)
                     if not any(Path(part).resolve().is_relative_to(root) for root in roots)
                 )
+        if native_aot:
+            for pack in _restore_native_aot_packs(dotnet, work, project, clean, runner):
+                destination = feed / pack.name
+                if destination.exists():
+                    raise ValueError("Native AOT toolchain package conflicts with the SDK feed")
+                package_hashes[pack] = file_sha256(pack)
+                shutil.copyfile(pack, destination)
         dotnet_tools.run_command(
             [dotnet, "restore", project_path, "--configfile", config_path],
             cwd=work,
@@ -678,7 +761,19 @@ def run_isolated_consumer(
             runner=runner,
         )
         _verify_restored_packages(work, feed, cache, set(package_hashes.values()))
-        if execute:
+        if native_aot:
+            publish = work / "publish"
+            dotnet_tools.run_command(
+                [dotnet, "publish", project_path, "--no-restore", "-c", "Release", "-o", publish],
+                cwd=work,
+                env=clean,
+                runner=runner,
+            )
+            executable = publish / "Consumer.exe"
+            windows.require_pe_machine(executable, "x64")
+            _verify_published_native(publish, packages)
+            result = dotnet_tools.run_command([executable], cwd=publish, env=clean, runner=runner)
+        elif execute:
             result = dotnet_tools.run_managed(
                 dotnet, project_path, env=clean, cwd=work, no_restore=True, runner=runner
             )

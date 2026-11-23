@@ -608,6 +608,89 @@ class NuGetTests(unittest.TestCase):
                 runner=changed,
             )
 
+    def test_native_aot_uses_a_separate_toolchain_restore_and_runs_the_verified_executable(self):
+        member = "runtimes/win-x64/native/sdk.dll"
+        package = self.package({member: b"verified native bytes"})
+        toolchain_id = "Microsoft.DotNet.ILCompiler"
+
+        def commands(argv, **options):
+            self.run_command(argv, **options)
+            work = Path(options["cwd"])
+            if argv[1:2] == ["restore"] and work.name == "toolchain":
+                project = ET.parse(work / "Toolchain.csproj")
+                self.assertEqual(project.findtext(".//PublishAot"), "true")
+                self.assertEqual(project.findall(".//PackageReference"), [])
+                config = ET.parse(work / "NuGet.Config")
+                self.assertEqual(
+                    [entry.get("value") for entry in config.findall("./packageSources/add")],
+                    ["https://api.nuget.org/v3/index.json"],
+                )
+                names = {
+                    item.get("pattern")
+                    for item in config.findall("./packageSourceMapping/packageSource/package")
+                }
+                self.assertIn(toolchain_id, names)
+                self.assertNotIn("Example", names)
+                self.assertFalse(any("*" in name for name in names))
+                cache = Path(options["env"]["NUGET_PACKAGES"])
+                self.assertEqual(cache, work / "packages")
+                name = toolchain_id.lower()
+                archive = cache / name / "10.0.14" / f"{name}.10.0.14.nupkg"
+                archive.parent.mkdir(parents=True)
+                archive.write_bytes(b"compiler archive")
+            elif argv[1:2] == ["restore"]:
+                project = ET.parse(work / "Consumer.csproj")
+                self.assertEqual(project.findtext(".//PublishAot"), "true")
+                self.assertEqual(project.find(".//PackageReference").get("Include"), "Example")
+                config = ET.parse(work / "NuGet.Config")
+                self.assertEqual(len(config.findall("./packageSources/add")), 1)
+                self.assertEqual(
+                    config.find("./packageSources/add").get("value"), str(work / "feed")
+                )
+            elif argv[1:2] == ["publish"]:
+                self.assertIn("--no-restore", argv)
+                publish = Path(argv[-1])
+                publish.mkdir()
+                (publish / "sdk.dll").write_bytes(b"verified native bytes")
+                (publish / "Consumer.exe").write_bytes(b"native executable")
+            else:
+                self.assertEqual(argv, [str(work / "Consumer.exe")])
+                self.assertEqual(work.name, "publish")
+            return subprocess.CompletedProcess(argv, 0)
+
+        arguments = dict(
+            packages=[package],
+            references={"Example": "1.0.0"},
+            source="// fixture",
+            work_parent=self.root / "output",
+            env=self.env,
+            runtime="win-x64",
+            native_aot=True,
+            runner=commands,
+        )
+        with mock.patch.object(nuget.windows, "require_pe_machine") as require_machine:
+            result = nuget.run_isolated_consumer("dotnet", **arguments)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            [call[0][1:2] for call in self.calls], [["restore"], ["restore"], ["publish"], []]
+        )
+        require_machine.assert_called_once_with(Path(self.calls[-1][0][0]), "x64")
+        self.assertFalse(list(arguments["work_parent"].iterdir()))
+
+        def replace_staged_dll(argv, **options):
+            result = commands(argv, **options)
+            if argv[1:2] == ["publish"]:
+                (Path(argv[-1]) / "sdk.dll").write_bytes(b"different native bytes")
+            return result
+
+        self.calls.clear()
+        with (
+            mock.patch.object(nuget.windows, "require_pe_machine"),
+            self.assertRaisesRegex(ValueError, "Published native DLLs differ"),
+        ):
+            nuget.run_isolated_consumer("dotnet", **(arguments | {"runner": replace_staged_dll}))
+        self.assertEqual([call[0][1] for call in self.calls], ["restore", "restore", "publish"])
+
 
 @unittest.skipUnless(
     os.environ.get("SDK_TOOLING_TEST_DOTNET") == "1", "Requires the prepared .NET SDK"
