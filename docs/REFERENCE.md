@@ -462,6 +462,10 @@ workflow to run Markdown formatting and local link checks for documentation-only
 changes. Set `package-documentation` for Markdown that is read by a package
 build. Source changes, manual runs and an unavailable diff use the full checks.
 
+Run the relevant checks locally while iterating. For shared changes, verify the
+affected SDKs with the updated Tooling checkout before pushing the related
+commits together. Use distribution checks for changes to packaging or installation.
+
 The [Swift matrix](../.github/workflows/check-swift.yml) and
 [Windows x64 check step](../.github/actions/test-rust-windows/action.yml) can be
 called at a fixed tooling revision. The matrix runs `make test` and `make test-consumer` on
