@@ -216,6 +216,46 @@ class QualityTests(unittest.TestCase):
             )
         find.assert_not_called()
 
+    @unittest.skipIf(os.name == "nt", "C formatting does not run on Windows")
+    def test_c_source_requires_a_root_style_file(self):
+        self.write("Artifacts/generated.h")
+        self.write("vendor/third-party.c")
+        with patch.object(quality, "tool") as tool, patch.object(quality, "run") as run:
+            self.assertEqual(quality.check(self.root, languages=["c"]), 0)
+            self.write("fixtures/abi/check.c")
+            self.write("fixtures/abi/.clang-format", "BasedOnStyle: LLVM\n")
+            with self.assertRaisesRegex(RuntimeError, r"C formatting requires.*\.clang-format"):
+                quality.check(self.root, languages=["c"])
+            tool.assert_not_called()
+            run.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "C formatting does not run on Windows")
+    def test_c_check_and_format_explicitly_use_the_root_style(self):
+        style = self.write(".clang-format", "BasedOnStyle: LLVM\n")
+        self.write("fixtures/abi/check.c")
+        self.write("fixtures/abi/check.h")
+        self.write("fixtures/abi/.clang-format", "BasedOnStyle: GNU\n")
+        self.write("Artifacts/generated.h")
+        self.write("vendor/third-party.c")
+        for write in (False, True):
+            with (
+                self.subTest(write=write),
+                patch.object(quality, "tool", return_value="clang-format") as tool,
+                patch.object(quality, "run") as run,
+            ):
+                quality.check(self.root, write=write, languages=["c"])
+                tool.assert_called_once_with(self.root, "clang-format", "pypi:clang-format")
+                run.assert_called_once_with(
+                    self.root,
+                    [
+                        "clang-format",
+                        f"--style=file:{style}",
+                        *(["-i"] if write else ["--dry-run", "--Werror"]),
+                        "./fixtures/abi/check.c",
+                        "./fixtures/abi/check.h",
+                    ],
+                )
+
     @unittest.skipIf(os.name == "nt", "Shell files are not checked on Windows")
     def test_shell_source_requires_a_pinned_formatter(self):
         self.write("mise.toml", "[tools]\n")

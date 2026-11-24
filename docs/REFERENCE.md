@@ -83,9 +83,10 @@ all configurations or external callers are covered.
 
 #### C, shell and workflows
 
-C uses clang-format. On macOS and Linux, dprint formats owned `.sh` files with a
+On macOS and Linux, clang-format checks first-party `.c` and `.h` files using the
+repository's required root `.clang-format`. Shell formatting uses dprint with a
 checksummed shfmt Wasm plugin. Bash syntax checks and ShellCheck validate the same
-files.
+scripts.
 
 Jactionlint checks selected workflows and composite actions with its correctness
 profile. It runs ShellCheck for inline shell and Ruff's `F` rules for inline

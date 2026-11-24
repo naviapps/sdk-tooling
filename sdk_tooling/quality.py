@@ -209,10 +209,14 @@ def check(root, *, write=False, languages=None, dotnet=False):
                 run(root, ["bash", "-n", path])
             run(root, [tool(root, "shellcheck"), *paths])
     if "c" in chosen and (paths := by_suffix(".c", ".h")) and os.name != "nt":
+        style = root / ".clang-format"
+        if style.is_symlink() or not style.is_file():
+            raise RuntimeError(f"C formatting requires an ordinary style file at {style}")
         run(
             root,
             [
                 tool(root, "clang-format", "pypi:clang-format"),
+                f"--style=file:{style}",
                 *(["-i"] if write else ["--dry-run", "--Werror"]),
                 *paths,
             ],
