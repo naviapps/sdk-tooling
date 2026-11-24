@@ -82,33 +82,30 @@ fn immutable_revision(revision: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn editorconfig_headers(config: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
+    let mut offset = 0;
+    config
+        .split_inclusive(|&byte| byte == b'\n')
+        .filter_map(move |line| {
+            let start = offset;
+            offset += line.len();
+            let header = line.trim_ascii();
+            (header.starts_with(b"[") && header.ends_with(b"]")).then_some((start, header))
+        })
+}
+
 fn editorconfig(template: &[u8], current: &[u8]) -> Vec<u8> {
-    let headers: Vec<&[u8]> = template
-        .split(|&byte| byte == b'\n')
-        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
-        .filter(|line| line.starts_with(b"[") && line.ends_with(b"]"))
+    let headers: Vec<_> = editorconfig_headers(template)
+        .map(|(_, header)| header)
         .collect();
-    let sections = current
-        .windows(2)
-        .enumerate()
-        .filter(|&(_, window)| window == b"\n[")
-        .map(|(index, _)| index + 1);
-    let mut starts = std::iter::once(0)
-        .chain(sections)
-        .chain(std::iter::once(current.len()))
-        .peekable();
+    let mut sections = editorconfig_headers(current).peekable();
     let mut desired = template.to_vec();
-    while let Some(start) = starts.next() {
-        let Some(&end) = starts.peek() else { break };
-        let section = &current[start..end];
-        let header = section
-            .split(|&byte| matches!(byte, b'\r' | b'\n'))
-            .next()
-            .unwrap_or_default();
-        if header.starts_with(b"[") && !headers.contains(&header) {
+    while let Some((start, header)) = sections.next() {
+        if !headers.contains(&header) {
+            let end = sections.peek().map_or(current.len(), |(offset, _)| *offset);
             desired.truncate(desired.trim_ascii_end().len());
             desired.extend_from_slice(b"\n\n");
-            desired.extend_from_slice(section.trim_ascii_end());
+            desired.extend_from_slice(current[start..end].trim_ascii_end());
             desired.push(b'\n');
         }
     }

@@ -247,6 +247,30 @@ fn adopted_editorconfig_keeps_local_sections() {
 }
 
 #[test]
+fn editorconfig_check_detects_managed_headers_with_surrounding_whitespace() {
+    let root = temporary_sdk();
+    let path = root.path();
+    let editorconfig = path.join(".editorconfig");
+    let expected = [
+        include_bytes!("../templates/.editorconfig").as_slice(),
+        b"\n[fixtures/*.cs]  \nindent_size = 4\n",
+    ]
+    .concat();
+
+    for header in [b"[*]  \n".as_slice(), b"  [*]\r\n"] {
+        let previous = [expected.as_slice(), b"\n", header, b"indent_size = 8\n"].concat();
+        fs::write(&editorconfig, &previous).unwrap();
+
+        fails(sync(&[path], &["--check"]), ".editorconfig");
+        assert_eq!(fs::read(&editorconfig).unwrap(), previous);
+
+        succeeds(sync(&[path], &["--revision", REVISION]));
+        assert_eq!(fs::read(&editorconfig).unwrap(), expected);
+        succeeds(sync(&[path], &["--check"]));
+    }
+}
+
+#[test]
 fn a_pending_file_preserves_the_current_pin_and_another_publishers_bytes() {
     let root = temporary_sdk();
     let path = root.path();
