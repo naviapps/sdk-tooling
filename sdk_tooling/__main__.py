@@ -34,7 +34,15 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    from . import binding_checks, clean, quality, sdk_checks, windows_bindings, xcframework_archive
+    from . import (
+        binding_checks,
+        c_headers,
+        clean,
+        quality,
+        sdk_checks,
+        windows_bindings,
+        xcframework_archive,
+    )
 
     command = commands.add_parser(
         "quality", help="Check or format first-party source without building the product"
@@ -58,6 +66,7 @@ def main(argv=None):
     command.add_argument("--revision", help="Exact SDK commit; defaults to HEAD")
     command.add_argument("--producer", type=Path, help="Pinned SDK Tooling producer checkout")
     command.set_defaults(handler=xcframework_archive.archive_command)
+    c_headers.add_command(commands)
     sdk_checks.add_commands(commands)
     binding_checks.add_commands(commands)
     windows_bindings.add_command(commands)

@@ -247,6 +247,35 @@ parent paths or symlinked ancestors.
 
 See [recover previous artifacts](#recover-previous-artifacts) if rollback fails.
 
+### Generated C headers and module maps
+
+Pin `cargo:cbindgen` in the SDK's `mise.toml` and declare the Swift module in the
+FFI crate's `Cargo.toml`:
+
+```toml
+[package.metadata.c-bindings]
+module = "CExample"
+```
+
+Run `mise run sdk-tooling -- c-headers generate` from the SDK checkout after
+editing Rust declarations. Use `c-headers check` to regenerate in memory and
+compare against the checked-in header and module map. Add `--product ID` to
+select one product from `native.toml`.
+
+The command uses the FFI crate's `cbindgen.toml` and `src/lib.rs`. For a
+configuration with `parse_deps = true` under `[parse]`, it selects the named
+Cargo crate using locked dependency metadata. A product with
+`symbol_prefix = "example_"` produces
+`include/example.h`. A separate `cbindgen-windows.toml` processes
+`src/windows.rs` into `include/windows/example_windows.h`. The C module map
+references the portable header. Set `umbrella = false` to emit a direct header
+declaration.
+
+Keep ABI versions, types and safety contracts with the Rust exports. Commit the
+generated files with their inputs so a fresh checkout has the same declarations
+used by native archive production and consumer fixtures. SwiftPM continues to
+load the bundled XCFramework.
+
 ### Production source receipts
 
 The macOS and Windows producers record Cargo `compiler-artifact` messages in
