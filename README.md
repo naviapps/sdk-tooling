@@ -7,8 +7,10 @@ distributed artifacts directly.
 
 ## Documentation
 
-The [reference](docs/REFERENCE.md) covers static checks, SDK policy synchronization,
-native artifacts, distribution and consumer verification.
+- [Check source and synchronize SDK policy](docs/REFERENCE.md#quality-checks)
+- [Configure distribution and find its artifacts](docs/REFERENCE.md#hosted-distribution)
+- [Verify installed SwiftPM, NuGet, Rust and C consumers](docs/REFERENCE.md#consumer-verification)
+- [Recover artifacts after a failed replacement](docs/REFERENCE.md#recover-previous-artifacts)
 
 ## Use a pinned revision
 
@@ -120,8 +122,9 @@ Keep each language's build conventions and place tests with their owning interfa
   `src`, `tests`, `examples` and `benches`; C ABI callers live in the FFI package's
   `tests/c` directory.
 - `bindings/dotnet/src/<Project>` and `bindings/dotnet/tests/<Project>` contain
-  managed implementations and their tests. User-facing examples belong in
-  `bindings/dotnet/examples`.
+  managed implementations and their tests. Document API details in C# XML
+  comments. Use the .NET guide for package installation and runnable examples.
+  A guide included in NuGet should link to repository resources by absolute URL.
 - Optional `bindings/web` contains the independent browser adapter and its tests.
 - `fixtures/consumers/<language>` contains independent package and public interface
   consumers. The verification driver can generate a .NET project from the

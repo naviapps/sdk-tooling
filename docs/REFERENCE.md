@@ -244,9 +244,7 @@ may be declared in the FFI manifest or inherited from the workspace. Registry an
 Rust-runtime retention accept the same optional notice directory and reject
 parent paths or symlinked ancestors.
 
-If artifact publication cannot restore the previous directory, the error identifies
-the retained previous artifacts beside the destination. Inspect and recover that
-tree after resolving the filesystem error before removing the rollback directory.
+See [recover previous artifacts](#recover-previous-artifacts) if rollback fails.
 
 ### Production source receipts
 
@@ -341,16 +339,13 @@ their PE machine matches the worker architecture. Multi-library SDKs select sepa
 `output_root` paths under their `.native-build` directory. The lock remains per checkout. SDK callbacks
 supply source-policy fingerprints, portable PE/import inspection and extra package
 layout. Shared code checks compiler pins, static CRT flags, source/dependency drift,
-owned output membership and transactional publication. If a failed publication
-cannot restore the previous artifacts, the error identifies a retained rollback
-directory beside the destination. The failed build's staging cleanup does not
-remove it. After resolving the filesystem error, inspect and recover that tree
-before removing the rollback directory. Receipts use
+owned output membership and transactional publication. Receipts use
 `native-build.json` and record the backend. Windows runtime acceptance is a
 separate check. `verify_artifact` always rechecks retained bytes and
 source/tool policy; the caller supplies `inspect` for PE inspection and
 `environment` for dependency-source verification. It never executes Windows code.
-SDKs still own native input/rendering fixtures.
+SDKs still own native input/rendering fixtures. See
+[recover previous artifacts](#recover-previous-artifacts) if rollback fails.
 
 SDKs with one native Windows x64 product can use
 `windows_delivery.X64Acceptance` for the host toolchain, locked Rust checks,
@@ -405,11 +400,20 @@ of each delivered member, and the package audit checks those delivered bytes.
 When one SDK builds multiple Windows products, its packer can select the
 product's accepted output directory with `windows_output_root` and the exact
 verified inventory with `windows_source_inputs`.
-The package and its JSON receipt are staged before replacement; a failed
-replacement restores both previous files. If restoration itself fails, the error
-identifies a retained rollback directory beside the package. Preserve that directory
-until both accepted files have been recovered.
+The packer stages the package and its JSON receipt before replacing the accepted pair.
 See [consumer verification](#consumer-verification) for independent package and runtime checks.
+
+### Recover previous artifacts
+
+An unsuccessful replacement restores the previous accepted outputs. If rollback
+also fails, the error identifies a retained rollback directory beside the
+destination. The build's temporary staging cleanup preserves that directory.
+
+Stop publishers for the affected output and resolve the reported filesystem
+error. Recover a native output directory together with its build receipt, or a
+NuGet package with its matching `.nupkg.json` receipt. Verify the recovered
+outputs against the SDK revision that produced them. For NuGet, check the archive
+digest against its receipt. Remove the rollback directory after verification.
 
 ## Consumer verification
 
