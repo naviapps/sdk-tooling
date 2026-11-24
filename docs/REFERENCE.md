@@ -392,6 +392,11 @@ SDKs with one native Windows x64 product can use
 receipt-verified DLL staging and C fixture execution. The SDK selects its
 fixtures, managed build properties and package acceptance rules.
 
+When an SDK builds a native package for a pinned dependency, use
+`adapters.pinned_tooling(dependency, checkout)` to load the build modules
+from that dependency's declared Tooling commit. Use the same revision to
+verify its receipt, including when building and packaging on different hosts.
+
 Windows receipts use schema 2; macOS framework receipts use schema 3.
 
 On [Windows on Arm](../README.md#windows-on-arm), select ARM64-hosted MSVC

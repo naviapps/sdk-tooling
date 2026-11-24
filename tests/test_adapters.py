@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sdk_tooling import adapters
 from sdk_tooling.consumers import nuget
@@ -18,6 +19,67 @@ class AdapterTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "Invalid SDK Tooling module"),
             ):
                 adapters.load(name)
+
+    def test_dependency_tooling_loads_the_exact_pin_in_a_separate_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            upstream = root / "upstream"
+            checkout = root / "checkout"
+            adapters.git(None, "init", "--quiet", upstream)
+            package = upstream / "sdk_tooling"
+            package.mkdir()
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "ffi.py").write_text("identity = 'pinned'\n", encoding="utf-8")
+            (package / "windows.py").write_text("from . import ffi\n", encoding="utf-8")
+            self._commit(upstream)
+            revision = adapters.git(upstream, "rev-parse", "HEAD").decode().strip()
+            (package / "ffi.py").write_text("identity = 'latest'\n", encoding="utf-8")
+            self._commit(upstream)
+            url = "https://github.com/naviapps/sdk-tooling.git"
+            manifest = root / "mise.toml"
+            manifest.write_text(
+                f'[tasks.sdk-tooling]\nrun = "uvx --from git+{url}@{revision} sdk-tooling"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                GIT_CONFIG_COUNT="1",
+                GIT_CONFIG_KEY_0=f"url.{upstream.resolve().as_uri()}.insteadOf",
+                GIT_CONFIG_VALUE_0=url,
+            ):
+                selected = adapters.pinned_tooling(root, checkout)
+
+            self.assertEqual(selected("windows").ffi.identity, "pinned")
+            self.assertIs(selected("ffi"), selected("windows").ffi)
+            self.assertIsNot(selected("ffi"), adapters.load("ffi"))
+            self.assertEqual(
+                Path(selected("ffi").__file__).resolve().parents[1], checkout.resolve()
+            )
+
+            manifest.write_text(
+                f'[tasks.sdk-tooling]\nrun = "uvx --from git+{url}@main sdk-tooling"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "full Git SHA"):
+                adapters.pinned_tooling(root, root / "unpinned")
+            self.assertFalse((root / "unpinned").exists())
+
+    @staticmethod
+    def _commit(root):
+        adapters.git(root, "add", "--all")
+        adapters.git(
+            root,
+            "-c",
+            "user.name=SDK Test",
+            "-c",
+            "user.email=sdk@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "Fixture",
+        )
 
     def test_script_and_module_use_the_selected_tooling_with_isolated_python(self):
         with tempfile.TemporaryDirectory(prefix="SDK fixture ") as directory:
