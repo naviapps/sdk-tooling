@@ -199,9 +199,9 @@ dependency package filenames separated by LF. Keep those packages and their
 `osx-x64` and `win-x64`.
 
 The workflow checks the same package set on macOS ARM64, Rosetta x64 and
-Windows x64. Add `--field windows-on-arm=true` to check the x64 set on
-Windows ARM64. A downloaded combined artifact has its primary package at the
-root and dependencies under `dependencies/`. Place them in one local feed.
+Windows x64, with optional [Windows on Arm coverage](../README.md#windows-on-arm).
+A downloaded combined artifact has its primary package at the root and
+dependencies under `dependencies/`. Place them in one local feed.
 When the Windows plan exports a separate adapter under `sdk-nuget-companions`,
 use the adapter and combined core from the same successful run. The
 [package consumer](#installed-nuget-consumers) verifies the supplied archives
@@ -354,7 +354,8 @@ fixtures, managed build properties and package acceptance rules.
 
 Windows receipts use schema 2; macOS framework receipts use schema 3.
 
-Tooling can select x64 with ARM64-hosted MSVC through
+On [Windows on Arm](../README.md#windows-on-arm), select ARM64-hosted MSVC
+for the x64 target through
 `windows.native_msvc_environment("arm64", target_architecture="x64")`. The
 helper selects the matching Visual Studio components and checks that the
 compiler and linker are ARM64 executables from `HostARM64/x64`. It verifies the

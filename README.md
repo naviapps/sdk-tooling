@@ -9,6 +9,7 @@ distributed artifacts directly.
 
 - [Check source and synchronize SDK policy](docs/REFERENCE.md#quality-checks)
 - [Configure distribution and find its artifacts](docs/REFERENCE.md#hosted-distribution)
+- [Build and verify SDK packages on Windows on Arm](#windows-on-arm)
 - [Verify installed SwiftPM, NuGet, Rust and C consumers](docs/REFERENCE.md#consumer-verification)
 - [Recover artifacts after a failed replacement](docs/REFERENCE.md#recover-previous-artifacts)
 
@@ -109,8 +110,23 @@ checksummed source bundle and local Git mirror supplied by its host.
 | Repository checks   | Each repository's `mise.toml` selects Python, formatters and linters. `global.json` pins the .NET SDK where applicable. `uv` supplies the PyPI tool backend.                                                                                                            |
 | Rust producers      | `rust-toolchain.toml` selects Rust, rustfmt and Clippy. Install only the standard-library targets needed by the job: both Darwin targets for universal frameworks, the appropriate MSVC target for Windows, or the WebAssembly target for browser bindings.             |
 | macOS SDKs          | Select full Xcode for Swift, SwiftPM, swift-format, Clang, `xcodebuild` and Mach-O inspection. Use the macOS signing tools for framework checks. Do not install separate copies of these tools through mise. The pinned C formatter is independent of Xcode's compiler. |
-| Native Windows SDKs | Use target-native Python, Rust, .NET 10 and Visual Studio C++ tools with the Windows SDK. The Windows driver selects the Visual Studio environment and checks the host and target architectures.                                                                        |
+| Native Windows SDKs | Use Python and Rust for the host architecture, Visual Studio C++ tools with the Windows SDK, and the x64 .NET SDK pinned in `global.json` for x64 SDKs.                                                                                                                 |
 | Optional jobs       | Web bindings and release packaging have separate prerequisites. Windows DLLs are built and exercised on Windows.                                                                                                                                                        |
+
+### Windows on Arm
+
+For a local x64 build on Windows 11 ARM64, use ARM64 Python and Rust, install
+the Rust target `x86_64-pc-windows-msvc`, and select Visual Studio C++
+components for both ARM64 and x64 so the driver can use `HostARM64/x64`.
+Set `DOTNET_BIN` to the absolute path of the x64 .NET SDK executable.
+The driver builds x64 binaries and runs x64 managed consumers under emulation.
+Use the SDK's documented Windows driver. See
+[Windows builds and inspection](docs/REFERENCE.md#windows-builds-and-inspection)
+for the shared requirements.
+
+For a combined NuGet package in hosted CI, add `--field windows-on-arm=true`
+to the [distribution command](#sdk-distribution) to test the same `win-x64`
+package on a Windows ARM64 runner.
 
 ## SDK repository layout
 
