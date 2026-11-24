@@ -1,0 +1,114 @@
+name: Select SDK checks
+on:
+  workflow_call:
+    inputs:
+      package-documentation:
+        description: Markdown path consumed by a package build.
+        type: string
+        default: ""
+    outputs:
+      documentation-only:
+        value: ${{ jobs.plan.outputs.documentation-only }}
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Select checks
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    outputs:
+      documentation-only: ${{ steps.changes.outputs.documentation-only }}
+    steps:
+      - name: Classify the exact source diff
+        id: changes
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+          PACKAGE_DOCUMENTATION: ${{ inputs.package-documentation }}
+        run: |
+          python3 -I - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          event_name = os.environ["GITHUB_EVENT_NAME"]
+          head = os.environ["GITHUB_SHA"]
+          base = ""
+          if event_name == "push" and not any(
+              event.get(flag) for flag in ("created", "deleted", "forced")
+          ):
+              base = event.get("before", "")
+          elif event_name == "pull_request":
+              base = event.get("pull_request", {}).get("base", {}).get("sha", "")
+
+          def documentation_only():
+              if any(
+                  not isinstance(revision, str)
+                  or not re.fullmatch(r"[a-f0-9]{40}", revision)
+                  or revision == "0" * 40
+                  for revision in (base, head)
+              ):
+                  return False
+              url = os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + ".git"
+              with tempfile.TemporaryDirectory() as work:
+                  git = ["git", "-C", work]
+                  subprocess.run([*git, "init", "--bare", "--quiet"], check=True)
+                  subprocess.run(
+                      [*git, "fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", url, base, head],
+                      check=True,
+                      timeout=45,
+                  )
+                  changes = subprocess.check_output(
+                      [*git, "diff", "--raw", "-z", "--no-renames", base, head, "--"],
+                      timeout=15,
+                  )
+              if not changes:
+                  return False
+              records = iter(changes.rstrip(b"\0").split(b"\0"))
+              package_documentation = os.environ["PACKAGE_DOCUMENTATION"].encode()
+              for record, path in zip(records, records, strict=True):
+                  if path == package_documentation or not (
+                      path in (b"README.md", b"AGENTS.md")
+                      or (path.startswith(b"docs/") and path.endswith(b".md"))
+                  ):
+                      return False
+                  if any(mode not in (b"000000", b"100644") for mode in record[1:].split()[:2]):
+                      return False
+              return True
+
+          try:
+              docs = documentation_only()
+          except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+              print("Could not read the source diff; running full checks.")
+              docs = False
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              print(f"documentation-only={str(docs).lower()}", file=output)
+          PY
+      - uses: actions/checkout@v6.1.0
+        if: steps.changes.outputs.documentation-only == 'true'
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v5.3.0
+        if: steps.changes.outputs.documentation-only == 'true'
+        with:
+          version: "2026.11.12"
+          cache: false
+          install_args: dprint
+          add_shims_to_path: false
+          export_path: false
+          env: false
+      - name: Check Markdown formatting
+        if: steps.changes.outputs.documentation-only == 'true'
+        run: |
+          git ls-files -z -- README.md AGENTS.md ':(glob)docs/**/*.md' |
+            xargs -0 -r mise exec dprint -- dprint check --config .dprint.json --
+      - uses: lycheeverse/lychee-action@v2.9.0
+        if: steps.changes.outputs.documentation-only == 'true'
+        with:
+          args: "--offline --include-fragments --no-progress './*.md' './docs/**/*.md'"
+          failIfEmpty: false

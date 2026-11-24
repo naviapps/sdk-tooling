@@ -10,7 +10,11 @@ concurrency:
   group: sdk-tooling-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  plan:
+    uses: ./.github/workflows/plan-checks.yml
   check:
+    needs: plan
+    if: needs.plan.outputs.documentation-only != 'true'
     strategy:
       fail-fast: false
       matrix:

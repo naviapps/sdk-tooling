@@ -53,7 +53,9 @@ jobs:
         uses: jdx/mise-action@v5.3.0
         with:
           version: "2026.11.12"
-          cache: false
+          cache: ${{ matrix.macos == inputs.source-macos }}
+          cache_save: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache_key: "{{default}}-${{ matrix.macos }}-${{ matrix.xcode }}-${{ hashFiles('rust-toolchain.toml', 'global.json') }}"
           install_args: ${{ matrix.macos != inputs.source-macos && 'uv python' || '' }}
           add_shims_to_path: false
       - name: Test standalone Swift consumer

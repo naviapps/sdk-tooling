@@ -457,9 +457,14 @@ with `sdk-tooling python SCRIPT` or modules with `sdk-tooling python -m MODULE`.
 
 ### Contributor workflows
 
-SDKs can use the [Swift matrix](../.github/workflows/check-swift.yml) and the
-[Windows x64 check step](../.github/actions/test-rust-windows/action.yml) at a
-fixed tooling revision. The matrix runs `make test` and `make test-consumer` on
+SDKs can call [check selection](../.github/workflows/plan-checks.yml) once per
+workflow to run Markdown formatting and local link checks for documentation-only
+changes. Set `package-documentation` for Markdown that is read by a package
+build. Source changes, manual runs and an unavailable diff use the full checks.
+
+The [Swift matrix](../.github/workflows/check-swift.yml) and
+[Windows x64 check step](../.github/actions/test-rust-windows/action.yml) can be
+called at a fixed tooling revision. The matrix runs `make test` and `make test-consumer` on
 macOS 26 and 27, with `make check-source` on macOS 27 by default. Select
 `source-macos` to change the source check's OS or `source-target` to select its
 Make target. The Windows check can install the pinned x64 .NET SDK and accepts

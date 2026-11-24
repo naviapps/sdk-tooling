@@ -23,6 +23,10 @@ workflows:
         - 'actions/setup-dotnet@v6.1.0'
         - 'actions/setup-python@v7.1.0'
         - 'jdx/mise-action@v5.3.0'
+    '.github/workflows/plan-checks.yml':
+        - 'actions/checkout@v6.1.0'
+        - 'jdx/mise-action@v5.3.0'
+        - 'lycheeverse/lychee-action@v2.9.0'
 dependencies:
     'actions/checkout@v6.1.0':
         ref: 'v6.1.0'
@@ -54,3 +58,8 @@ dependencies:
         commit: 'sha1-924e7c586e33d7d4bae9c14e26c5d22e2beb6e78'
         owner_id: 216188
         repo_id: 738284564
+    'lycheeverse/lychee-action@v2.9.0':
+        ref: 'v2.9.0'
+        commit: 'sha1-e7477775783ea5526144ba13e8db5eec57747ce8'
+        owner_id: 74027027
+        repo_id: 320929718
