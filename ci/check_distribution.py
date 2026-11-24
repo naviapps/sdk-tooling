@@ -149,6 +149,30 @@ def has_dotnet_pin(source):
     return True
 
 
+def windows_cbindgen_pin(source):
+    tools = mise_configuration(source).get("tools", {})
+    pin = tools.get("cargo:cbindgen") if isinstance(tools, dict) else None
+    version = pin.get("version") if isinstance(pin, dict) else pin
+    if isinstance(version, str) and re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version
+    ):
+        return version
+    return ""
+
+
+def windows_rust_pin(source):
+    if not (source / "rust-toolchain.toml").exists():
+        return ""
+    manifest = tomllib.loads(read_regular(source, "rust-toolchain.toml").decode("utf-8"))
+    toolchain = manifest.get("toolchain")
+    channel = toolchain.get("channel") if isinstance(toolchain, dict) else None
+    return (
+        channel
+        if isinstance(channel, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", channel)
+        else ""
+    )
+
+
 def clean_text(value):
     return (
         isinstance(value, str)
@@ -205,6 +229,9 @@ def workflow_plan(source, plan, pin, *, windows_on_arm=False):
     combined = "nuget" in plan
     if windows_on_arm and not combined:
         raise ValueError("Windows on Arm requires a combined NuGet distribution plan")
+    hosted_windows = any(
+        command[:2] == ["sdk-tooling", "windows"] for command in plan.get("windows", ())
+    )
     return {
         "revision": pin,
         "platforms": json.dumps(
@@ -213,6 +240,8 @@ def workflow_plan(source, plan, pin, *, windows_on_arm=False):
         "dotnet": str("windows" in plan and has_dotnet_pin(source)).lower(),
         "xcframeworks": str("macos" in plan and builds_xcframeworks(source, "macos")).lower(),
         "nuget": str(combined).lower(),
+        "windows-cbindgen": windows_cbindgen_pin(source) if hosted_windows else "",
+        "windows-rust": windows_rust_pin(source) if hosted_windows else "",
     }
 
 

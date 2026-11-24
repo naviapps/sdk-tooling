@@ -5,9 +5,10 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
-from . import c_headers, vm_environment
+from . import c_headers, vm_environment, windows
 from .adapters import python_command
 from .quality import tool_pins
 from .workspaces import temporary_workspace
@@ -21,6 +22,73 @@ def _cbindgen_pin(root):
     ):
         raise ValueError("Pin the exact cargo:cbindgen version in SDK mise.toml")
     return version
+
+
+def _install_cbindgen(tools, version, *, cwd, env, cargo=("cargo",), target=()):
+    subprocess.run(
+        [
+            *cargo,
+            "install",
+            "--locked",
+            "--version",
+            f"={version}",
+            "--root",
+            tools,
+            *target,
+            "cbindgen",
+        ],
+        cwd=cwd,
+        env=env,
+        check=True,
+    )
+
+
+def _cached_cbindgen(temp, version):
+    executable = temp / "sdk-cbindgen" / version / "bin/cbindgen.exe"
+    if executable.resolve() != executable:
+        raise ValueError("Use an ordinary cached cbindgen executable path")
+    return executable
+
+
+def prepare_cbindgen_cache(temp, version, rust, *, warm):
+    """Populate the hosted cache before executing any candidate SDK code."""
+    if sys.platform != "win32":
+        raise ValueError("The hosted cbindgen cache requires Windows")
+    temp = temp.resolve(strict=True)
+    executable = _cached_cbindgen(temp, version)
+    env = dict(os.environ)
+    if not warm:
+        executable.unlink(missing_ok=True)
+        target = windows.MSVC_TARGETS["x64"]
+        toolchain = f"{rust}-{target}"
+        subprocess.run(
+            [
+                "rustup",
+                "toolchain",
+                "install",
+                toolchain,
+                "--profile",
+                "minimal",
+                "--no-self-update",
+            ],
+            cwd=temp,
+            env=env,
+            check=True,
+        )
+        _install_cbindgen(
+            executable.parent.parent,
+            version,
+            cwd=temp,
+            env=env,
+            cargo=("cargo", f"+{toolchain}"),
+            target=("--target", target),
+        )
+    windows.require_pe_machine(executable, "x64")
+    installed = subprocess.check_output(
+        [executable, "--version"], cwd=temp, env=env, text=True
+    ).strip()
+    if installed != f"cbindgen {version}":
+        raise ValueError("Cached cbindgen version differs from the SDK pin")
 
 
 def run(sdk_root, command):
@@ -37,6 +105,7 @@ def run(sdk_root, command):
         raise SystemExit("The pinned x64 .NET SDK was not installed.")
 
     env = dict(os.environ, DOTNET_BIN=dotnet)
+    use_cache = env.pop("SDK_TOOLING_HOSTED_CBINDGEN_CACHE", None) == "true"
     vm_environment.set_value(env, vm_environment.Variable.ARTIFACTS_DIR, temp / "sdk-acceptance")
     invocation = python_command(sdk_root, *command)
     if not c_headers.has_generated_products(sdk_root):
@@ -44,26 +113,17 @@ def run(sdk_root, command):
         return
 
     version = _cbindgen_pin(sdk_root)
-    with temporary_workspace(temp, prefix="sdk-cbindgen-") as tools:
-        subprocess.run(
-            [
-                "cargo",
-                "install",
-                "--locked",
-                "--version",
-                f"={version}",
-                "--root",
-                tools,
-                "cbindgen",
-            ],
-            cwd=sdk_root,
-            env=env,
-            check=True,
-        )
-        binaries = tools / "bin"
-        cbindgen = binaries / "cbindgen.exe"
-        if not cbindgen.is_file() or cbindgen.is_symlink():
-            raise ValueError("Cargo did not install the pinned cbindgen executable")
-        env = dict(env, PATH=os.pathsep.join(filter(None, (str(binaries), env.get("PATH")))))
+    installation = (
+        nullcontext(_cached_cbindgen(temp.resolve(), version).parent.parent)
+        if use_cache
+        else temporary_workspace(temp, prefix="sdk-cbindgen-")
+    )
+    with installation as tools:
+        cbindgen = tools / "bin/cbindgen.exe"
+        if not use_cache:
+            _install_cbindgen(tools, version, cwd=sdk_root, env=env)
+        if not cbindgen.is_file() or cbindgen.resolve() != cbindgen:
+            raise ValueError("Expected the pinned cbindgen executable")
+        env = dict(env, PATH=os.pathsep.join(filter(None, (str(cbindgen.parent), env.get("PATH")))))
         c_headers.prepare_generated(sdk_root, env=env)
         subprocess.run(invocation, cwd=sdk_root, env=env, check=True)

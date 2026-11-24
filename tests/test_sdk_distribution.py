@@ -119,6 +119,8 @@ class DistributionTests(unittest.TestCase):
                     "dotnet": "true",
                     "xcframeworks": "true",
                     "nuget": "false",
+                    "windows-cbindgen": "",
+                    "windows-rust": "",
                 },
             )
             with self.assertRaisesRegex(ValueError, "requires a combined NuGet"):
@@ -127,6 +129,27 @@ class DistributionTests(unittest.TestCase):
             plan = workflow_plan(source, combined, pin, windows_on_arm=True)
             self.assertEqual(json.loads(plan["platforms"]), ["windows"])
             self.assertEqual(plan["nuget"], "true")
+
+    def test_hosted_windows_distribution_exposes_only_an_exact_cbindgen_pin(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            source = Path(disposable).resolve()
+            hosted = {"windows": [["sdk-tooling", "windows", "-m", "distribution.verify_windows"]]}
+            plan = DISPATCH["workflow_plan"]
+            for setting, wanted in (
+                ('"0.29.4"', "0.29.4"),
+                ('{ version = "0.29.4", os = ["macos"] }', "0.29.4"),
+                ('"latest"', ""),
+                ('"0.29"', ""),
+            ):
+                with self.subTest(setting=setting):
+                    (source / "mise.toml").write_text(f'[tools]\n"cargo:cbindgen" = {setting}\n')
+                    self.assertEqual(plan(source, hosted, "a" * 40)["windows-cbindgen"], wanted)
+            for channel, wanted in (("1.99.1", "1.99.1"), ("nightly", ""), ("stable", "")):
+                with self.subTest(channel=channel):
+                    (source / "rust-toolchain.toml").write_text(
+                        f'[toolchain]\nchannel = "{channel}"\n'
+                    )
+                    self.assertEqual(plan(source, hosted, "a" * 40)["windows-rust"], wanted)
 
     def test_macos_distribution_packs_after_regenerating_native_artifacts(self):
         with tempfile.TemporaryDirectory() as disposable:

@@ -59,6 +59,8 @@ jobs:
           install_args: ${{ matrix.macos != inputs.source-macos && 'uv python' || '' }}
           add_shims_to_path: false
       - name: Test standalone Swift consumer
+        env:
+          MISE_AUTO_INSTALL: "false"
         run: mise exec -- make test-consumer
       - name: Check SDK source and bindings
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && matrix.macos == inputs.source-macos }}

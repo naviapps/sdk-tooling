@@ -7,11 +7,13 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: sdk-tooling-${{ github.ref }}
+  group: sdk-tooling-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
 jobs:
   plan:
     uses: ./.github/workflows/plan-checks.yml
+    with:
+      package-documentation: README.md
   check:
     needs: plan
     if: needs.plan.outputs.documentation-only != 'true'

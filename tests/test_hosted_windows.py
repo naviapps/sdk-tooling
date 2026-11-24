@@ -123,3 +123,80 @@ class HostedWindowsTests(unittest.TestCase):
                     )
                     with self.assertRaisesRegex(ValueError, "exact cargo:cbindgen"):
                         hosted_windows._cbindgen_pin(root)
+
+    def test_prepares_only_a_valid_x64_generator_from_outside_the_candidate(self):
+        cases = [
+            (False, "cbindgen 0.29.4", True),
+            (True, "cbindgen 0.29.4", True),
+            (True, "cbindgen 0.29.3", False),
+        ]
+        for warm, installed, accepted in cases:
+            with self.subTest(warm=warm, installed=installed), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                tools = root / "sdk-cbindgen/0.29.4"
+                binary = tools / "bin/cbindgen.exe"
+
+                def write_binary():
+                    binary.parent.mkdir(parents=True)
+                    binary.touch()
+
+                if warm:
+                    write_binary()
+
+                def run(argv, *, cwd, env, check):
+                    self.assertEqual(cwd, root)
+                    self.assertTrue(check)
+                    toolchain = "1.99.1-x86_64-pc-windows-msvc"
+                    if argv[0] == "rustup":
+                        self.assertEqual(argv[:4], ["rustup", "toolchain", "install", toolchain])
+                        return
+                    self.assertEqual(argv[:3], ["cargo", f"+{toolchain}", "install"])
+                    self.assertEqual(argv[argv.index("--root") + 1], tools)
+                    self.assertEqual(argv[argv.index("--target") + 1], "x86_64-pc-windows-msvc")
+                    self.assertEqual(argv[argv.index("--version") + 1], "=0.29.4")
+                    write_binary()
+
+                with (
+                    patch.object(hosted_windows.sys, "platform", "win32"),
+                    patch.object(hosted_windows.windows, "require_pe_machine") as require_machine,
+                    patch.object(
+                        hosted_windows.subprocess, "check_output", return_value=installed
+                    ) as version,
+                    patch.object(hosted_windows.subprocess, "run", side_effect=run) as command,
+                ):
+                    if accepted:
+                        hosted_windows.prepare_cbindgen_cache(root, "0.29.4", "1.99.1", warm=warm)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "differs from the SDK pin"):
+                            hosted_windows.prepare_cbindgen_cache(
+                                root, "0.29.4", "1.99.1", warm=warm
+                            )
+                    require_machine.assert_called_once_with(binary, "x64")
+                    self.assertEqual(version.call_args.args[0], [binary, "--version"])
+                    self.assertEqual(command.call_count, 0 if warm else 2)
+
+    def test_sdk_acceptance_uses_a_prepared_generator_without_installing_any_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            sdk = root / "SDK"
+            sdk.mkdir()
+            (sdk / "mise.toml").write_text('[tools]\n"cargo:cbindgen" = "0.29.4"\n')
+            binary = root / "sdk-cbindgen/0.29.4/bin/cbindgen.exe"
+            binary.parent.mkdir(parents=True)
+            binary.touch()
+            flags = {"RUNNER_TEMP": str(root), "SDK_TOOLING_HOSTED_CBINDGEN_CACHE": "true"}
+            with (
+                patch.object(hosted_windows.sys, "platform", "win32"),
+                patch.dict(os.environ, flags, clear=True),
+                patch.object(hosted_windows.shutil, "which", return_value=str(root / "dotnet.exe")),
+                patch.object(hosted_windows.c_headers, "has_generated_products", return_value=True),
+                patch.object(hosted_windows.c_headers, "prepare_generated") as generated,
+                patch.object(hosted_windows.subprocess, "run") as run,
+            ):
+                command = ["-m", "distribution.verify_windows"]
+                hosted_windows.run(sdk, command)
+            generated.assert_called_once()
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0], adapters.python_command(sdk, *command))
+            self.assertEqual(run.call_args.kwargs["env"]["PATH"], str(binary.parent))
+            self.assertNotIn("SDK_TOOLING_HOSTED_CBINDGEN_CACHE", run.call_args.kwargs["env"])

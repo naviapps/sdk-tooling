@@ -175,6 +175,12 @@ sets `DOTNET_BIN` and `VM_RUNNER_ARTIFACTS_DIR` for the installed SDK and
 temporary output. Reproduce a previous run with both its dispatcher revision and
 its producer pin.
 
+Manual distribution checks on `main` can reuse the Windows x64 cbindgen
+executable for matching Rust and cbindgen pins. The dispatcher validates its
+architecture and version before saving it, then runs the SDK's build and tests
+in the fresh checkout. Older tooling revisions install the generator for that
+run.
+
 ### Framework and NuGet artifacts
 
 For macOS SDKs with `native.toml`, the workflow checks the committed inputs,
@@ -461,18 +467,24 @@ SDKs can call [check selection](../.github/workflows/plan-checks.yml) once per
 workflow to run Markdown formatting and local link checks for documentation-only
 changes. Set `package-documentation` for Markdown that is read by a package
 build. Source changes, manual runs and an unavailable diff use the full checks.
+Use a distinct concurrency group for each push. A documentation-only push must
+leave source verification for an earlier push running. Pull request runs can
+supersede each other because they compare the current merge tree with its base.
 
 Run the relevant checks locally while iterating. For shared changes, verify the
 affected SDKs with the updated Tooling checkout before pushing the related
-commits together. Use distribution checks for changes to packaging or installation.
+commits together. Use distribution checks for changes to package contents,
+packaging or installation.
 
 The [Swift matrix](../.github/workflows/check-swift.yml) and
 [Windows x64 check step](../.github/actions/test-rust-windows/action.yml) can be
-called at a fixed tooling revision. The matrix runs `make test` and `make test-consumer` on
-macOS 26 and 27, with `make check-source` on macOS 27 by default. Select
-`source-macos` to change the source check's OS or `source-target` to select its
-Make target. The Windows check can install the pinned x64 .NET SDK and accepts
-`test-bindings: "true"` to run the SDK's contributor fixtures.
+called at a fixed tooling revision. The matrix runs `make test` and
+`make test-consumer` on macOS 26 and 27, with `make check-source` on macOS 27 by
+default. Select `source-macos` to change the source check's OS or
+`source-target` to select its Make target. The standalone Swift consumer uses
+the tools already installed for that job. The Windows check can install the
+pinned x64 .NET SDK and accepts `test-bindings: "true"` to run the SDK's
+contributor fixtures.
 
 ### C ABI and .NET project checks
 

@@ -27,6 +27,10 @@ on:
       combined-nuget:
         type: boolean
         default: false
+      windows-cbindgen:
+        type: string
+      windows-rust:
+        type: string
       windows-native-id:
         type: string
     outputs:
@@ -69,9 +73,10 @@ jobs:
           path: dispatcher
           persist-credentials: false
       - uses: actions/setup-python@v7.1.0
+        if: inputs.platform == 'windows'
         with:
           python-version: "3.15.2"
-          architecture: ${{ inputs.platform == 'macos' && 'arm64' || 'x64' }}
+          architecture: x64
       - name: Check out the candidate SDK
         uses: actions/checkout@v6.1.0
         with:
@@ -86,6 +91,46 @@ jobs:
           ref: ${{ inputs.tooling-revision }}
           path: sdk-tooling
           persist-credentials: false
+      - name: Restore pinned Windows cbindgen
+        id: windows-cbindgen
+        if: >-
+          inputs.platform == 'windows' && inputs.windows-cbindgen != '' && inputs.windows-rust != '' &&
+          github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+          github.event.repository.default_branch == 'main' && runner.arch == 'X64' &&
+          hashFiles('sdk/rust-toolchain.toml') != '' &&
+          hashFiles('sdk-tooling/sdk_tooling/hosted_windows.py') == hashFiles('dispatcher/sdk_tooling/hosted_windows.py')
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdk-cbindgen/${{ inputs.windows-cbindgen }}/bin/cbindgen.exe
+          key: cbindgen-v1-x86_64-pc-windows-msvc-${{ inputs.windows-cbindgen }}-${{ inputs.windows-rust }}-${{ hashFiles('dispatcher/sdk_tooling/hosted_windows.py') }}
+      - name: Prepare pinned Windows cbindgen
+        id: prepare-cbindgen
+        if: steps.windows-cbindgen.outcome == 'success'
+        working-directory: ${{ runner.temp }}
+        env:
+          CBINDGEN_VERSION: ${{ inputs.windows-cbindgen }}
+          CBINDGEN_CACHE_HIT: ${{ steps.windows-cbindgen.outputs.cache-hit }}
+          RUST_VERSION: ${{ inputs.windows-rust }}
+        run: |
+          python -I -B -S - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"]) / "dispatcher"))
+          from sdk_tooling.hosted_windows import prepare_cbindgen_cache
+
+          prepare_cbindgen_cache(
+              Path.cwd(), os.environ["CBINDGEN_VERSION"], os.environ["RUST_VERSION"],
+              warm=os.environ["CBINDGEN_CACHE_HIT"] == "true",
+          )
+          PY
+      - name: Save pinned Windows cbindgen
+        if: steps.prepare-cbindgen.outcome == 'success' && steps.windows-cbindgen.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdk-cbindgen/${{ inputs.windows-cbindgen }}/bin/cbindgen.exe
+          key: ${{ steps.windows-cbindgen.outputs.cache-primary-key }}
       - name: Install mise
         if: inputs.platform == 'macos'
         uses: jdx/mise-action@v5.3.0
@@ -136,7 +181,13 @@ jobs:
           SDK_XCFRAMEWORK_OUTPUT: ${{ inputs.xcframeworks && format('{0}/sdk-xcframeworks', runner.temp) || '' }}
           SDK_NUGET_OUTPUT: ${{ inputs.combined-nuget && inputs.platform == 'macos' && format('{0}/sdk-nuget', runner.temp) || '' }}
           MACOS_X64_DOTNET: ${{ steps.dotnet-x64.outputs.path }}
+          SDK_TOOLING_HOSTED_CBINDGEN_CACHE: ${{ steps.prepare-cbindgen.outcome == 'success' && 'true' || '' }}
         run: |
+          python_cli=python
+          if [[ "$SDK_PLATFORM" == macos ]]; then
+            python_cli=python3
+            "$python_cli" -I -B -c 'import platform, sys; assert sys.version_info >= (3, 13) and platform.machine() == "arm64", "Distribution requires native ARM64 Python 3.13 or newer"'
+          fi
           options=()
           if [[ -n "$SDK_XCFRAMEWORK_OUTPUT" ]]; then
             options+=(--xcframework-output "$SDK_XCFRAMEWORK_OUTPUT")
@@ -144,7 +195,7 @@ jobs:
           if [[ -n "$SDK_NUGET_OUTPUT" ]]; then
             options+=(--nuget-artifact "$SDK_NUGET_OUTPUT" --macos-x64-dotnet "$MACOS_X64_DOTNET")
           fi
-          python -I -B ../dispatcher/ci/check_distribution.py "$SDK_PLATFORM" "$SDK_NAME" "$SDK_REVISION" \
+          "$python_cli" -I -B ../dispatcher/ci/check_distribution.py "$SDK_PLATFORM" "$SDK_NAME" "$SDK_REVISION" \
             --tooling ../sdk-tooling "${options[@]}"
       - name: Upload verified XCFramework archives
         if: inputs.xcframeworks

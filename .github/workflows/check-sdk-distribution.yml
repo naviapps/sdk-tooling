@@ -44,18 +44,17 @@ jobs:
       dotnet: ${{ steps.plan.outputs.dotnet }}
       xcframeworks: ${{ steps.plan.outputs.xcframeworks }}
       nuget: ${{ steps.plan.outputs.nuget }}
+      windows-cbindgen: ${{ steps.plan.outputs.windows-cbindgen }}
+      windows-rust: ${{ steps.plan.outputs.windows-rust }}
     steps:
       - name: Check out the dispatcher
         uses: actions/checkout@v6.1.0
         with:
           path: dispatcher
           persist-credentials: false
-      - uses: actions/setup-python@v7.1.0
-        with:
-          python-version: "3.15.2"
       - name: Validate the requested source identity
         id: source
-        run: python -I -B dispatcher/ci/check_distribution.py identity "$SDK_NAME" "$SDK_REVISION"
+        run: python3 -I -B dispatcher/ci/check_distribution.py identity "$SDK_NAME" "$SDK_REVISION"
       - name: Check out the candidate SDK
         uses: actions/checkout@v6.1.0
         with:
@@ -68,6 +67,7 @@ jobs:
             /mise.toml
             /global.json
             /native.toml
+            /rust-toolchain.toml
             /distribution/
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -81,7 +81,7 @@ jobs:
           if [[ "$WINDOWS_ON_ARM" == true ]]; then
             options+=(--windows-on-arm)
           fi
-          python -I -B ../dispatcher/ci/check_distribution.py plan "$SDK_NAME" "$SDK_REVISION" "${options[@]}"
+          python3 -I -B ../dispatcher/ci/check_distribution.py plan "$SDK_NAME" "$SDK_REVISION" "${options[@]}"
 
   distribution:
     name: Distribution
@@ -100,6 +100,8 @@ jobs:
       dotnet: ${{ matrix.platform == 'windows' && needs.plan.outputs.dotnet == 'true' }}
       xcframeworks: ${{ matrix.platform == 'macos' && needs.plan.outputs.xcframeworks == 'true' }}
       combined-nuget: ${{ needs.plan.outputs.nuget == 'true' }}
+      windows-cbindgen: ${{ needs.plan.outputs.windows-cbindgen }}
+      windows-rust: ${{ needs.plan.outputs.windows-rust }}
 
   combined:
     name: Distribution and combined NuGet
