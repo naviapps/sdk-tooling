@@ -5,7 +5,45 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
+
+from .workspaces import temporary_workspace
+
+# The .NET SDK can append machine-local sources and caches after reading NuGet.Config.
+DISABLE_IMPLICIT_RESTORE = {
+    "DisableImplicitLibraryPacksFolder": "true",
+    "DisableImplicitNuGetFallbackFolder": "true",
+}
+
+RESTORE_OVERRIDES = {
+    *(name.casefold() for name in DISABLE_IMPLICIT_RESTORE),
+    "nuget_fallback_packages",
+    "nuget_packages",
+    "nugetpackagefolders",
+    "nugetpackageroot",
+    "restoreadditionalprojectfallbackfolders",
+    "restoreadditionalprojectsources",
+    "restoreconfigfile",
+    "restorefallbackfolders",
+    "restorepackagespath",
+    "restoresources",
+}
+
+
+def isolated_restore_settings(env, cache):
+    """Use explicit restore sources and a caller-owned fresh package cache."""
+    clean = {key: value for key, value in env.items() if key.casefold() not in RESTORE_OVERRIDES}
+    cache = str(cache)
+    # An empty fallback setting re-enables the folders from NuGet.Config.
+    return clean, {
+        **DISABLE_IMPLICIT_RESTORE,
+        "RestorePackagesPath": cache,
+        "RestoreFallbackFolders": cache,
+        "RestoreAdditionalProjectSources": "",
+        "RestoreAdditionalProjectFallbackFolders": "",
+        "RestoreNoHttpCache": "true",
+    }
 
 
 def pinned_sdk_version(root):
@@ -290,24 +328,29 @@ def pack_project(
     no_restore=False,
     runner=None,
 ):
-    """Pack using the project's existing rules and caller-selected MSBuild properties."""
+    """Pack using the project's rules, isolating restores from explicit sources."""
     output = Path(output)
     if not output.is_absolute():
         output = (Path(cwd) / output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    restore_flags = _prepare_managed(
-        dotnet,
-        project,
-        env=env,
-        cwd=cwd,
-        properties=properties,
-        nuget_config=nuget_config,
-        sources=sources,
-        no_restore=no_restore or no_build,
-        runner=runner,
-    )
-    command = [dotnet, "pack", project, "--configuration", configuration]
-    if no_build:
-        command += ["--no-build"]
-    command += [*restore_flags, "--output", output, *_properties(properties)]
-    return run_command(command, cwd=cwd, env=env, runner=runner)
+    with ExitStack() as cleanup:
+        if sources:
+            cache = cleanup.enter_context(temporary_workspace(None, prefix="nuget-restore-"))
+            env, restore = isolated_restore_settings(env, cache.resolve())
+            properties = (properties or {}) | restore
+        restore_flags = _prepare_managed(
+            dotnet,
+            project,
+            env=env,
+            cwd=cwd,
+            properties=properties,
+            nuget_config=nuget_config,
+            sources=sources,
+            no_restore=no_restore or no_build,
+            runner=runner,
+        )
+        command = [dotnet, "pack", project, "--configuration", configuration]
+        if no_build:
+            command += ["--no-build"]
+        command += [*restore_flags, "--output", output, *_properties(properties)]
+        return run_command(command, cwd=cwd, env=env, runner=runner)

@@ -397,27 +397,6 @@ def _prepare_macos_library(path, rid):
         raise ValueError(f"Staged macOS library must contain only the {architecture} slice")
 
 
-# The .NET SDK can append machine-local sources and caches after reading NuGet.Config.
-_DISABLE_IMPLICIT_RESTORE = {
-    "DisableImplicitLibraryPacksFolder": "true",
-    "DisableImplicitNuGetFallbackFolder": "true",
-}
-
-_RESTORE_OVERRIDES = {
-    *(name.casefold() for name in _DISABLE_IMPLICIT_RESTORE),
-    "nuget_fallback_packages",
-    "nuget_packages",
-    "nugetpackagefolders",
-    "nugetpackageroot",
-    "restoreadditionalprojectfallbackfolders",
-    "restoreadditionalprojectsources",
-    "restoreconfigfile",
-    "restorefallbackfolders",
-    "restorepackagespath",
-    "restoresources",
-}
-
-
 def pack_native(
     native,
     *,
@@ -501,19 +480,8 @@ def pack_native(
             "SdkNativeRuntimeAssets": str(stage / "runtimes"),
         }
         if sources:
-            env = {
-                key: value for key, value in env.items() if key.casefold() not in _RESTORE_OVERRIDES
-            }
-            cache = str(stage / "restore")
-            # An empty fallback setting re-enables the folders from NuGet.Config.
-            properties.update(
-                _DISABLE_IMPLICIT_RESTORE,
-                RestorePackagesPath=cache,
-                RestoreFallbackFolders=cache,
-                RestoreAdditionalProjectSources="",
-                RestoreAdditionalProjectFallbackFolders="",
-                RestoreNoHttpCache="true",
-            )
+            env, restore = dotnet_tools.isolated_restore_settings(env, stage / "restore")
+            properties.update(restore)
         runtime_files, accepted_bytes = {}, {}
         for rid, (library, filename, digest) in libraries.items():
             member = f"runtimes/{rid}/native/{filename}"
@@ -742,8 +710,9 @@ def run_isolated_consumer(
 ):
     """Restore SDK-owned C# from only supplied local packages and a fresh cache.
 
-    Native lookup overrides are caller-selected. Dynamic-library search variables
-    are always removed. Package fixtures and runtime/portable policy stay local.
+    Native lookup overrides are caller-selected. Inherited .NET runtime overrides
+    and dynamic-library search variables are removed for independent consumers.
+    Package fixtures and runtime/portable policy stay local.
     With execute=False only restore/build run; that is not native acceptance.
     Native AOT publishes and runs a Windows x64 executable after the same local
     SDK package checks. The .NET packs are restored separately from NuGet.org.
@@ -754,7 +723,7 @@ def run_isolated_consumer(
         raise ValueError("Duplicate local-feed package filename")
     if not packages or not references:
         raise ValueError("Provide local packages and explicit package references")
-    if _RESTORE_OVERRIDES.intersection(key.casefold() for key in (properties or {})):
+    if dotnet_tools.RESTORE_OVERRIDES.intersection(key.casefold() for key in (properties or {})):
         raise ValueError("Consumer project properties must use the isolated restore settings")
     if native_aot and (not execute or runtime != "win-x64"):
         raise ValueError("Native AOT acceptance requires execution of a win-x64 consumer")
@@ -793,7 +762,7 @@ def run_isolated_consumer(
             "UseAppHost": "false",
             "SelfContained": "false",
             "ImplicitUsings": "enable",
-            **_DISABLE_IMPLICIT_RESTORE,
+            **dotnet_tools.DISABLE_IMPLICIT_RESTORE,
             **(properties or {}),
         }
         if runtime is not None:
@@ -813,11 +782,16 @@ def run_isolated_consumer(
             key.casefold()
             for key in (
                 *clear_environment,
+                "DOTNET_ADDITIONAL_DEPS",
+                "DOTNET_RUNTIME_ID",
+                "DOTNET_SERVICING",
+                "DOTNET_SHARED_STORE",
+                "DOTNET_STARTUP_HOOKS",
                 "LD_LIBRARY_PATH",
                 "DYLD_LIBRARY_PATH",
                 "DYLD_FALLBACK_LIBRARY_PATH",
             )
-        } | _RESTORE_OVERRIDES
+        } | dotnet_tools.RESTORE_OVERRIDES
         clean = {key: value for key, value in env.items() if key.casefold() not in removed}
         clean["NUGET_PACKAGES"] = str(cache)
         roots = [Path(path).resolve() for path in exclude_paths]

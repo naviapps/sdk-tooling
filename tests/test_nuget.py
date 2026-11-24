@@ -277,6 +277,11 @@ class NuGetTests(unittest.TestCase):
             DYLD_LIBRARY_PATH="source dylibs",
             LD_LIBRARY_PATH="source libraries",
             DYLD_FALLBACK_LIBRARY_PATH="fallback",
+            Dotnet_Startup_Hooks="uninstalled-instrumentation.dll",
+            DOTNET_ADDITIONAL_DEPS="additional dependencies",
+            DOTNET_RUNTIME_ID="wrong runtime identifier",
+            DOTNET_SERVICING="external servicing index",
+            DOTNET_SHARED_STORE="external runtime store",
             Nuget_Packages="global cache",
             RestoreAdditionalProjectSources="unexpected feed",
             restorefallbackfolders="unexpected fallback",
@@ -326,6 +331,11 @@ class NuGetTests(unittest.TestCase):
                 "DYLD_LIBRARY_PATH",
                 "LD_LIBRARY_PATH",
                 "DYLD_FALLBACK_LIBRARY_PATH",
+                "Dotnet_Startup_Hooks",
+                "DOTNET_ADDITIONAL_DEPS",
+                "DOTNET_RUNTIME_ID",
+                "DOTNET_SERVICING",
+                "DOTNET_SHARED_STORE",
                 "Nuget_Packages",
                 "RestoreAdditionalProjectSources",
                 "restorefallbackfolders",
@@ -871,7 +881,7 @@ class NativeConsumerTests(unittest.TestCase):
                     {entry.date_time for entry in archive.infolist()}, {(1980, 1, 1, 0, 0, 0)}
                 )
 
-    def test_parent_build_settings_do_not_change_a_clean_consumer(self):
+    def test_parent_build_and_runtime_settings_do_not_change_a_clean_consumer(self):
         env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1")
         dotnet = env.get("DOTNET_BIN") or shutil.which("dotnet")
         self.assertIsNotNone(dotnet, "The prepared .NET SDK is required for native consumer tests")
@@ -898,7 +908,7 @@ class NativeConsumerTests(unittest.TestCase):
                     'Console.WriteLine("Clean fixture executed");'
                 ),
                 work_parent=root,
-                env=env,
+                env=dict(env, DOTNET_STARTUP_HOOKS=str(root / "missing-startup-hook.dll")),
             )
 
     def test_installed_consumer_only_resolves_declared_transitive_package_archives(self):

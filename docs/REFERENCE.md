@@ -398,6 +398,7 @@ The SDK selects its default fixtures and native acceptance policy.
 against a private temporary feed. The restored packages must match the supplied
 archives by SHA-256. These consumer projects ignore parent-directory MSBuild
 and central package settings and discard inherited restore sources and caches.
+They also ignore inherited .NET startup hooks and runtime lookup overrides.
 Every archive passed with `--dependency` must appear in the restored graph.
 
 See [NuGet packing and recovery](#nuget-package-publication).

@@ -227,6 +227,36 @@ class ToolInvocationTests(unittest.TestCase):
         )
         self.assertTrue((self.root / "packages").is_dir())
 
+    def test_pack_with_explicit_sources_uses_a_fresh_cache_on_each_attempt(self):
+        caches = []
+        env = dict(self.env, NuGet_Fallback_Packages="old", RestorePackagesPath="outside")
+
+        def observe(argv, **options):
+            properties = dict(arg[3:].split("=", 1) for arg in argv if arg.startswith("-p:"))
+            cache = Path(properties["RestorePackagesPath"])
+            self.assertTrue(cache.is_dir())
+            self.assertEqual(properties["RestoreFallbackFolders"], str(cache))
+            self.assertEqual(properties["RestoreNoHttpCache"], "true")
+            self.assertEqual(options["env"], self.env)
+            caches.append(cache)
+            return self.run_command(argv, **options)
+
+        for _ in range(2):
+            dotnet.pack_project(
+                "dotnet",
+                "Owned.csproj",
+                output=self.root / "packages",
+                env=env,
+                cwd=self.root,
+                sources=(self.root / "feed",),
+                runner=observe,
+            )
+            self.assertFalse(caches[-1].exists())
+        self.assertEqual([argv[1] for argv, _ in self.calls], ["restore", "pack"] * 2)
+        self.assertEqual(caches[0], caches[1])
+        self.assertEqual(caches[2], caches[3])
+        self.assertNotEqual(caches[0], caches[2])
+
     def test_pack_can_keep_project_implicit_restore_policy(self):
         dotnet.pack_project(
             "dotnet",
