@@ -13,6 +13,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from .artifacts import build_lock, file_sha256, write_json
+from .c_headers import prepare_generated
 from .consumers.workspace import _git
 from .xcframework import xcframeworks
 
@@ -120,6 +121,7 @@ def _archive_product(product, receipt, stage):
 def archive_xcframeworks(root, output, *, revision=None, producer=None):
     """Archive native products only after verification against their SDK source."""
     root = Path(root).resolve(strict=True)
+    prepare_generated(root)
     products = tuple(xcframeworks(root).values())
     output = Path(output)
     output = output.parent.resolve() / output.name

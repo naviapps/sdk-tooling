@@ -204,6 +204,7 @@ class DistributionTests(unittest.TestCase):
             source = work / "checkout"
             builds = source / ".native-build/packages"
             builds.mkdir(parents=True)
+            (source / "mise.toml").touch()
             output = work / "accepted"
             pack = DISPATCH["pack_combined_nuget"]
             consume = DISPATCH["consume_package"]
@@ -223,12 +224,13 @@ class DistributionTests(unittest.TestCase):
 
             def run(checkout, env, *argv):
                 self.assertEqual(checkout, source)
-                self.assertEqual(argv[0], cli[0])
-                if argv[1] == "python":
+                if argv[:3] == ("mise", "exec", "--"):
                     self.assertEqual(env, {})
                     self.assertEqual(
-                        argv[2:-1],
+                        argv[3:-1],
                         (
+                            *cli,
+                            "python",
                             script,
                             "--runtime",
                             "osx-arm64",
@@ -245,7 +247,7 @@ class DistributionTests(unittest.TestCase):
                     )
                     Path(argv[-1]).write_text(package_name, encoding="utf-8")
                 else:
-                    self.assertEqual(argv[1], "nuget-consumer")
+                    self.assertEqual(argv[:2], (*cli, "nuget-consumer"))
                     seen.append((env, Path(argv[2]).read_bytes(), argv[3:]))
 
             with patch.dict(pack.__globals__, run=run, require_windows_host=hosts.append):

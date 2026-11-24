@@ -8,7 +8,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from . import artifacts, c_compiler, windows
+from . import artifacts, c_compiler, c_headers, windows
 from . import dotnet as dotnet_tools
 from .adapters import tooling_command
 from .check_options import (
@@ -174,6 +174,7 @@ def run_check(kind, *, root, argv):
     ffi = _inside(root, config.get("ffi", "crates/ffi"), "bindings.ffi")
     if kind == "c":
         source = _inside(root, config.get("abi_fixture"), "bindings.abi_fixture")
+        c_headers.prepare_generated(root)
         check_c(
             source=source,
             include_dirs=(ffi / "include",),

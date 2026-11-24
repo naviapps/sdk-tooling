@@ -255,12 +255,16 @@ FFI crate's `Cargo.toml`:
 ```toml
 [package.metadata.c-bindings]
 module = "CExample"
+generated = true
 ```
 
-Run `mise run sdk-tooling -- c-headers generate` from the SDK checkout after
-editing Rust declarations. Use `c-headers check` to regenerate in memory and
-compare against the checked-in header and module map. Add `--product ID` to
-select one product from `native.toml`.
+Ignore the exact generated source-side header and module map files. The
+XCFramework build and C fixtures generate these inputs before use.
+`c-headers check` compares freshly generated portable headers and module maps
+with the bundled copies and prepares the ignored files for C compilation.
+Run `mise run sdk-tooling -- c-headers generate` to prepare the declarations
+without rebuilding the framework. Add `--product ID` to select one product
+from `native.toml`.
 
 The command uses the FFI crate's `cbindgen.toml` and `src/lib.rs`. For a
 configuration with `parse_deps = true` under `[parse]`, it selects the named
@@ -271,10 +275,12 @@ Cargo crate using locked dependency metadata. A product with
 references the portable header. Set `umbrella = false` to emit a direct header
 declaration.
 
-Keep ABI versions, types and safety contracts with the Rust exports. Commit the
-generated files with their inputs so a fresh checkout has the same declarations
-used by native archive production and consumer fixtures. SwiftPM continues to
-load the bundled XCFramework.
+Keep ABI versions, types and safety contracts with the Rust exports. SDK-owned
+C or native packaging scripts that bypass the shared commands call
+`sdk_tooling.c_headers.prepare_generated(root)` before reading their inputs.
+The hosted Windows launcher provisions cbindgen from the SDK's exact pin for
+these native checks. Consumers load the retained SwiftPM XCFramework and use
+its bundled declarations.
 
 ### Production source receipts
 

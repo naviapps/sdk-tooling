@@ -50,3 +50,76 @@ class HostedWindowsTests(unittest.TestCase):
                 hosted_windows.run(Path(temporary), ["tools/windows.py"])
 
         run.assert_not_called()
+
+    def test_generated_headers_use_the_sdk_pin_before_windows_acceptance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            sdk = root / "SDK"
+            sdk.mkdir()
+            (sdk / "mise.toml").write_text(
+                '[tools]\n"cargo:cbindgen" = { version = "0.29.4", os = ["macos"] }\n',
+                encoding="utf-8",
+            )
+            command = ["-m", "distribution.verify_windows"]
+            dotnet = str(root / "dotnet.exe")
+            environment = {"RUNNER_TEMP": str(root), "PATH": "original path"}
+            events = []
+
+            def run(argv, *, cwd, env, check):
+                self.assertEqual(cwd, sdk)
+                self.assertTrue(check)
+                if argv[0] == "cargo":
+                    installation = argv[argv.index("--root") + 1]
+                    self.assertEqual(installation.parent, root)
+                    self.assertEqual(
+                        argv,
+                        [
+                            "cargo",
+                            "install",
+                            "--locked",
+                            "--version",
+                            "=0.29.4",
+                            "--root",
+                            installation,
+                            "cbindgen",
+                        ],
+                    )
+                    (installation / "bin").mkdir()
+                    (installation / "bin" / "cbindgen.exe").touch()
+                    events.append(("install", installation))
+                else:
+                    self.assertEqual(argv, adapters.python_command(sdk, *command))
+                    events.append(("acceptance", env["PATH"]))
+
+            def prepare(checkout, *, env):
+                self.assertEqual(checkout, sdk)
+                self.assertEqual(env["DOTNET_BIN"], dotnet)
+                events.append(("prepare", env["PATH"]))
+
+            with (
+                patch.object(hosted_windows.sys, "platform", "win32"),
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(hosted_windows.shutil, "which", return_value=dotnet),
+                patch.object(hosted_windows.c_headers, "has_generated_products", return_value=True),
+                patch.object(hosted_windows.c_headers, "prepare_generated", side_effect=prepare),
+                patch.object(hosted_windows.subprocess, "run", side_effect=run),
+            ):
+                hosted_windows.run(sdk, command)
+
+            installation = events[0][1]
+            path = os.pathsep.join((str(installation / "bin"), environment["PATH"]))
+            self.assertEqual(
+                events, [("install", installation), ("prepare", path), ("acceptance", path)]
+            )
+            self.assertFalse(installation.exists())
+
+    def test_generated_headers_require_an_exact_cbindgen_pin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for version in ("latest", "0.29", "~0.29.4"):
+                with self.subTest(version=version):
+                    (root / "mise.toml").write_text(
+                        f'[tools]\n"cargo:cbindgen" = "{version}"\n', encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(ValueError, "exact cargo:cbindgen"):
+                        hosted_windows._cbindgen_pin(root)

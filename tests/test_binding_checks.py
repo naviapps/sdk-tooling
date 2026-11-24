@@ -25,13 +25,18 @@ framework = "Artifacts/CExample.framework"
 """,
                 encoding="utf-8",
             )
-            check = Mock()
-            with patch.object(binding_checks, "check_c", check):
+            actions = Mock()
+            with (
+                patch.object(binding_checks, "check_c", actions.check),
+                patch.object(binding_checks.c_headers, "prepare_generated", actions.prepare),
+            ):
                 binding_checks.run_check("c", root=root, argv=[])
-            check.assert_called_once_with(
+            actions.prepare.assert_called_once_with(root)
+            actions.check.assert_called_once_with(
                 source=root / "ffi/tests/ownership.c",
                 include_dirs=(root / "ffi/include",),
                 library=root / "Artifacts/CExample.framework/CExample",
                 work_parent=root / ".native-build",
                 argv=[],
             )
+            self.assertEqual([call[0] for call in actions.mock_calls], ["prepare", "check"])

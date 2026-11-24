@@ -7,9 +7,11 @@ from pathlib import Path
 
 
 def _xcframework(args, *, root):
+    from .c_headers import prepare_generated
     from .xcframework import xcframework, xcframeworks
 
     root = args.root or root
+    prepare_generated(root, product=args.product)
     products = [xcframework(root, args.product)] if args.product else xcframeworks(root).values()
     for product in products:
         if args.verify:

@@ -21,7 +21,7 @@ class CHeaderTests(unittest.TestCase):
         self.generator = self.enterContext(patch.object(c_headers.subprocess, "check_output"))
         self.write(
             "native.toml",
-            b'[[artifacts]]\nid = "alpha"\nsymbol_prefix = "alpha_"\n'
+            b'[[artifacts]]\nid = "alpha"\nsymbol_prefix = "alpha_"\nminimum_macos = "26.0"\n'
             b'[[artifacts]]\nid = "beta"\nsymbol_prefix = "beta_"\nffi = "crates/beta"\n',
         )
         for directory, module in (("crates/ffi", "CAlpha"), ("crates/beta", "CBeta")):
@@ -86,6 +86,54 @@ class CHeaderTests(unittest.TestCase):
             b'framework module CBeta {\n  header "beta.h"\n  export *\n}\n',
         )
         self.assertEqual(main(["c-headers", "check", "--product", "beta"]), 0)
+
+    def test_generated_mode_stages_headers_and_checks_the_installed_framework(self):
+        crate = self.root / "crates/ffi"
+        manifest = crate / "Cargo.toml"
+        manifest.write_bytes(manifest.read_bytes() + b"generated = true\n")
+        portable_header = b"void alpha_run(void);\n"
+        windows_header = b"void alpha_windows_run(void);\n"
+        module_map = b'framework module CAlpha {\n  umbrella header "alpha.h"\n  export *\n}\n'
+
+        def invoke(command, **_):
+            if Path(command[-1]).name == "windows.rs":
+                return windows_header
+            return portable_header
+
+        self.generator.side_effect = invoke
+        self.assertTrue(c_headers.has_generated_products(self.root))
+        c_headers.prepare_generated(self.root)
+        self.assertFalse((self.root / "crates/beta/include").exists())
+        staged = crate
+        self.assertEqual((staged / "include/alpha.h").read_bytes(), portable_header)
+        self.assertEqual((staged / "include/windows/alpha_windows.h").read_bytes(), windows_header)
+        self.assertEqual((staged / "module.modulemap").read_bytes(), module_map)
+
+        framework = "Artifacts/CAlpha.xcframework/macos-arm64_x86_64/CAlpha.framework/Versions/A"
+        header_path = self.write(f"{framework}/Headers/alpha.h", portable_header)
+        module_path = self.write(f"{framework}/Modules/module.modulemap", module_map)
+        (staged / "include/alpha.h").write_bytes(b"stale staged header\n")
+        self.assertEqual(main(["c-headers", "check", "--product", "alpha"]), 0)
+        self.assertEqual((staged / "include/alpha.h").read_bytes(), portable_header)
+
+        header_path.write_bytes(b"stale header\n")
+        module_path.write_bytes(b"stale module map\n")
+        (staged / "include/alpha.h").unlink()
+        with self.assertRaises(ValueError) as error:
+            main(["c-headers", "check", "--product", "alpha"])
+
+        self.assertIn("Headers/alpha.h", str(error.exception))
+        self.assertIn("Modules/module.modulemap", str(error.exception))
+        self.assertEqual(header_path.read_bytes(), b"stale header\n")
+        self.assertEqual(module_path.read_bytes(), b"stale module map\n")
+        self.assertFalse((crate / "include/alpha.h").exists())
+        self.assertEqual((crate / "module.modulemap").read_bytes(), module_map)
+
+    def test_automatic_generation_skips_legacy_native_products(self):
+        self.assertFalse(c_headers.has_generated_products(self.root))
+        c_headers.prepare_generated(self.root)
+        self.tool.assert_not_called()
+        self.generator.assert_not_called()
 
     def test_late_generator_failure_preserves_all_existing_outputs(self):
         header = self.write("crates/ffi/include/alpha.h", b"old header\n")

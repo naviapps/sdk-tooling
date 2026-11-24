@@ -413,6 +413,7 @@ def consume_package(source, env, sdk_cli, artifact, *, expected, windows_host=No
 def pack_combined_nuget(source, env, sdk_cli, script, output, *, macos_x64_env=None):
     if output.exists() or output.is_symlink() or output.is_relative_to(source):
         raise ValueError("NuGet artifact output must be a new directory outside the SDK checkout")
+    prefix = ("mise", "exec", "--") if (source / "mise.toml").is_file() else ()
     with tempfile.TemporaryDirectory(dir=output.parent, prefix="nuget-candidate-") as directory:
         stage = Path(directory).resolve() / "package"
         stage.mkdir()
@@ -420,6 +421,7 @@ def pack_combined_nuget(source, env, sdk_cli, script, output, *, macos_x64_env=N
         run(
             source,
             env,
+            *prefix,
             *sdk_cli,
             "python",
             script,

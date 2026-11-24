@@ -128,7 +128,7 @@ def tool_pins(root):
     return tomllib.loads((root / "mise.toml").read_text()).get("tools", {})
 
 
-def tool(root, name, configuration=None):
+def tool(root, name, configuration=None, *, env=None):
     """Require the repository's pinned developer tool; never install implicitly."""
     selected = configuration or name
     tools = tool_pins(root)
@@ -136,15 +136,18 @@ def tool(root, name, configuration=None):
         raise RuntimeError(
             f"Required tool {name} is not pinned; add {selected} to {root}/mise.toml"
         )
-    return resolve_tool(root, name, tools[selected])
+    overrides = {} if env is None else {"env": env}
+    return resolve_tool(root, name, tools[selected], **overrides)
 
 
-def resolve_tool(root, name, pin):
-    executable = shutil.which(name)
+def resolve_tool(root, name, pin, *, env=None):
+    search = {} if env is None else {"path": env["PATH"]}
+    executable = shutil.which(name, **search)
     if executable is None:
         raise RuntimeError(f"Missing {name}; run mise install in {root}")
     version = pin["version"] if isinstance(pin, dict) else pin
-    actual = subprocess.check_output([executable, "--version"], text=True).strip()
+    overrides = {} if env is None else {"env": env}
+    actual = subprocess.check_output([executable, "--version"], text=True, **overrides).strip()
     if not re.search(r"(?<![\d.])" + re.escape(version) + r"(?![\d.])", actual):
         raise RuntimeError(f"{name} differs from mise.toml: {actual}")
     return executable
