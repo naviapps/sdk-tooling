@@ -147,9 +147,82 @@ writes each updated pin after its templates. A check without `--revision`
 accepts any canonical immutable pin. Add `--revision FULL_COMMIT_SHA` to
 require every selected checkout to use that revision.
 
+## Hosted distribution
+
+Start from the [workflow command](../README.md#sdk-distribution). The dispatcher
+checks out the requested commit from `main`, reads the SDK's immutable
+`[tasks.sdk-tooling]` pin in `mise.toml`, and runs the platform commands in
+`sdk-distribution.toml` as argument arrays:
+
+```toml
+[macos]
+commands = [
+  ["cargo", "fetch", "--locked"],
+  ["make", "check-distribution"],
+]
+```
+
+The macOS dispatcher uses the SDK's mise environment and passes `SDK_TOOLING`
+to Make. An explicit Make argument can override it. The `sdk-tooling` command
+uses the dispatcher's Python interpreter with the pinned checkout. On Windows,
+`python` also uses that interpreter, and `global.json` selects the x64 .NET SDK
+when present. Commands can substitute `{tooling}` for the pinned checkout and
+`{temp}` for a shared temporary directory. Use task-scoped dependencies and
+pin checksums for downloaded assets.
+
+The SDK receives its own commit in `GITHUB_SHA`. The dispatcher clears inherited
+checkout credentials and VM Runner source settings. The Windows fixture launcher
+sets `DOTNET_BIN` and `VM_RUNNER_ARTIFACTS_DIR` for the installed SDK and
+temporary output. Reproduce a previous run with both its dispatcher revision and
+its producer pin.
+
+### Framework and NuGet artifacts
+
+For macOS SDKs with `native.toml`, the workflow checks the committed inputs,
+regenerates the XCFrameworks, and runs the Swift tests and standalone SwiftPM
+consumer against the regenerated binaries. It uploads
+[framework ZIPs and receipts](#archive-regenerated-xcframeworks). SwiftPM path
+targets still load their artifacts from the SDK checkout.
+
+When a plan builds separate Windows NuGet packages, it can export the accepted
+packages and receipts. Download them from the successful run with
+`gh run download RUN_ID --repo naviapps/sdk-tooling --pattern '*-nuget-windows-*'`.
+Workflow artifacts are retained for seven days.
+
+A combined NuGet plan declares both platforms, `global.json`, `native.toml`,
+and a packer such as `pack = "distribution/pack_nuget.py"` under `[nuget]`.
+The Windows plan exports `sdk-windows` and the workflow restores its tree under
+`.native-build/windows` on macOS. The packer accepts repeated `--runtime` values
+and reports its primary package filename to `--result`, followed by any
+dependency package filenames separated by LF. Keep those packages and their
+`.nupkg.json` receipts under `.native-build/packages`, covering `osx-arm64`,
+`osx-x64` and `win-x64`.
+
+The workflow checks the same package set on macOS ARM64, Rosetta x64 and
+Windows x64. Add `--field windows-on-arm=true` to check the x64 set on
+Windows ARM64. A downloaded combined artifact has its primary package at the
+root and dependencies under `dependencies/`. Place them in one local feed.
+When the Windows plan exports a separate adapter under `sdk-nuget-companions`,
+use the adapter and combined core from the same successful run. The
+[package consumer](#installed-nuget-consumers) verifies the supplied archives
+and the workflow rechecks package and receipt bytes after execution.
+
 ## Native artifacts and provenance
 
 ### macOS builder specifications
+
+Declare each product in `native.toml`:
+
+```toml
+[[artifacts]]
+id = "sdk"
+symbol_prefix = "example_"
+minimum_macos = "26.0"
+```
+
+Run `sdk-tooling xcframework` to build or add `--verify` to check the retained
+output. Use `--product <id>` for one declaration. Multi-product SDKs also declare
+their FFI paths, receipt filenames and shared retained notice inputs.
 
 SDK-owned native specifications describe the shared `ffi.FfiProduct`.
 Cargo manifests and module maps supply package, library and module names.
@@ -321,7 +394,8 @@ dependencies from those sources with a fresh staging cache. It rejects input
 changes before publication.
 MSBuild writes new packages with a fixed ZIP timestamp. Identical native and
 managed inputs under the same packaging toolchain can reproduce the unsigned
-archive bytes.
+archive bytes. Separately rebuilding native inputs can change identifiers,
+debug metadata or signatures.
 The native producer lock covers receipt capture and verification. Staging checks
 the library digest from that receipt. On macOS the packer extracts the selected
 runtime's slice from the staged universal library, ad-hoc signs the standalone
@@ -338,6 +412,19 @@ until both accepted files have been recovered.
 See [consumer verification](#consumer-verification) for independent package and runtime checks.
 
 ## Consumer verification
+
+Declare each SDK's fixture inputs in `sdk-checks.toml`. Run SDK-owned scripts
+with `sdk-tooling python SCRIPT` or modules with `sdk-tooling python -m MODULE`.
+
+### Contributor workflows
+
+SDKs can use the [Swift matrix](../.github/workflows/check-swift.yml) and the
+[Windows x64 check step](../.github/actions/test-rust-windows/action.yml) at a
+fixed tooling revision. The matrix runs `make test` and `make test-consumer` on
+macOS 26 and 27, with `make check-source` on macOS 27 by default. Select
+`source-macos` to change the source check's OS or `source-target` to select its
+Make target. The Windows check can install the pinned x64 .NET SDK and accepts
+`test-bindings: "true"` to run the SDK's contributor fixtures.
 
 ### C ABI and .NET project checks
 
@@ -411,6 +498,13 @@ an optional `fixture` path that defaults to `fixtures/consumers/swift`. Include
 every required target path, native artifact, resource and retained notice in
 `inputs`. The fixture's `Package.swift` selects products from the staged SDK at
 `../sdk`. The fixture owns its platform requirements and API assertions.
+
+```toml
+[swift]
+inputs = ["Package.swift", "Sources", "Tests", "LICENSE"]
+executable = "ExampleConsumer"
+```
+
 Relative framework symlinks are retained. Links outside the staged tree fail.
 Developer tools, Rust crates and generated output roots are excluded, along with
 recursive `.git`, `.build`, `.native-build`, `.swiftpm` and `__pycache__` directories.

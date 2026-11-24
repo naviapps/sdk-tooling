@@ -1,21 +1,14 @@
 # SDK tooling
 
-Developer tools for native SDK build, packaging and consumer verification. The
-entry points use standard-library Python. The macOS producer uses Rust to read
-compiler dependency information. Maintainers use a Rust command to synchronize
-SDK template files and the pinned tooling revision.
-SDKs retain their APIs, layout specifications, fixture
-programs, acceptance policy and manifests. `vm-runner` owns VM lifecycle,
-credentials, source delivery and cleanup. Normal SwiftPM and NuGet consumers use
-the SDK's distributed artifacts and do not install these developer tools.
+Developer tools for native SDK build, packaging and consumer verification.
+The CLI uses standard-library Python with Rust helpers for compiler provenance
+and template synchronization. SwiftPM and NuGet consumers install the SDK's
+distributed artifacts directly.
 
 ## Documentation
 
-See the [reference](docs/REFERENCE.md) for static checks, SDK policy synchronization,
-native artifacts and consumer verification.
-
-Each SDK selects its public fixtures and acceptance commands in its own
-check and distribution configurations.
+The [reference](docs/REFERENCE.md) covers static checks, SDK policy synchronization,
+native artifacts, distribution and consumer verification.
 
 ## Use a pinned revision
 
@@ -28,38 +21,9 @@ Set `SDK_TOOLING_REVISION` to the full commit SHA and run:
 uvx --from "git+https://github.com/naviapps/sdk-tooling.git@$SDK_TOOLING_REVISION" sdk-tooling --help
 ```
 
-Place the file selections and fixtures for public API checks in
-`sdk-checks.toml` at the SDK root. A minimal Swift consumer declaration uses a
-SwiftPM fixture whose local SDK dependency is at `../sdk`:
-
-```toml
-[swift]
-inputs = ["Package.swift", "Sources", "Tests", "LICENSE"]
-executable = "ExampleConsumer"
-```
-
-`swift-consumer` stages the declared SDK inputs and
-`fixtures/consumers/swift` in a temporary directory. Add `--distribution`
-to verify the full resolved dependency graph. SDK-owned sections also select
-the inputs for `docs`, `rust-c-consumers`, `nuget-consumer` and `check-binding`.
-
-Native SDKs describe their artifacts in `native.toml`. Each product identifies
-its C symbol namespace and minimum supported macOS version. Add the FFI path,
-receipt filename and notice packages for multi-product SDKs.
-
-```toml
-[[artifacts]]
-id = "sdk"
-symbol_prefix = "example_"
-minimum_macos = "26.0"
-```
-
-`sdk-tooling xcframework` builds the declared macOS frameworks and records
-their source specification. Use `xcframework --verify` to verify a checkout's
-existing frameworks, or `--product <id>` to select one declaration.
-`sdk-tooling python distribution/verify_windows.py` runs an SDK-owned check
-with the same selected toolkit. Module commands use `python -m` after the CLI
-command, for example `sdk-tooling python -m unittest discover -s distribution/tests`.
+Configure [public API checks](docs/REFERENCE.md#consumer-verification) in
+`sdk-checks.toml` and [native products](docs/REFERENCE.md#macos-builder-specifications)
+in `native.toml`.
 
 ## Developer bootstrap
 
@@ -98,120 +62,20 @@ dependency locks, shared caches and native build recovery directories. When
 an output contains a native publisher lock, it must acquire that lock before
 removing any output.
 
-Public SDKs run contributor checks in their own repositories. They can call the
-[Swift matrix](.github/workflows/check-swift.yml) and the
-[Windows x64 check step](.github/actions/test-rust-windows/action.yml) at an
-immutable SDK Tooling revision. The Swift matrix runs the SDK's `make test` and
-`make test-consumer` targets on macOS 26 and 27. It runs `make check-source` on
-macOS 27 by default. SDKs can select macOS 26 with `source-macos` or choose a
-Make target that prepares and runs their source checks with `source-target`.
-Windows checks can opt in to installing the x64 .NET SDK declared in the SDK's
-`global.json`. Set `test-bindings: "true"` on the Windows check step to run the
-contributor fixtures declared in [`sdk-checks.toml`](docs/REFERENCE.md#c-abi-and-net-project-checks).
+## SDK distribution
 
-The shared
-[SDK distribution checks](.github/workflows/check-sdk-distribution.yml) are run
-by maintainers before publishing a native SDK. Run the dispatch from the selected
-SDK checkout at the intended commit on `main`:
+Run the [distribution workflow](.github/workflows/check-sdk-distribution.yml)
+from the SDK checkout at the intended commit on `main`:
 
 ```sh
 gh workflow run check-sdk-distribution.yml --repo naviapps/sdk-tooling \
   --field sdk=configuration-storage --field "revision=$(git rev-parse HEAD)"
 ```
 
-The workflow reads `sdk-distribution.toml` from a clean SDK checkout at the
-requested commit and starts only the declared platform jobs. Each platform has
-a `commands` array of argument arrays. For example:
+See [hosted distribution](docs/REFERENCE.md#hosted-distribution) for the plan,
+runtime checks and downloadable artifacts.
 
-```toml
-[macos]
-commands = [
-  ["cargo", "fetch", "--locked"],
-  ["make", "check-distribution"],
-]
-```
-
-For a macOS SDK with `native.toml`, the job checks the committed distribution,
-then builds the declared XCFrameworks once with the SDK's pinned tooling. The
-workflow runs the Swift tests and the independent SwiftPM consumer once against
-the regenerated binaries.
-The job uploads a ZIP for each framework, the build receipts and the checksum
-index as a seven-day Actions artifact. The archives are verification output.
-SDKs that use SwiftPM path-based binary targets continue to supply their
-frameworks in the source checkout.
-
-For a Windows-only NuGet build, the job uploads accepted packages and their
-package receipts from the SDK's hosted acceptance output when the driver
-exports them. These seven-day Actions artifacts let maintainers recover the
-exact packages used by the independent consumer. For example:
-
-```sh
-gh run download RUN_ID --repo naviapps/sdk-tooling --pattern 'desktop-actions-nuget-windows-*'
-```
-
-To verify one cross-platform NuGet package, add `[nuget]` with a
-`pack = "distribution/pack_nuget.py"` entry. Both platform plans must be
-present. The Windows plan exports its accepted builds under `sdk-windows`,
-typically at `sdk-windows/win-x64`. The workflow restores that tree under
-`.native-build/windows` on macOS, keeping any SDK-owned native dependency
-directories intact.
-
-The packer accepts repeated `--runtime` options and reports the primary
-package filename to `--result`, followed by any already-verified dependency
-package filenames separated by LF. Each file and its `.nupkg.json` receipt
-must be under `.native-build/packages` and cover the same three runtimes.
-The macOS job combines the accepted Windows build and regenerated macOS
-framework, then runs the independent consumer with arm64 .NET and x64 .NET
-under Rosetta. Downloaded artifacts retain the primary package at the root and
-any dependencies under `dependencies/`. To install from a local feed, place
-the primary and dependency packages together in its directory. Each macOS
-and Windows consumer verifies the same package and receipt bytes before and
-after running. Set `--field windows-on-arm=true` at dispatch to run the x64
-packages with x64 .NET on GitHub's Windows on Arm runner too.
-
-Packing with explicit dependency sources restores into a fresh cache for each
-build. This keeps paired packages on the selected feed when the machine has
-cached the same package ID and version from another feed.
-
-Unsigned NuGet packing uses deterministic managed builds and fixed archive
-timestamps. Repacking the same source, native inputs and toolchain can reproduce
-the archive bytes. Rebuilding the native inputs separately can change binary
-identifiers, debug metadata or signatures. Use the package and receipt from the
-same producer run for cross-platform verification.
-
-If the SDK distributes a separate Windows adapter, its Windows plan can export
-the verified adapter package and receipt under `sdk-nuget-companions` in the
-hosted acceptance output. Download the adapter and the combined core package
-from the same successful run and put both packages in one local feed.
-
-On macOS the dispatcher runs the commands through the SDK's mise environment.
-The `sdk-tooling` command runs the pinned checkout with the dispatcher's Python
-interpreter. The dispatcher also supplies this runner as `SDK_TOOLING` to Make,
-including Make launched by a mise task. An explicit Make argument can override
-it. Use task-scoped mise tools for release-only dependencies and pin the checksum
-for downloaded assets. On Windows, `python` uses the dispatcher's interpreter
-and `global.json` selects the x64 .NET SDK when present. Commands can use `{tooling}` for
-the pinned tooling checkout or `{temp}` for a temporary directory shared across
-commands.
-
-The tooling revision comes from the `[tasks.sdk-tooling]` task in the SDK's
-`mise.toml`:
-
-```toml
-[tasks.sdk-tooling]
-run = "uvx --from git+https://github.com/naviapps/sdk-tooling.git@<full-sha> sdk-tooling"
-```
-
-The dispatcher keeps its own checkout so workflow changes can ship independently.
-The hosted job sets `GITHUB_SHA` to the selected SDK commit and uses Git to select
-the source files. It clears inherited VM Runner snapshot settings and checkout
-credentials. The Windows fixture launcher supplies `DOTNET_BIN` and
-`VM_RUNNER_ARTIFACTS_DIR` from the runner's x64 tool and temporary directory.
-To reproduce checks for an older SDK commit, use the dispatcher and producer
-revisions from the original workflow run and follow the SDK's instructions at
-that commit.
-
-### SDK checkouts
+## SDK checkouts
 
 Review the SDK's `mise.toml`, select full Xcode, then run its check target:
 
@@ -283,9 +147,9 @@ or changing its tracking status.
 
 ## Ownership boundaries
 
-Do not add product policy, provider calls, SDK-to-SDK discovery, host settings,
-VM operations or release authorization here. Keep repository files that are
-necessary for standalone SDK use; consolidate their maintenance and mechanisms.
+SDKs own their APIs, dependency discovery, fixtures and acceptance policy.
+VM Runner owns host settings, credentials, source delivery, isolation and
+cleanup. Hosts own product policy, provider calls and release authorization.
 
 ## License
 
