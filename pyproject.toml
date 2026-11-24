@@ -26,7 +26,6 @@ ignore = ["E731"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "/LICENSE",
   "/README.md",
   "/sdk_tooling",
   "/ci/run_sdk_tooling.py",

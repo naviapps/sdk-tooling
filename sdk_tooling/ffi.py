@@ -174,10 +174,11 @@ class FfiProduct:
         return paths
 
     def notices(self):
+        rust_provenance = self.notice_root / "Rust" / "provenance.json"
         paths = [
             p
             for p in files(self.notice_root)
-            if p.name not in (".DS_Store", "registry-notices.json")
+            if p != rust_provenance and p.name not in (".DS_Store", "registry-notices.json")
         ]
         if (self.root / "LICENSE").is_file():
             paths.insert(0, self.root / "LICENSE")

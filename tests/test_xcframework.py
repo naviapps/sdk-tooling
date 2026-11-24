@@ -175,6 +175,25 @@ class NativeInputsTests(unittest.TestCase):
         builder = XcframeworkBuilder(self.root, symbol_prefix="fixture_", minimum_macos="26.0")
         self.assertEqual(builder.version, "0.3.0")
 
+    def test_scoped_rust_provenance_is_an_input_but_not_a_notice(self):
+        provenance = "ThirdParty/Core/Rust/provenance.json"
+        self.write(provenance, '{"version": "1.99.1"}\n')
+        self.write("ThirdParty/Core/vendor/provenance.json", "upstream notice")
+        license_bytes = b"Rust license\r\nOriginal notice\r\n"
+        self.write("ThirdParty/Core/Rust/LICENSE-MIT", "").write_bytes(license_bytes)
+        product = ffi.FfiProduct(
+            self.root, symbol_prefix="fixture_", notice_directory="ThirdParty/Core"
+        )
+
+        notices = product.notices()
+        self.assertNotIn(provenance.encode(), notices)
+        self.assertIn(license_bytes, notices)
+        self.assertIn(b"ThirdParty/Core/vendor/provenance.json =====\nupstream notice", notices)
+        before = product.build_sources()
+        self.assertIn(provenance, before)
+        self.write(provenance, '{"version": "1.99.2"}\n')
+        self.assertNotEqual(product.build_sources(), before)
+
     def test_runtime_edit_or_new_module_connection_invalidates(self):
         before = self.builder.inputs()
         self.write("crates/core/src/new.rs", "pub fn new_runtime() {}")
