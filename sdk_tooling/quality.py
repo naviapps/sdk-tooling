@@ -185,7 +185,7 @@ def format_with_dprint(root, paths, *, write):
 def check(root, *, write=False, languages=None, dotnet=False):
     root = Path(root).resolve(strict=True)
     files = source_files(root)
-    chosen = set(languages or ("python", "swift", "rust", "c", "shell", "data"))
+    chosen = set(languages or ("python", "swift", "rust", "shell", "data"))
 
     def by_suffix(*suffixes):
         return ["./" + name for name in files if Path(name).suffix in suffixes]
@@ -211,19 +211,6 @@ def check(root, *, write=False, languages=None, dotnet=False):
             for path in paths:
                 run(root, ["bash", "-n", path])
             run(root, [tool(root, "shellcheck"), *paths])
-    if "c" in chosen and (paths := by_suffix(".c", ".h")) and os.name != "nt":
-        style = root / ".clang-format"
-        if style.is_symlink() or not style.is_file():
-            raise RuntimeError(f"C formatting requires an ordinary style file at {style}")
-        run(
-            root,
-            [
-                tool(root, "clang-format", "pypi:clang-format"),
-                f"--style=file:{style}",
-                *(["-i"] if write else ["--dry-run", "--Werror"]),
-                *paths,
-            ],
-        )
     if "swift" in chosen and (paths := by_suffix(".swift")) and sys.platform == "darwin":
         run(
             root,
@@ -327,7 +314,7 @@ def check(root, *, write=False, languages=None, dotnet=False):
 def add_arguments(parser):
     parser.add_argument("operation", choices=["check", "format"])
     parser.add_argument(
-        "--language", action="append", choices=["python", "swift", "rust", "c", "shell", "data"]
+        "--language", action="append", choices=["python", "swift", "rust", "shell", "data"]
     )
     parser.add_argument(
         "--dotnet",

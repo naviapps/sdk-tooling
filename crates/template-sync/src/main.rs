@@ -24,12 +24,8 @@ const RUST_TEMPLATES: [(&str, &[u8]); 2] = [
         include_bytes!("../templates/rust-toolchain.toml"),
     ),
 ];
-const QUALITY_TEMPLATES: [(&str, &[u8]); 3] = [
+const QUALITY_TEMPLATES: [(&str, &[u8]); 2] = [
     ("ruff.toml", include_bytes!("../templates/ruff.toml")),
-    (
-        ".clang-format",
-        include_bytes!("../templates/.clang-format"),
-    ),
     (
         ".swiftlint.yml",
         include_bytes!("../templates/.swiftlint.yml"),

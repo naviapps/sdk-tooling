@@ -101,7 +101,6 @@ fn check_reports_adopted_policy_drift_without_writing() {
         fs::read(&ruff).unwrap(),
         include_bytes!("../templates/ruff.toml")
     );
-    assert!(!path.join(".clang-format").exists());
     assert!(!path.join("rust-toolchain.toml").exists());
     assert!(!path.join("tools").exists());
 }
@@ -121,7 +120,7 @@ fn pin_updates_preserve_mise_tasks_and_sdk_owned_policy() {
             "# Keep {REVISION} in this comment\r\n[tasks.\"sdk-tooling\"]\r\nrun = '{previous}' # review\r\n\r\n[tasks.check]\r\nrun = \"make test\"\r\n"
         );
         fs::write(path.join("mise.toml"), &mise).unwrap();
-        let sdk_policies = [".gitattributes", ".dprint.json"];
+        let sdk_policies = [".gitattributes", ".dprint.json", ".clang-format"];
         for policy in sdk_policies {
             fs::write(path.join(policy), "SDK-owned policy\n").unwrap();
         }

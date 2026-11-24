@@ -81,12 +81,10 @@ it contains. Public SDK declarations are retained. Review dynamic/Objective-C/Co
 findings before deleting code; analyzer output is a review report, not evidence that
 all configurations or external callers are covered.
 
-#### C, shell and workflows
+#### Shell and workflows
 
-On macOS and Linux, clang-format checks first-party `.c` and `.h` files using the
-repository's required root `.clang-format`. Shell formatting uses dprint with a
-checksummed shfmt Wasm plugin. Bash syntax checks and ShellCheck validate the same
-scripts.
+Shell formatting uses dprint with a checksummed shfmt Wasm plugin. Bash syntax
+checks and ShellCheck validate the same scripts.
 
 Jactionlint checks selected workflows and composite actions with its correctness
 profile. It runs ShellCheck for inline shell and Ruff's `F` rules for inline
@@ -140,7 +138,7 @@ and Git attributes.
 
 Rust SDKs receive updates for their existing EditorConfig and Rust toolchain
 files. SDK-specific EditorConfig sections are retained. Use `--quality` to
-update existing Ruff, SwiftLint and C formatting policies. Use
+update existing Ruff and SwiftLint configuration. Use
 `--swift-format` to adopt or update the shared Swift formatting file.
 
 The tool validates all selected checkout paths before replacing files and

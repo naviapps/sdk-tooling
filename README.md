@@ -105,13 +105,13 @@ checksummed source bundle and local Git mirror supplied by its host.
 
 ### Tool ownership
 
-| Scope               | Tools and version authority                                                                                                                                                                                                                                             |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repository checks   | Each repository's `mise.toml` selects Python, formatters and linters. `global.json` pins the .NET SDK where applicable. `uv` supplies the PyPI tool backend.                                                                                                            |
-| Rust producers      | `rust-toolchain.toml` selects Rust, rustfmt and Clippy. Install only the standard-library targets needed by the job: both Darwin targets for universal frameworks, the appropriate MSVC target for Windows, or the WebAssembly target for browser bindings.             |
-| macOS SDKs          | Select full Xcode for Swift, SwiftPM, swift-format, Clang, `xcodebuild` and Mach-O inspection. Use the macOS signing tools for framework checks. Do not install separate copies of these tools through mise. The pinned C formatter is independent of Xcode's compiler. |
-| Native Windows SDKs | Use Python and Rust for the host architecture, Visual Studio C++ tools with the Windows SDK, and the x64 .NET SDK pinned in `global.json` for x64 SDKs.                                                                                                                 |
-| Optional jobs       | Web bindings and release packaging have separate prerequisites. Windows DLLs are built and exercised on Windows.                                                                                                                                                        |
+| Scope               | Tools and version authority                                                                                                                                                                                                                                 |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository checks   | Each repository's `mise.toml` selects Python, formatters and linters. `global.json` pins the .NET SDK where applicable. `uv` supplies the PyPI tool backend.                                                                                                |
+| Rust producers      | `rust-toolchain.toml` selects Rust, rustfmt and Clippy. Install only the standard-library targets needed by the job: both Darwin targets for universal frameworks, the appropriate MSVC target for Windows, or the WebAssembly target for browser bindings. |
+| macOS SDKs          | Select full Xcode for Swift, SwiftPM, swift-format, Clang, `xcodebuild` and Mach-O inspection. Use the macOS signing tools for framework checks. Do not install separate copies of these tools through mise.                                                |
+| Native Windows SDKs | Use Python and Rust for the host architecture, Visual Studio C++ tools with the Windows SDK, and the x64 .NET SDK pinned in `global.json` for x64 SDKs.                                                                                                     |
+| Optional jobs       | Web bindings and release packaging have separate prerequisites. Windows DLLs are built and exercised on Windows.                                                                                                                                            |
 
 ### Windows on Arm
 
