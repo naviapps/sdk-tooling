@@ -62,6 +62,7 @@ fn cli_accepts_relative_checkout_paths_with_spaces_and_leading_hyphens() {
         let checkout = working_directory.path().join(name);
         fs::create_dir(&checkout).unwrap();
         fs::write(checkout.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(checkout.join("ruff.toml"), "line-length = 90\n").unwrap();
         write_mise(&checkout, REVISION);
     }
 
@@ -74,13 +75,13 @@ fn cli_accepts_relative_checkout_paths_with_spaces_and_leading_hyphens() {
             .output()
             .unwrap()
     };
-    succeeds(invoke(&["--swift-format", "--revision", OTHER]));
-    succeeds(invoke(&["--check", "--swift-format", "--revision", OTHER]));
+    succeeds(invoke(&["--quality", "--revision", OTHER]));
+    succeeds(invoke(&["--check", "--quality", "--revision", OTHER]));
     for name in roots {
         let checkout = working_directory.path().join(name);
         assert_eq!(
-            fs::read(checkout.join(".swift-format")).unwrap(),
-            include_bytes!("../templates/.swift-format")
+            fs::read(checkout.join("ruff.toml")).unwrap(),
+            include_bytes!("../templates/ruff.toml")
         );
         assert!(!checkout.join("tools").exists());
     }
@@ -120,7 +121,12 @@ fn pin_updates_preserve_mise_tasks_and_sdk_owned_policy() {
             "# Keep {REVISION} in this comment\r\n[tasks.\"sdk-tooling\"]\r\nrun = '{previous}' # review\r\n\r\n[tasks.check]\r\nrun = \"make test\"\r\n"
         );
         fs::write(path.join("mise.toml"), &mise).unwrap();
-        let sdk_policies = [".gitattributes", ".dprint.json", ".clang-format"];
+        let sdk_policies = [
+            ".gitattributes",
+            ".dprint.json",
+            ".clang-format",
+            ".swift-format",
+        ];
         for policy in sdk_policies {
             fs::write(path.join(policy), "SDK-owned policy\n").unwrap();
         }
@@ -172,7 +178,9 @@ fn malformed_or_legacy_checkouts_block_writes_to_all_selected_paths() {
     .unwrap();
     let legacy_contents = fs::read(&legacy_pin).unwrap();
 
-    let update = || sync(roots, &["--swift-format", "--revision", OTHER]);
+    let first_ruff = first.path().join("ruff.toml");
+    fs::write(&first_ruff, "line-length = 90\n").unwrap();
+    let update = || sync(roots, &["--quality", "--revision", OTHER]);
     write_mise(legacy.path(), "main");
     fails(update(), "canonical immutable revision");
     fs::write(&mise, "[tasks.check]\nrun = 'make test'\n").unwrap();
@@ -180,7 +188,10 @@ fn malformed_or_legacy_checkouts_block_writes_to_all_selected_paths() {
     fs::remove_file(&mise).unwrap();
     fails(update(), "requires mise.toml");
 
-    assert!(!first.path().join(".swift-format").exists());
+    assert_eq!(
+        fs::read_to_string(&first_ruff).unwrap(),
+        "line-length = 90\n"
+    );
     assert!(
         fs::read_to_string(first.path().join("mise.toml"))
             .unwrap()
@@ -212,23 +223,17 @@ fn check_accepts_distinct_immutable_pins_unless_a_revision_is_required() {
 }
 
 #[test]
-fn adopted_editorconfig_keeps_local_sections_and_swift_format_is_opt_in() {
+fn adopted_editorconfig_keeps_local_sections() {
     let root = temporary_sdk();
     let path = root.path();
-    let swift_format = path.join(".swift-format");
     let editorconfig = path.join(".editorconfig");
     let local = b"[bindings/dotnet/src/Library/**.cs]\r\ndotnet_diagnostic.IDE0005.severity = warning\r\n\r\n[fixtures/*.cs]\r\nindent_size = 4";
-    fs::write(&swift_format, "SDK-owned choice").unwrap();
     fs::write(
         &editorconfig,
         [b"root = true\r\n\r\n", local.as_slice()].concat(),
     )
     .unwrap();
     succeeds(sync(&[path], &["--revision", REVISION]));
-    assert_eq!(
-        fs::read_to_string(&swift_format).unwrap(),
-        "SDK-owned choice"
-    );
     let merged = fs::read(&editorconfig).unwrap();
     for section in [
         b"[bindings/dotnet/src/Library/**.cs]\r\ndotnet_diagnostic.IDE0005.severity = warning"
@@ -238,12 +243,7 @@ fn adopted_editorconfig_keeps_local_sections_and_swift_format_is_opt_in() {
         assert!(merged.windows(section.len()).any(|bytes| bytes == section));
     }
 
-    succeeds(sync(&[path], &["--swift-format", "--revision", REVISION]));
-    assert_eq!(
-        fs::read(&swift_format).unwrap(),
-        include_bytes!("../templates/.swift-format")
-    );
-    succeeds(sync(&[path], &["--check", "--swift-format"]));
+    succeeds(sync(&[path], &["--check"]));
 }
 
 #[test]
@@ -274,14 +274,19 @@ fn linked_configuration_in_a_later_checkout_blocks_writes() {
     let mise = last.path().join("mise.toml");
     fs::remove_file(&mise).unwrap();
     symlink(external.path(), &mise).unwrap();
+    let first_ruff = first.path().join("ruff.toml");
+    fs::write(&first_ruff, "line-length = 90\n").unwrap();
 
     fails(
         sync(
             &[first.path(), last.path()],
-            &["--swift-format", "--revision", OTHER],
+            &["--quality", "--revision", OTHER],
         ),
         "linked or non-ordinary SDK configuration",
     );
-    assert!(!first.path().join(".swift-format").exists());
+    assert_eq!(
+        fs::read_to_string(&first_ruff).unwrap(),
+        "line-length = 90\n"
+    );
     assert!(fs::read(external.path()).unwrap().is_empty());
 }

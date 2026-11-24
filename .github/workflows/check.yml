@@ -69,7 +69,7 @@ jobs:
           MISE_DISABLE_TOOLS: python,rust
           MISE_AUTO_INSTALL: "0"
         shell: bash
-        run: mise exec -- python -B -m sdk_tooling quality check --language python --language shell --language data
+        run: mise exec -- python -B -m sdk_tooling quality check --language python --language data
       - name: Select pinned Rust toolchain
         shell: bash
         run: rustup show

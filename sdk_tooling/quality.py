@@ -200,7 +200,6 @@ def check(root, *, write=False, languages=None, dotnet=False):
             "./" + name
             for name in files
             if Path(name).suffix in {".json", ".toml", ".yml", ".yaml", ".md"}
-            and "fixtures" not in Path(name).parts
             and not Path(name).name.upper().startswith(("CHANGELOG", "HISTORY"))
         ]
         if paths:

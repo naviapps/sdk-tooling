@@ -31,15 +31,10 @@ const QUALITY_TEMPLATES: [(&str, &[u8]); 2] = [
         include_bytes!("../templates/.swiftlint.yml"),
     ),
 ];
-const SWIFT_FORMAT: (&str, &[u8]) = (
-    ".swift-format",
-    include_bytes!("../templates/.swift-format"),
-);
 
 #[derive(Default)]
 struct Options {
     check: bool,
-    swift_format: bool,
     quality: bool,
     revision: Option<String>,
     roots: Vec<PathBuf>,
@@ -52,7 +47,6 @@ impl Options {
         while let Some(argument) = args.next() {
             match argument.to_str() {
                 Some("--check") => options.check = true,
-                Some("--swift-format") => options.swift_format = true,
                 Some("--quality") => options.quality = true,
                 Some("--revision") => {
                     options.revision = Some(
@@ -186,9 +180,6 @@ fn templates(options: &Options, rust: bool) -> Vec<(&'static str, &'static [u8])
     if rust {
         configs.extend(RUST_TEMPLATES);
     }
-    if options.swift_format {
-        configs.push(SWIFT_FORMAT);
-    }
     if options.quality {
         configs.extend(QUALITY_TEMPLATES);
     }
@@ -197,7 +188,7 @@ fn templates(options: &Options, rust: bool) -> Vec<(&'static str, &'static [u8])
 
 struct Replacement {
     path: PathBuf,
-    previous: Option<Vec<u8>>,
+    previous: Vec<u8>,
     desired: Vec<u8>,
 }
 
@@ -228,7 +219,7 @@ impl Replacement {
             )
         })?;
         let updated: Result<()> = (|| {
-            if ordinary_contents(&self.path)? != self.previous {
+            if ordinary_contents(&self.path)?.as_deref() != Some(self.previous.as_slice()) {
                 return Err(format!("SDK configuration changed: {}", self.path.display()).into());
             }
             file.write_all(&self.desired)?;
@@ -270,16 +261,15 @@ fn plan(options: &Options) -> Result<Vec<Replacement>> {
         let (actual, span) = tooling_pin(&current_mise)?;
         for (name, template) in templates(options, rust) {
             let path = root.join(name);
-            let previous = ordinary_contents(&path)?;
-            if previous.is_none() && name != ".swift-format" {
+            let Some(previous) = ordinary_contents(&path)? else {
                 continue;
-            }
+            };
             let desired = if name == ".editorconfig" {
-                editorconfig(template, previous.as_deref().unwrap_or_default())
+                editorconfig(template, &previous)
             } else {
                 template.to_vec()
             };
-            if previous.as_deref() != Some(&desired) {
+            if previous != desired {
                 replacements.push(Replacement {
                     path,
                     previous,
@@ -300,7 +290,7 @@ fn plan(options: &Options) -> Result<Vec<Replacement>> {
             desired[span].copy_from_slice(revision.as_bytes());
             replacements.push(Replacement {
                 path: mise,
-                previous: Some(current_mise),
+                previous: current_mise,
                 desired,
             });
         }

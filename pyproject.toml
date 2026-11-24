@@ -14,6 +14,16 @@ license-files = ["LICENSE"]
 [project.scripts]
 sdk-tooling = "sdk_tooling.__main__:main"
 
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Ruff defaults, import hygiene and a mutable-default bug check.
+select = ["E4", "E7", "E9", "F", "I", "RUF100", "B006"]
+# Local callable binding is a style choice, not a correctness failure.
+ignore = ["E731"]
+
 [tool.hatch.build.targets.sdist]
 include = [
   "/LICENSE",

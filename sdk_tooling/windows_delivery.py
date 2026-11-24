@@ -57,7 +57,6 @@ class X64Acceptance:
     def build(self, native, *, fetch_all=False):
         fetch = ("cargo", "fetch", "--locked") if fetch_all else locked_fetch_args()
         self.run(*fetch)
-        self.run("cargo", "fmt", "--all", "--", "--check")
         built = windows.build_library(native, self.env, self.tools, "x64", native_host=self.host)
         workspace = ("--workspace", "--target", TARGET, "--locked", "--offline")
         self.run("cargo", "clippy", *workspace, "--all-targets", "--", "-D", "warnings")

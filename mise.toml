@@ -21,13 +21,13 @@ run = [
 
 [tasks.lint]
 run = [
-  "python3 -B -m sdk_tooling quality check --language python --language shell --language data",
+  "python3 -B -m sdk_tooling quality check --language python --language data",
   "cargo fmt --all -- --check",
 ]
 
 [tasks.format]
 run = [
-  "python3 -B -m sdk_tooling quality format --language python --language shell --language data",
+  "python3 -B -m sdk_tooling quality format --language python --language data",
   "cargo fmt --all",
 ]
 

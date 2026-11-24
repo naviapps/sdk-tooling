@@ -83,8 +83,8 @@ all configurations or external callers are covered.
 
 #### Shell and workflows
 
-Shell formatting uses dprint with a checksummed shfmt Wasm plugin. Bash syntax
-checks and ShellCheck validate the same scripts.
+For repositories with shell scripts, configure the shfmt Wasm plugin in dprint.
+Bash syntax checks and ShellCheck validate the same scripts.
 
 Jactionlint checks selected workflows and composite actions with its correctness
 profile. It runs ShellCheck for inline shell and Ruff's `F` rules for inline
@@ -96,8 +96,9 @@ check.
 
 #### Markdown and structured data
 
-Dprint formats owned Markdown, JSON, TOML and YAML with checksummed Wasm plugins,
-without requiring Node in SDK repositories.
+Dprint formats owned Markdown, JSON, TOML and YAML with version-pinned Wasm
+plugins from the npm registry. Declare fixture exclusions in `.dprint.json` so
+the editor, direct dprint commands and the shared quality gate use the same policy.
 
 #### Rust and managed code
 
@@ -138,8 +139,7 @@ and Git attributes.
 
 Rust SDKs receive updates for their existing EditorConfig and Rust toolchain
 files. SDK-specific EditorConfig sections are retained. Use `--quality` to
-update existing Ruff and SwiftLint configuration. Use
-`--swift-format` to adopt or update the shared Swift formatting file.
+update existing Ruff and SwiftLint configuration.
 
 The tool validates all selected checkout paths before replacing files and
 writes each updated pin after its templates. A check without `--revision`
