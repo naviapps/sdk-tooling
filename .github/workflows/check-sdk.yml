@@ -1,0 +1,125 @@
+name: SDK checks
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: Platform selection from the caller.
+        type: string
+        default: all
+      package-documentation:
+        description: Markdown path consumed by a package build.
+        type: string
+        default: ""
+      source-macos:
+        description: macOS version that runs source and binding checks.
+        type: string
+        default: "27"
+      source-target:
+        description: Make target for source and binding checks.
+        type: string
+        default: check-source
+      windows:
+        description: Windows x64 check mode (off, rust, bindings, or managed).
+        type: string
+        default: "off"
+      windows-fixture:
+        description: Run the SDK's .github/check-windows.ps1 after the x64 checks.
+        type: boolean
+        default: false
+      native-aot:
+        description: Run the SDK's manual win-x64 Native AOT distribution check.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: ${{ !inputs.native-aot }}
+    uses: ./.github/workflows/plan-checks.yml
+    with:
+      package-documentation: ${{ inputs.package-documentation }}
+
+  swift:
+    name: Swift
+    needs: plan
+    if: ${{ needs.plan.outputs.documentation-only != 'true' && inputs.platform != 'windows' }}
+    uses: ./.github/workflows/check-swift.yml
+    with:
+      source-macos: ${{ inputs.source-macos }}
+      source-target: ${{ inputs.source-target }}
+
+  windows:
+    name: ${{ inputs.windows == 'rust' && 'Test Rust' || 'Test Rust and .NET' }}
+    needs: plan
+    if: ${{ needs.plan.outputs.documentation-only != 'true' && inputs.platform != 'macos' && inputs.windows != 'off' }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Check Windows configuration
+        shell: pwsh
+        env:
+          SDK_WINDOWS_MODE: ${{ inputs.windows }}
+        run: |
+          if ($env:SDK_WINDOWS_MODE -notin @('rust', 'bindings', 'managed')) {
+            throw 'Select rust, bindings, managed, or off for the Windows checks.'
+          }
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/test-rust-windows
+        with:
+          dotnet: ${{ inputs.windows == 'managed' }}
+          test-bindings: ${{ inputs.windows == 'bindings' }}
+      - name: Test SDK-specific Windows source
+        if: inputs.windows == 'managed' || inputs.windows-fixture
+        shell: pwsh
+        run: |
+          ./.github/check-windows.ps1
+          exit $LASTEXITCODE
+
+  native-aot:
+    name: Run Native AOT NuGet consumer
+    if: inputs.native-aot
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          path: sdk
+          persist-credentials: false
+      - name: Check out the fixed SDK Tooling revision
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: tooling
+          persist-credentials: false
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.15.2"
+          architecture: x64
+      - name: Install pinned x64 .NET SDK
+        uses: actions/setup-dotnet@v6.1.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          global-json-file: sdk/global.json
+          architecture: x64
+          skip-lts-prepass: true
+      - name: Install pinned Rust
+        run: rustup install --no-self-update
+      - name: Install pinned cbindgen
+        run: |
+          $version = python -c 'import tomllib; from pathlib import Path; print(tomllib.loads(Path("mise.toml").read_text())["tools"]["cargo:cbindgen"])'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo install --locked cbindgen --version $version
+      - name: Verify the x64 packages and publish the Native AOT consumer
+        run: python -I -B ../tooling/ci/run_sdk_tooling.py windows -m distribution.verify_windows --native-aot

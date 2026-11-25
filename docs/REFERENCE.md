@@ -146,6 +146,29 @@ writes each updated pin after its templates. A check without `--revision`
 accepts any canonical immutable pin. Add `--revision FULL_COMMIT_SHA` to
 require every selected checkout to use that revision.
 
+## Shared source workflow
+
+Reference `.github/workflows/check-sdk.yml` at a reviewed SDK Tooling commit
+from the SDK repository's check workflow. The SDK owns triggers, its Make
+targets and acceptance fixtures. The called workflow selects the checks and
+configures GitHub-hosted runners.
+
+The default runs the same Swift tests and standalone consumer on macOS 26
+and 27. Source checks run on macOS 27. Override `source-macos` to select 26 or
+`source-target` to select an SDK-specific Make target. Supply
+`package-documentation` when a Markdown file is a packaging input.
+
+Set `windows` to `rust` for x64 workspace tests, `bindings` to also test the
+managed bindings in `sdk-checks.toml`, or `managed` to install .NET for an
+SDK-specific source check. Set `windows-fixture` to run the checkout's
+`.github/check-windows.ps1` after shared checks. That fixture always runs in
+`managed` mode. Use `platform` to select `all`, `macos`, or `windows`.
+
+The optional `native-aot` input runs the SDK's manual win-x64 package check.
+That mode requires an SDK-owned `distribution.verify_windows` Python module
+that accepts `--native-aot`, plus the Rust, .NET and cbindgen pins declared by
+the SDK.
+
 ## Distribution CLI
 
 Install SDK Tooling at the [reviewed revision](../README.md#use-a-pinned-revision).

@@ -62,11 +62,10 @@ After changing a workflow's action dependencies, regenerate its
 `actions.lock` with `gh actions-lock` and review the resolved commits.
 Run `gh actions-lock --verify` to check it.
 
-In a Navi Apps native SDK checkout, `make clean` removes ordinary build outputs,
-and `make clean-distribution` uses the CLI for native packaging outputs. In this
-tooling checkout, use `mise run clean`. Finish local builds and tests before
-cleaning. The distribution cleaner preserves native build recovery directories
-and acquires native publisher locks before removing output.
+Run `make clean` in an SDK checkout to remove the local build outputs listed
+in its Makefile. In this tooling checkout, use `mise run clean`. Finish local
+builds and tests before cleaning. The cleaner preserves native build recovery
+directories and acquires native publisher locks before removing output.
 
 ## SDK distribution
 
@@ -100,8 +99,10 @@ selected tools on `PATH`, including in external consumers. The template's
 `activate_aggressive` setting also keeps them ahead of system tools in Make recipes;
 older checkouts need `MISE_ACTIVATE_AGGRESSIVE=1` before `mise exec`.
 Check Python against `mise.toml` and the formatter with `xcrun swift-format --version`.
-These source checks run directly in the SDK checkout. Packaging and installed
-artifact acceptance use SDK Tooling.
+The SDK's `make check` uses the pinned shared CLI for quality and standalone
+consumer checks. Use the SDK's language test commands for a focused test run.
+The [shared source workflow](docs/REFERENCE.md#shared-source-workflow) runs the
+same source and consumer checks on GitHub-hosted runners.
 This tooling repository uses `mise run check` and has no Makefile.
 
 SDKs that declare `native.toml` use the pinned CLI from `mise.toml` for local
