@@ -1,12 +1,12 @@
 """Read an SDK's native build declaration and select its Rust C ABI products."""
 
 import re
-import tomllib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .ffi import FfiProduct
+from .manifest import LEGACY_MANIFESTS, MANIFEST, manifest_path, read_section
 
-SPECIFICATION = "native.toml"
+SPECIFICATION = LEGACY_MANIFESTS["native"]
 _FFI_OPTIONS = {
     "ffi",
     "symbol_prefix",
@@ -31,14 +31,15 @@ def sdk_relative_path(root, path, label):
     return path
 
 
-def product_options(root=None):
+def product_options(root=None, *, required=True):
     root = Path(root or Path.cwd()).resolve(strict=True)
-    spec = root / SPECIFICATION
-    if spec.is_symlink() or not spec.is_file():
-        raise ValueError(f"Expected an ordinary {SPECIFICATION} at the SDK root")
-    config = tomllib.loads(spec.read_text(encoding="utf-8"))
+    config = read_section(root, "native", required=required)
+    if config is None:
+        return root, {}
     if set(config) != {"artifacts"} or not isinstance(config["artifacts"], list):
-        raise ValueError(f"Declare [[artifacts]] in {SPECIFICATION}")
+        specification = manifest_path(root, "native").name
+        table = "native.artifacts" if specification == MANIFEST else "artifacts"
+        raise ValueError(f"Declare [[{table}]] in {specification}")
     products = {}
     for artifact in config["artifacts"]:
         if not isinstance(artifact, dict) or set(artifact) - (
@@ -88,6 +89,6 @@ def ffi_product(root=None, kind=None, *, factory=FfiProduct):
     options = select_product(products, kind)
     return factory(
         root,
-        specification=SPECIFICATION,
+        specification=manifest_path(root, "native").name,
         **{key: value for key, value in options.items() if key in _FFI_OPTIONS},
     )

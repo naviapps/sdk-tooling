@@ -1,5 +1,7 @@
 """Shared Rust C ABI product metadata, dependencies and build input provenance."""
 
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -9,6 +11,7 @@ from pathlib import Path
 from .artifacts import files, hashes
 from .c_compiler import compile_c
 from .cargo import CargoDependencies, notice_root, runtime_notices
+from .manifest import LEGACY_MANIFESTS, MANIFEST, read_section
 
 DARWIN_TARGETS = ("aarch64-apple-darwin", "x86_64-apple-darwin")
 WINDOWS_X64_TARGET = "x86_64-pc-windows-msvc"
@@ -24,6 +27,7 @@ def tool_input_hashes(*platform_sources):
         package / "c_compiler.py",
         package / "cargo.py",
         package / "cargo_build.py",
+        package / "manifest.py",
         package / "native_plan.py",
     )
     return hashes([*shared_sources, *platform_sources], package)
@@ -38,7 +42,7 @@ class FfiProduct:
         symbol_prefix,
         notice_packages=None,
         notice_directory="ThirdParty",
-        specification="native.toml",
+        specification=LEGACY_MANIFESTS["native"],
     ):
         self.root = Path(root).resolve()
         self.ffi = self.root / ffi
@@ -168,10 +172,24 @@ class FfiProduct:
         paths += list((self.root / "crates").rglob("build.rs"))
         paths += self.headers + [self.module_map]
         paths += [p for p in files(self.notice_root) if p.name != ".DS_Store"]
-        for path in (self.root / "LICENSE", self.specification):
-            if path.is_file():
-                paths.append(path)
+        license_path = self.root / "LICENSE"
+        if license_path.is_file():
+            paths.append(license_path)
+        if self.specification != self.root / MANIFEST and self.specification.is_file():
+            paths.append(self.specification)
         return paths
+
+    def _source_hashes(self, paths):
+        inputs = hashes(paths, self.root)
+        if self.specification == self.root / MANIFEST:
+            # The other sections do not contribute to native artifact generation.
+            key = f"{MANIFEST}#native"
+            if key in inputs:
+                raise ValueError(f"Native source path collides with the manifest input: {key}")
+            section = read_section(self.root, "native")
+            canonical = json.dumps(section, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            inputs[key] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return inputs
 
     def notices(self):
         rust_provenance = self.notice_root / "Rust" / "provenance.json"
@@ -190,10 +208,9 @@ class FfiProduct:
     def build_sources(self):
         # Capture the conservative input tree for build-time drift checks and
         # Windows receipts. XCFramework receipts use recorded production inputs.
-        return hashes(
+        return self._source_hashes(
             self._mandatory_sources()
-            + [p for p in files(self.root / "crates") if p.name != ".DS_Store"],
-            self.root,
+            + [p for p in files(self.root / "crates") if p.name != ".DS_Store"]
         )
 
     def retain_notices(self, env=None, *, windows_target=WINDOWS_X64_TARGET):

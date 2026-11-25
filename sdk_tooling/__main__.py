@@ -56,10 +56,10 @@ def main(argv=None):
     command.add_argument("paths", nargs="+", help="Checkout-relative ignored build directories")
     command.set_defaults(handler=clean.clean)
     command = commands.add_parser(
-        "xcframework", help="Build or verify macOS XCFrameworks declared in native.toml"
+        "xcframework", help="Build or verify macOS XCFrameworks declared in sdk-tooling.toml"
     )
     command.add_argument("root", nargs="?", type=Path)
-    command.add_argument("--product", help="Select one product in native.toml")
+    command.add_argument("--product", help="Select a declared native product")
     command.add_argument("--verify", action="store_true")
     command.set_defaults(handler=_xcframework)
     command = commands.add_parser(

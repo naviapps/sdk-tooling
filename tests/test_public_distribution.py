@@ -20,7 +20,8 @@ class PublicDistributionTests(unittest.TestCase):
         self.manifest = self.root / "release.toml"
         self.host = HOSTS[sys.platform]
 
-    def invoke(self, *arguments):
+    def invoke(self, *arguments, use_default_manifest=False):
+        override = [] if use_default_manifest else ["--manifest", self.manifest.name]
         return subprocess.run(
             [
                 sys.executable,
@@ -31,13 +32,27 @@ class PublicDistributionTests(unittest.TestCase):
                 *arguments,
                 "--root",
                 self.root,
-                "--manifest",
-                self.manifest.name,
+                *override,
             ],
             cwd=self.root.parent,
             capture_output=True,
             text=True,
         )
+
+    def test_distribution_reads_default_and_explicit_checkout_manifests(self):
+        commands = [["make", "check-distribution"]]
+        for name, section in (
+            ("sdk-distribution.toml", self.host),
+            ("sdk-tooling.toml", f"distribution.{self.host}"),
+        ):
+            self.manifest = self.root / name
+            self.manifest.write_text(f"[{section}]\ncommands = {json.dumps(commands)}\n")
+            for use_default_manifest in (True, False):
+                with self.subTest(name=name, use_default_manifest=use_default_manifest):
+                    plan = self.invoke("plan", use_default_manifest=use_default_manifest)
+                    self.assertEqual(plan.returncode, 0, plan.stderr)
+                    self.assertEqual(json.loads(plan.stdout), {self.host: commands})
+            self.manifest.unlink()
 
     def test_external_check_preserves_literal_argument_and_disposable_output(self):
         self.manifest.write_text(

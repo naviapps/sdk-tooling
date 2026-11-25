@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sdk_tooling import native_plan
+from sdk_tooling import c_headers, native_plan
 from sdk_tooling.xcframework import xcframework, xcframeworks
 
 
@@ -58,6 +58,12 @@ receipt = "{receipt}"
     def test_rejects_an_overlapping_publication_before_building(self):
         self.write_specs("alpha.json")
         with self.assertRaisesRegex(ValueError, "distinct receipt"):
+            xcframeworks(self.root)
+
+    def test_unified_manifest_can_omit_native(self):
+        (self.root / "sdk-tooling.toml").write_text("[checks]\n", encoding="utf-8")
+        self.assertFalse(c_headers.has_generated_products(self.root))
+        with self.assertRaisesRegex(ValueError, r"Declare \[native\]"):
             xcframeworks(self.root)
 
     def test_ffi_product_selection_does_not_depend_on_macos_options(self):

@@ -159,7 +159,7 @@ and 27. Source checks run on macOS 27. Override `source-macos` to select 26 or
 `package-documentation` when a Markdown file is a packaging input.
 
 Set `windows` to `rust` for x64 workspace tests, `bindings` to also test the
-managed bindings in `sdk-checks.toml`, or `managed` to install .NET for an
+managed bindings declared in `[checks]`, or `managed` to install .NET for an
 SDK-specific source check. Set `windows-fixture` to run the checkout's
 `.github/check-windows.ps1` after shared checks. That fixture always runs in
 `managed` mode. Use `platform` to select `all`, `macos`, or `windows`.
@@ -173,20 +173,23 @@ the SDK.
 
 Install SDK Tooling at the [reviewed revision](../README.md#use-a-pinned-revision).
 The CLI accepts a checkout and an optional checkout-relative manifest path.
-The default manifest is `sdk-distribution.toml`:
+The default manifest is `sdk-tooling.toml`. It contains the SDK's `[native]`,
+`[checks]` and `[distribution]` declarations. Include the sections the SDK
+uses. Historical checkouts can use `native.toml`, `sdk-checks.toml` and
+`sdk-distribution.toml` with their pinned producer revision.
 
 ```toml
-[macos]
+[distribution.macos]
 commands = [
   ["xcodebuild", "-version"],
   ["sdk-tooling", "xcframework", "--verify"],
   ["sdk-tooling", "swift-consumer", "--distribution"],
 ]
 
-[windows]
+[distribution.windows]
 commands = [["python", "distribution/check_windows.py", "{temp}"]]
 
-[nuget]
+[distribution.nuget]
 pack = "distribution/pack_nuget.py"
 ```
 
@@ -230,10 +233,10 @@ the same host check. Set `SDK_TOOLING_REVISION` to a reviewed full commit SHA:
 Start from the [workflow command](../README.md#sdk-distribution). The dispatcher
 checks out the requested commit from `main`, reads the SDK's immutable
 `[tasks.sdk-tooling]` pin in `mise.toml`, and runs the platform commands in
-`sdk-distribution.toml` as argument arrays:
+`[distribution]` in `sdk-tooling.toml` as argument arrays:
 
 ```toml
-[macos]
+[distribution.macos]
 commands = [
   ["cargo", "fetch", "--locked"],
   ["make", "check-distribution"],
@@ -262,7 +265,7 @@ run.
 
 ### Framework and NuGet artifacts
 
-For macOS SDKs with `native.toml`, the workflow checks the committed inputs,
+For macOS SDKs with `[native]`, the workflow checks the committed inputs,
 regenerates the XCFrameworks, and runs the Swift tests and standalone SwiftPM
 consumer against the regenerated binaries. It uploads
 [framework ZIPs and receipts](#archive-regenerated-xcframeworks). SwiftPM path
@@ -273,8 +276,8 @@ packages and receipts. Download them from the successful run with
 `gh run download RUN_ID --repo naviapps/sdk-tooling --pattern '*-nuget-windows-*'`.
 Workflow artifacts are retained for seven days.
 
-A combined NuGet plan declares both platforms, `global.json`, `native.toml`,
-and a packer such as `pack = "distribution/pack_nuget.py"` under `[nuget]`.
+A combined NuGet plan declares both platforms, `global.json`, `[native]`,
+and a packer such as `pack = "distribution/pack_nuget.py"` under `[distribution.nuget]`.
 The Windows plan exports `sdk-windows` and the workflow restores its tree under
 `.native-build/windows` on macOS. The packer accepts repeated `--runtime` values
 and reports its primary package filename to `--result`, followed by any
@@ -295,10 +298,10 @@ and the workflow rechecks package and receipt bytes after execution.
 
 ### macOS builder specifications
 
-Declare each product in `native.toml`:
+Declare each product in `sdk-tooling.toml`:
 
 ```toml
-[[artifacts]]
+[[native.artifacts]]
 id = "sdk"
 symbol_prefix = "example_"
 minimum_macos = "26.0"
@@ -347,7 +350,7 @@ XCFramework build and C fixtures generate these inputs before use.
 with the bundled copies and prepares the ignored files for C compilation.
 Run `mise run sdk-tooling -- c-headers generate` to prepare the declarations
 without rebuilding the framework. Add `--product ID` to select one product
-from `native.toml`.
+from `[native]`.
 
 The command uses the FFI crate's `cbindgen.toml` and `src/lib.rs`. For a
 configuration with `parse_deps = true` under `[parse]`, it selects the named
@@ -366,6 +369,11 @@ these native checks. Consumers load the retained SwiftPM XCFramework and use
 its bundled declarations.
 
 ### Production source receipts
+
+A unified manifest contributes a digest of its parsed `[native]` section to
+the build inputs. Changes to fixtures or distribution commands are outside this
+digest. Native production sources, dependencies, generator code and artifact
+bytes retain their independent provenance checks.
 
 The macOS and Windows producers record Cargo `compiler-artifact` messages in
 `cargoBuild`, grouped by requested target triple. Each entry identifies its
@@ -542,7 +550,7 @@ digest against its receipt. Remove the rollback directory after verification.
 
 ## Consumer verification
 
-Declare each SDK's fixture inputs in `sdk-checks.toml`. Run SDK-owned scripts
+Declare each SDK's fixture inputs in `[checks]` in `sdk-tooling.toml`. Run SDK-owned scripts
 with `sdk-tooling python SCRIPT` or modules with `sdk-tooling python -m MODULE`.
 
 ### Contributor workflows
@@ -577,10 +585,10 @@ workspace `cdylib` packages for `x86_64-pc-windows-msvc`. It reads the DLL paths
 from Cargo's compiler artifact messages and stages those DLLs beside each
 .NET fixture in its temporary output directory. It runs the x64 apphost when
 the build produces one, or uses the selected x64 .NET to run the assembly.
-Declare the packages and projects in `sdk-checks.toml`:
+Declare the packages and projects in `sdk-tooling.toml`:
 
 ```toml
-[windows_bindings]
+[checks.windows_bindings]
 packages = ["example-ffi"]
 projects = ["bindings/dotnet/tests/Example.Tests/Example.Tests.csproj"]
 ```
@@ -594,7 +602,7 @@ the release package and native build receipts.
 `c_compiler` invokes Clang or MSVC for C callers. `dotnet` runs, builds and
 packs managed projects. `artifacts.stage_native` stages verified native bytes.
 `check-binding c` and `check-binding dotnet` run the SDK's C ABI and managed
-project fixtures. The `[bindings]` section in `sdk-checks.toml` selects their
+project fixtures. The `[checks.bindings]` section selects their
 inputs. Both Windows managed and NuGet consumers check the Windows host and
 Python executable with `IsWow64Process2` and the Python PE machine, then require
 matching .NET 10 before restoring packages. Set `DOTNET_BIN` to the matching
@@ -625,7 +633,7 @@ The SDK selects its default fixtures and native acceptance policy.
 ### Installed NuGet consumers
 
 `nuget-consumer` selects a package ID and independent fixtures from the
-`[nuget]` section in `sdk-checks.toml`. `consumers.nuget` runs each fixture
+`[checks.nuget]` section. `consumers.nuget` runs each fixture
 against a private temporary feed. The restored packages must match the supplied
 archives by SHA-256. These consumer projects ignore parent-directory MSBuild
 and central package settings and discard inherited restore sources and caches.
@@ -636,15 +644,15 @@ See [NuGet packing and recovery](#nuget-package-publication).
 
 ### External SwiftPM consumers
 
-Run `mise run sdk-tooling -- swift-consumer` from the SDK checkout. The `[swift]`
-section in `sdk-checks.toml` declares `inputs`, `executable` or `executables`, and
+Run `mise run sdk-tooling -- swift-consumer` from the SDK checkout. The `[checks.swift]`
+section declares `inputs`, `executable` or `executables`, and
 an optional `fixture` path that defaults to `fixtures/consumers/swift`. Include
 every required target path, native artifact, resource and retained notice in
 `inputs`. The fixture's `Package.swift` selects products from the staged SDK at
 `../sdk`. The fixture owns its platform requirements and API assertions.
 
 ```toml
-[swift]
+[checks.swift]
 inputs = ["Package.swift", "Sources", "Tests", "LICENSE"]
 executable = "ExampleConsumer"
 ```

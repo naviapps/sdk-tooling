@@ -15,7 +15,8 @@ from .artifacts import build_lock, file_sha256, files, hashes, publish, write_js
 from .cargo import CargoDependencies
 from .cargo_build import compile_units, verify_units
 from .ffi import DARWIN_TARGETS, FfiProduct, tool_input_hashes
-from .native_plan import SPECIFICATION, product_options, sdk_relative_path, select_product
+from .manifest import LEGACY_MANIFESTS, manifest_path
+from .native_plan import product_options, sdk_relative_path, select_product
 
 DEP_INFO_PARSER = Path("crates/rustc-dep-info/src/main.rs")
 
@@ -74,7 +75,7 @@ class XcframeworkBuilder(FfiProduct):
         target_directory="target/native",
         notice_packages=None,
         notice_directory="ThirdParty",
-        specification="native.toml",
+        specification=LEGACY_MANIFESTS["native"],
     ):
         super().__init__(
             root,
@@ -275,7 +276,9 @@ class XcframeworkBuilder(FfiProduct):
                 raise ValueError("Production source escapes the SDK")
         script_files, directories = self._build_script_inventory(build_script_roots)
         return (
-            hashes(self._mandatory_sources() + list(production_sources) + script_files, self.root),
+            self._source_hashes(
+                self._mandatory_sources() + list(production_sources) + script_files
+            ),
             directories,
         )
 
@@ -573,8 +576,9 @@ def xcframeworks(root=None):
     root, products = product_options(root)
     if any("minimum_macos" not in options for options in products.values()):
         raise ValueError("XCFramework artifacts require a minimum macOS version")
+    specification = manifest_path(root, "native").name
     builders = {
-        name: XcframeworkBuilder(root, specification=SPECIFICATION, **options)
+        name: XcframeworkBuilder(root, specification=specification, **options)
         for name, options in products.items()
     }
     for key in ("module", "receipt"):

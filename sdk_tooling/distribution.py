@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 from .adapters import python_command, tooling_command
+from .manifest import MANIFEST, read_section
 
 PLATFORMS = ("macos", "windows", "linux")
 HOSTS = {"darwin": "macos", "win32": "windows", "linux": "linux"}
@@ -33,9 +34,16 @@ def _argument(value):
     return isinstance(value, str) and bool(value.strip()) and value.isprintable()
 
 
-def load_plan(root, manifest="sdk-distribution.toml"):
-    path = ordinary_file(root, manifest)
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+def load_plan(root, manifest=None):
+    if manifest is None:
+        data = read_section(root, "distribution")
+    else:
+        path = ordinary_file(root, manifest)
+        data = (
+            read_section(root, "distribution")
+            if path == root / MANIFEST
+            else tomllib.loads(path.read_text(encoding="utf-8"))
+        )
     packaging = data.pop("nuget", None)
     if not data or data.keys() - set(PLATFORMS):
         raise ValueError("Declare distribution commands under macos, windows or linux")
@@ -96,7 +104,7 @@ def add_command(commands):
     for operation in (plan, check, pack):
         operation.add_argument("--root", type=Path, help="SDK checkout directory; defaults to cwd")
         operation.add_argument(
-            "--manifest", default="sdk-distribution.toml", help="Path within the checkout"
+            "--manifest", help=f"Path within the checkout; defaults to {MANIFEST}"
         )
         operation.set_defaults(handler=run_operation)
 

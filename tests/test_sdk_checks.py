@@ -33,11 +33,14 @@ class SDKChecksTests(unittest.TestCase):
             "fixtures/consumers/swift/Package.swift", "// consumer manifest"
         ).parent
         self.write(
-            "sdk-checks.toml",
+            "sdk-tooling.toml",
             """
-            [swift]
+            [checks.swift]
             executable = "SDKConsumer"
             inputs = ["Package.swift"]
+
+            [distribution.macos]
+            commands = [["make", "check-distribution"]]
             """,
         )
         with (

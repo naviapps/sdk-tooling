@@ -7,8 +7,7 @@ from copy import copy
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .consumers import nuget, rust_c, rust_git, swiftpm
-
-CONFIGURATION = "sdk-checks.toml"
+from .manifest import read_section
 
 
 def _table(value, label):
@@ -18,10 +17,7 @@ def _table(value, label):
 
 
 def _section(root, name):
-    path = root / CONFIGURATION
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"Expected an ordinary {CONFIGURATION} in the SDK root")
-    config = tomllib.loads(path.read_text(encoding="utf-8"))
+    config = read_section(root, "checks")
     return _table(config.get(name), f"[{name}]")
 
 

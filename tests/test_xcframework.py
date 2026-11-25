@@ -118,6 +118,36 @@ class NativeInputsTests(unittest.TestCase):
         self.write("crates/core/src/tests.rs", "#[test] fn a_different_test() {}\n")
         self.assertEqual(self.builder.inputs(), before)
 
+    def test_unified_manifest_fingerprints_only_native_settings(self):
+        first = (
+            '[[native.artifacts]]\nid = "fixture"\n'
+            'symbol_prefix = "fixture_"\nminimum_macos = "26.0"\n'
+        )
+        revised = (
+            '[checks]\ncommands = ["test"]\n'
+            '[[native.artifacts]]\nsymbol_prefix = "fixture_"\n'
+            'id = "fixture"\nminimum_macos = "26.0"\n'
+            '[distribution]\nplatforms = ["macos"]\n'
+        )
+        self.write("sdk-tooling.toml", first)
+        self.builder = xcframework.xcframework(self.root)
+        receipt = self.accept([])
+        windows_inputs = self.builder.build_sources()
+        self.assertEqual(self.builder.configuration["specification"], "sdk-tooling.toml")
+        self.assertEqual(
+            receipt["inputs"]["sdk-tooling.toml#native"], windows_inputs["sdk-tooling.toml#native"]
+        )
+        self.assertNotIn("sdk-tooling.toml", receipt["inputs"])
+        self.assertNotIn("native.toml", windows_inputs)
+        self.write("sdk-tooling.toml", revised)
+        self.verify_without_tools()
+        self.assertEqual(windows_inputs, self.builder.build_sources())
+
+        self.write("sdk-tooling.toml", revised.replace('id = "fixture"', 'id = "moved"'))
+        with self.assertRaisesRegex(ValueError, "Production source"):
+            self.verify_without_tools()
+        self.assertNotEqual(windows_inputs, self.builder.build_sources())
+
     def test_verify_platform_requires_the_framework_install_name_in_each_slice(self):
         library = self.root / "CFixture"
 
@@ -243,6 +273,7 @@ class NativeInputsTests(unittest.TestCase):
             "cargo.py",
             "cargo_build.py",
             "ffi.py",
+            "manifest.py",
             "native_plan.py",
         }
         for name in expected_shared | {"windows.py", "xcframework.py"}:

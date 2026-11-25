@@ -5,7 +5,7 @@ inputs:
     description: Install the .NET SDK pinned in global.json for separate binding checks.
     default: "false"
   test-bindings:
-    description: Run the .NET fixtures declared in sdk-checks.toml.
+    description: Run the .NET fixtures declared in sdk-tooling.toml.
     default: "false"
 runs:
   using: composite

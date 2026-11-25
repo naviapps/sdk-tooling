@@ -28,9 +28,7 @@ The CLI can run in a checkout owned by any organization. Start with the
 [distribution CLI guide](docs/REFERENCE.md#distribution-cli) to declare the
 commands and fixtures for your package.
 
-Configure [public API checks](docs/REFERENCE.md#consumer-verification) in
-`sdk-checks.toml` and [native products](docs/REFERENCE.md#macos-builder-specifications)
-in `native.toml`.
+Declare [native products](docs/REFERENCE.md#macos-builder-specifications), [consumer checks](docs/REFERENCE.md#consumer-verification) and [distribution commands](docs/REFERENCE.md#distribution-cli) in `sdk-tooling.toml`.
 
 ## Developer bootstrap
 
@@ -105,7 +103,7 @@ The [shared source workflow](docs/REFERENCE.md#shared-source-workflow) runs the
 same source and consumer checks on GitHub-hosted runners.
 This tooling repository uses `mise run check` and has no Makefile.
 
-SDKs that declare `native.toml` use the pinned CLI from `mise.toml` for local
+SDKs that declare `[native]` use the pinned CLI from `mise.toml` for local
 distribution checks and SDK-owned Python fixtures. A prepared VM can use a
 checksummed source bundle and local Git mirror supplied by its host.
 
@@ -154,7 +152,7 @@ Keep each language's build conventions and place tests with their owning interfa
 - `fixtures/acceptance/{macos,windows,browser}` contains disposable hosts that
   exercise real OS or browser behavior.
 - `distribution` contains SDK-specific packaging and verification code and tests
-  for that code. The SDK selects the commands in `sdk-distribution.toml`.
+  for that code. The SDK selects the commands in `[distribution]`.
 - `Artifacts` contains consumer-required native binaries and provenance;
   `ThirdParty` retains original upstream notices. These are distributed inputs.
 - `docs` contains cross-language guides. Reusable build mechanisms stay in this

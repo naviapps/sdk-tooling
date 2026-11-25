@@ -17,10 +17,10 @@ DISPATCH = runpy.run_path(str(SCRIPT))
 
 
 class DistributionTests(unittest.TestCase):
-    def distribution_plan(self, content):
+    def distribution_plan(self, content, *, filename="sdk-distribution.toml"):
         with tempfile.TemporaryDirectory() as disposable:
             root = Path(disposable)
-            (root / "sdk-distribution.toml").write_text(dedent(content), encoding="utf-8")
+            (root / filename).write_text(dedent(content), encoding="utf-8")
             return DISPATCH["distribution_plan"](root)
 
     def test_distribution_plan_uses_the_projects_commands(self):
@@ -47,6 +47,19 @@ class DistributionTests(unittest.TestCase):
             plan["windows"],
             [["dotnet", "run", "--project", "Windows Fixture.csproj"]],
         )
+
+    def test_distribution_plan_uses_the_distribution_table_from_the_unified_manifest(self):
+        plan = self.distribution_plan(
+            """
+            [checks.swift]
+            inputs = ["Package.swift"]
+
+            [distribution.macos]
+            commands = [["make", "check-distribution"]]
+            """,
+            filename="sdk-tooling.toml",
+        )
+        self.assertEqual(plan, {"macos": [["make", "check-distribution"]]})
 
     def test_distribution_plan_accepts_a_project_with_only_one_platform(self):
         for platform in ("macos", "windows"):
@@ -601,8 +614,20 @@ class DistributionTests(unittest.TestCase):
             self.assertFalse(select(root, "windows"))
             specification.unlink()
             specification.mkdir()
-            with self.assertRaisesRegex(ValueError, "ordinary SDK file: native.toml"):
+            with self.assertRaisesRegex(ValueError, "ordinary native.toml"):
                 select(root, "macos")
+
+    def test_native_generation_requires_a_native_table_in_the_unified_manifest(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            root = Path(disposable).resolve()
+            select = DISPATCH["builds_xcframeworks"]
+            manifest = root / "sdk-tooling.toml"
+            manifest.write_text('[distribution.macos]\ncommands = [["make", "check"]]\n')
+            self.assertFalse(select(root, "macos"))
+            with manifest.open("a") as output:
+                output.write("\n[native]\n")
+            self.assertTrue(select(root, "macos"))
+            self.assertFalse(select(root, "windows"))
 
     def test_native_generation_follows_pristine_checks_and_archives_the_verified_build(self):
         with tempfile.TemporaryDirectory() as disposable:

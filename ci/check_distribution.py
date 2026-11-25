@@ -13,8 +13,12 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from importlib import import_module
 from pathlib import Path
 from platform import machine
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+manifest = import_module("sdk_tooling.manifest")
 
 REVISION = re.compile(r"[a-f0-9]{40}")
 SHA256 = re.compile(r"[a-f0-9]{64}")
@@ -40,11 +44,9 @@ SOURCE_VARIABLES = {"NAVI_SDK_TOOLING_SOURCE", "SDK_TOOLING"}
 
 
 def builds_xcframeworks(source, platform):
-    declaration = source / "native.toml"
-    if platform != "macos" or not (declaration.exists() or declaration.is_symlink()):
-        return False
-    read_regular(source, "native.toml")
-    return True
+    return (
+        platform == "macos" and manifest.read_section(source, "native", required=False) is not None
+    )
 
 
 def run(root, env, *command, stdout=None):
@@ -182,7 +184,7 @@ def clean_text(value):
 
 
 def distribution_plan(source):
-    plan = tomllib.loads(read_regular(source, "sdk-distribution.toml").decode("utf-8"))
+    plan = manifest.read_section(source, "distribution")
     packaging = plan.pop("nuget", None)
     if not plan or not plan.keys() <= set(PLATFORMS):
         raise ValueError("Declare macos or windows distribution commands")
@@ -213,7 +215,7 @@ def distribution_plan(source):
             or not builds_xcframeworks(source, "macos")
         ):
             raise ValueError(
-                "Combined NuGet checks require both platforms, global.json and native.toml"
+                "Combined NuGet checks require both platforms, global.json and a native declaration"
             )
         script = packaging["pack"]
         if not isinstance(script, str) or not re.fullmatch(
@@ -563,7 +565,7 @@ def main(argv=None):
     if args.mode not in plan and not (args.mode in PACKAGE_MODES and "nuget" in plan):
         parser.error("SDK distribution configuration does not declare this platform")
     if args.xcframework_output is not None and not builds_xcframeworks(source, args.mode):
-        parser.error("--xcframework-output requires an SDK with native.toml")
+        parser.error("--xcframework-output requires a native SDK declaration")
     if args.tooling is None:
         parser.error("Distribution checks require --tooling with the pinned checkout")
     tooling = args.tooling.resolve(strict=True)

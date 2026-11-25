@@ -4,11 +4,10 @@ import re
 import subprocess
 import tomllib
 from contextlib import nullcontext
-from pathlib import Path
 
 from . import quality
 from .artifacts import build_lock, stage_file
-from .native_plan import SPECIFICATION, product_options, select_product
+from .native_plan import product_options, select_product
 from .workspaces import temporary_workspace
 
 
@@ -38,11 +37,9 @@ def _package(ffi):
 
 
 def _generated_products(root, product=None):
-    root = Path(root).resolve(strict=True)
-    specification = root / SPECIFICATION
-    if not specification.exists() and not specification.is_symlink():
+    root, products = product_options(root, required=False)
+    if not products:
         return root, []
-    root, products = product_options(root)
     if product is not None:
         products = [select_product(products, product)]
     else:
@@ -203,5 +200,5 @@ def run_operation(args, *, root):
 def add_command(commands):
     command = commands.add_parser("c-headers", help="Generate or verify C headers and module maps")
     command.add_argument("operation", choices=["check", "generate"])
-    command.add_argument("--product", help="Select one product in native.toml")
+    command.add_argument("--product", help="Select a declared native product")
     command.set_defaults(handler=run_operation)

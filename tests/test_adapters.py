@@ -109,6 +109,7 @@ class AdapterTests(unittest.TestCase):
             root = Path(directory)
             sources = [
                 "global.json",
+                "sdk-tooling.toml",
                 "distribution/verify_windows.py",
                 "fixtures/consumers/dotnet/Program.cs",
                 "fixtures/consumers/rust/Cargo.toml.in",
