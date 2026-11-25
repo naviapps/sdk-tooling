@@ -3,12 +3,12 @@ activate_aggressive = true
 
 [tools]
 python = "3.15.2"
-rust = "1.99.1"
+rust = "1.100.0"
 jactionlint = "2.6.0"
 shellcheck = { version = "0.11.0", os = ["macos", "linux"] }
-ruff = "0.17.3"
-dprint = "0.64.3"
-uv = { version = "0.13.6", os = ["macos", "linux"] }
+ruff = "0.17.6"
+dprint = "0.65.0"
+uv = { version = "0.13.10", os = ["macos", "linux"] }
 
 [tasks.check]
 description = "Verify shared SDK mechanisms and contributor tooling"

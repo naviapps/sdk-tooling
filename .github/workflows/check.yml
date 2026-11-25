@@ -34,7 +34,7 @@ jobs:
       DOTNET_CLI_USE_MSBUILD_SERVER: "0"
       MSBUILDDISABLENODEREUSE: "1"
     steps:
-      - uses: actions/checkout@v6.1.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-python@v7.1.0
@@ -63,7 +63,7 @@ jobs:
         env:
           MISE_DISABLE_TOOLS: python,rust
         with:
-          version: "2026.11.12"
+          version: "2026.11.14"
           cache: false
           install_args: ruff dprint jactionlint shellcheck
           add_shims_to_path: false

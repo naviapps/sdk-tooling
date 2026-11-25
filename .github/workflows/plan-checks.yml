@@ -89,14 +89,14 @@ jobs:
           with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
               print(f"documentation-only={str(docs).lower()}", file=output)
           PY
-      - uses: actions/checkout@v6.1.0
+      - uses: actions/checkout@v7.0.1
         if: steps.changes.outputs.documentation-only == 'true'
         with:
           persist-credentials: false
       - uses: jdx/mise-action@v5.3.0
         if: steps.changes.outputs.documentation-only == 'true'
         with:
-          version: "2026.11.12"
+          version: "2026.11.14"
           cache: false
           install_args: dprint
           add_shims_to_path: false
