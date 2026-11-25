@@ -40,6 +40,7 @@ def main(argv=None):
         binding_checks,
         c_headers,
         clean,
+        distribution,
         quality,
         sdk_checks,
         windows_bindings,
@@ -69,6 +70,7 @@ def main(argv=None):
     command.add_argument("--producer", type=Path, help="Pinned SDK Tooling producer checkout")
     command.set_defaults(handler=xcframework_archive.archive_command)
     c_headers.add_command(commands)
+    distribution.add_command(commands)
     sdk_checks.add_commands(commands)
     binding_checks.add_commands(commands)
     windows_bindings.add_command(commands)

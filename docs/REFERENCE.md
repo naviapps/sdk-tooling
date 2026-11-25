@@ -146,6 +146,62 @@ writes each updated pin after its templates. A check without `--revision`
 accepts any canonical immutable pin. Add `--revision FULL_COMMIT_SHA` to
 require every selected checkout to use that revision.
 
+## Distribution CLI
+
+Install SDK Tooling at the [reviewed revision](../README.md#use-a-pinned-revision).
+The CLI accepts a checkout and an optional checkout-relative manifest path.
+The default manifest is `sdk-distribution.toml`:
+
+```toml
+[macos]
+commands = [
+  ["xcodebuild", "-version"],
+  ["sdk-tooling", "xcframework", "--verify"],
+  ["sdk-tooling", "swift-consumer", "--distribution"],
+]
+
+[windows]
+commands = [["python", "distribution/check_windows.py", "{temp}"]]
+
+[nuget]
+pack = "distribution/pack_nuget.py"
+```
+
+Keep only the platforms and operations the SDK supports. The host tables are
+`macos`, `windows`, and `linux`. Each command is an argument array executed
+from the SDK root. `sdk-tooling` uses the already selected CLI. `python` runs
+a checkout-owned fixture with that CLI's interpreter. `{temp}` expands to a
+fresh directory shared by the commands in one check.
+
+```sh
+sdk-tooling distribution plan --root /path/to/sdk
+sdk-tooling distribution check --root /path/to/sdk
+sdk-tooling distribution pack-nuget --root /path/to/sdk --runtime osx-arm64
+```
+
+Use `--manifest release.toml` to select a different file. `plan` reads the
+configuration and prints JSON. `check` executes the current host's commands.
+Review the checkout before executing commands from it and provision its native
+toolchains on the host. These commands can run from a local checkout with any
+remote or without a Git remote.
+
+`pack-nuget` runs the SDK's packer with the selected runtime arguments.
+A packer receiving `--result` writes the resulting package filenames to a
+new file. Use `sdk-tooling nuget-consumer PACKAGE.nupkg` from the SDK root
+to exercise its configured consumer with the resulting package. For native
+frameworks, use `sdk-tooling xcframework` to build or `sdk-tooling
+xcframework-archive --output PATH` to archive verified results.
+
+For example, after checkout and toolchain setup, a GitHub Actions job can invoke
+the same host check. Set `SDK_TOOLING_REVISION` to a reviewed full commit SHA:
+
+```yaml
+- name: Verify distribution
+  run: |
+    uvx --from "git+https://github.com/naviapps/sdk-tooling.git@$SDK_TOOLING_REVISION" \
+      sdk-tooling distribution check
+```
+
 ## Hosted distribution
 
 Start from the [workflow command](../README.md#sdk-distribution). The dispatcher

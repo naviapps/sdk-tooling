@@ -24,6 +24,10 @@ Set `SDK_TOOLING_REVISION` to the full commit SHA and run:
 uvx --from "git+https://github.com/naviapps/sdk-tooling.git@$SDK_TOOLING_REVISION" sdk-tooling --help
 ```
 
+The CLI can run in a checkout owned by any organization. Start with the
+[distribution CLI guide](docs/REFERENCE.md#distribution-cli) to declare the
+commands and fixtures for your package.
+
 Configure [public API checks](docs/REFERENCE.md#consumer-verification) in
 `sdk-checks.toml` and [native products](docs/REFERENCE.md#macos-builder-specifications)
 in `native.toml`.
@@ -58,12 +62,11 @@ After changing a workflow's action dependencies, regenerate its
 `actions.lock` with `gh actions-lock` and review the resolved commits.
 Run `gh actions-lock --verify` to check it.
 
-Run `make clean` in an SDK checkout to remove the local build outputs listed
-by its Makefile. In this tooling checkout, use `mise run clean`. Finish local
-builds and tests before cleaning. The cleaner preserves tracked artifacts,
-dependency locks, shared caches and native build recovery directories. When
-an output contains a native publisher lock, it must acquire that lock before
-removing any output.
+In a Navi Apps native SDK checkout, `make clean` removes ordinary build outputs,
+and `make clean-distribution` uses the CLI for native packaging outputs. In this
+tooling checkout, use `mise run clean`. Finish local builds and tests before
+cleaning. The distribution cleaner preserves native build recovery directories
+and acquires native publisher locks before removing output.
 
 ## SDK distribution
 
@@ -97,6 +100,8 @@ selected tools on `PATH`, including in external consumers. The template's
 `activate_aggressive` setting also keeps them ahead of system tools in Make recipes;
 older checkouts need `MISE_ACTIVATE_AGGRESSIVE=1` before `mise exec`.
 Check Python against `mise.toml` and the formatter with `xcrun swift-format --version`.
+These source checks run directly in the SDK checkout. Packaging and installed
+artifact acceptance use SDK Tooling.
 This tooling repository uses `mise run check` and has no Makefile.
 
 SDKs that declare `native.toml` use the pinned CLI from `mise.toml` for local
