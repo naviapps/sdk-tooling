@@ -11,12 +11,15 @@ concurrency:
   cancel-in-progress: true
 jobs:
   plan:
+    if: github.event_name != 'workflow_dispatch'
     uses: ./.github/workflows/plan-checks.yml
     with:
       package-documentation: README.md
   check:
     needs: plan
-    if: needs.plan.outputs.documentation-only != 'true'
+    if: >-
+      !cancelled() && (github.event_name == 'workflow_dispatch' ||
+      (needs.plan.result == 'success' && needs.plan.outputs.documentation-only != 'true'))
     strategy:
       fail-fast: false
       matrix:

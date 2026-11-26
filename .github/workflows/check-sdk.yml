@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   plan:
-    if: ${{ !inputs.native-aot }}
+    if: ${{ github.event_name != 'workflow_dispatch' && !inputs.native-aot }}
     uses: ./.github/workflows/plan-checks.yml
     with:
       package-documentation: ${{ inputs.package-documentation }}
@@ -44,7 +44,10 @@ jobs:
   swift:
     name: Swift
     needs: plan
-    if: ${{ needs.plan.outputs.documentation-only != 'true' && inputs.platform != 'windows' }}
+    if: >-
+      !cancelled() && !inputs.native-aot && inputs.platform != 'windows' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (needs.plan.result == 'success' && needs.plan.outputs.documentation-only != 'true'))
     uses: ./.github/workflows/check-swift.yml
     with:
       source-macos: ${{ inputs.source-macos }}
@@ -53,7 +56,10 @@ jobs:
   windows:
     name: ${{ inputs.windows == 'rust' && 'Test Rust' || 'Test Rust and .NET' }}
     needs: plan
-    if: ${{ needs.plan.outputs.documentation-only != 'true' && inputs.platform != 'macos' && inputs.windows != 'off' }}
+    if: >-
+      !cancelled() && !inputs.native-aot && inputs.platform != 'macos' && inputs.windows != 'off' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (needs.plan.result == 'success' && needs.plan.outputs.documentation-only != 'true'))
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
