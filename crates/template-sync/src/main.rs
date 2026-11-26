@@ -30,7 +30,9 @@ const QUALITY_TEMPLATES: [(&str, &[u8]); 2] = [
     ("ruff.toml", include_bytes!("../templates/ruff.toml")),
     (
         ".swiftlint.yml",
-        include_bytes!("../templates/.swiftlint.yml"),
+        b"parent_config: \
+          https://raw.githubusercontent.com/naviapps/sdk-tooling/main/crates/template-sync/templates/.swiftlint.yml\n\
+          strict: true\n",
     ),
 ];
 

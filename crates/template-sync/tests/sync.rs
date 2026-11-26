@@ -104,16 +104,27 @@ fn check_reports_adopted_policy_drift_without_writing() {
     let root = temporary_sdk();
     let path = root.path();
     let ruff = path.join("ruff.toml");
+    let swiftlint = path.join(".swiftlint.yml");
+    let rules = include_bytes!("../templates/.swiftlint.yml");
     fs::write(&ruff, "line-length = 90\n").unwrap();
+    fs::write(&swiftlint, rules).unwrap();
     succeeds(sync(&[path], &["--check"]));
-    fails(sync(&[path], &["--check", "--quality"]), "templates differ");
+    fails(sync(&[path], &["--check", "--quality"]), ".swiftlint.yml");
     assert_eq!(fs::read_to_string(&ruff).unwrap(), "line-length = 90\n");
+    assert_eq!(fs::read(&swiftlint).unwrap(), rules);
 
     succeeds(sync(&[path], &["--quality", "--revision", REVISION]));
     assert_eq!(
         fs::read(&ruff).unwrap(),
         include_bytes!("../templates/ruff.toml")
     );
+    assert_eq!(
+        fs::read(&swiftlint).unwrap(),
+        b"parent_config: \
+          https://raw.githubusercontent.com/naviapps/sdk-tooling/main/crates/template-sync/templates/.swiftlint.yml\n\
+          strict: true\n"
+    );
+    succeeds(sync(&[path], &["--check", "--quality"]));
     assert!(!path.join("rust-toolchain.toml").exists());
     assert!(!path.join("tools").exists());
 }

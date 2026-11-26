@@ -66,6 +66,15 @@ defaults for layout and identifier style, plus SourceKit-independent bug checks
 selected from SwiftLint's built-in rules, including unused parameters. SwiftLint
 does not add metrics, TODO policy or encoding preferences.
 
+The SDK's `.swiftlint.yml` points to the [shared rules](../crates/template-sync/templates/.swiftlint.yml)
+on SDK Tooling's `main` branch. Direct SwiftLint commands and the quality check
+use that parent configuration. Keep `strict: true` in the SDK config because
+SwiftLint reads strict mode from the local file. SwiftLint tries to fetch the
+rules on each run and can use a cached copy when the server is unreachable.
+A cold cache needs network access. Add `/.swiftlint/RemoteConfigCache/` to the
+SDK's `.gitignore` to keep the cache out of Git. For a direct offline run, pass
+`--config` with the path to the shared rules in a local SDK Tooling checkout.
+
 Whole-program unused Swift declarations require separate clean-build analysis and
 are not an incremental gate. The configured SwiftLint analyzer rules can inspect a
 complete verbose compiler log:
@@ -141,7 +150,8 @@ SDK owns its dprint configuration and Git attributes.
 
 Rust SDKs receive updates for their existing EditorConfig and Rust toolchain
 files. SDK-specific EditorConfig sections are retained. Use `--quality` to
-update existing Ruff and SwiftLint configuration.
+update existing Ruff configuration and set existing `.swiftlint.yml` files to
+reference the shared SwiftLint rules.
 
 The tool validates the selected checkout paths before updating files and attempts
 to restore earlier updates if one fails. `--check` requires an immutable CLI revision and the same
