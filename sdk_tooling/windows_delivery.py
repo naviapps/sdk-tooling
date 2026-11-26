@@ -131,6 +131,35 @@ def _ordinary_path(path):
     return not (path.is_symlink() or path.is_junction())
 
 
+def export_native(built, inventory, artifact_root):
+    """Export an exact accepted x64 build and receipt under the caller's build lock."""
+    built = Path(built).resolve(strict=True)
+    root = Path(artifact_root).resolve()
+    destination = root / "sdk-windows" / RID
+
+    def require_new_output():
+        parent = destination.parent.resolve()
+        if (
+            not _ordinary_path(destination)
+            or destination.exists()
+            or not parent.is_relative_to(root)
+            or parent.is_relative_to(built)
+        ):
+            raise ValueError(
+                "Windows native export requires a new directory inside the artifact root"
+            )
+
+    require_new_output()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix="native-export-") as temporary:
+        stage = Path(temporary) / RID
+        shutil.copytree(built, stage, symlinks=True)
+        if artifacts.hashes(artifacts.files(stage), stage) != inventory:
+            raise ValueError("Exported Windows native files differ from the accepted build")
+        require_new_output()
+        stage.rename(destination)
+
+
 def _owned_file(path, names):
     return path.name in names and _ordinary_path(path) and path.is_file()
 

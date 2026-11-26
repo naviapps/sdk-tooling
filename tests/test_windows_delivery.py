@@ -18,6 +18,61 @@ publish_x64 = partial(windows_delivery.publish_x64, receipt_name=RECEIPT)
 
 
 class WindowsDeliveryTests(unittest.TestCase):
+    def test_native_export_publishes_the_original_receipt_and_entire_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            built, output, inventory = native_export_fixture(root)
+            destination = output / "sdk-windows" / windows_delivery.RID
+            (built / "native-build.json").write_bytes(b"changed receipt")
+            with self.assertRaisesRegex(ValueError, "differ from the accepted build"):
+                windows_delivery.export_native(built, inventory, output)
+            self.assertEqual(list(destination.parent.iterdir()), [])
+
+            (built / "native-build.json").write_bytes(b'{"schema":2}\r\n')
+            windows_delivery.export_native(built, inventory, output)
+            self.assertEqual(artifacts.hashes(artifacts.files(destination), destination), inventory)
+            self.assertEqual((destination / "native-build.json").read_bytes(), b'{"schema":2}\r\n')
+
+    def test_native_export_does_not_replace_an_output_created_during_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            built, output, inventory = native_export_fixture(root)
+            destination = output / "sdk-windows" / windows_delivery.RID
+            hashes = artifacts.hashes
+
+            def occupy_during_verification(paths, stage):
+                destination.mkdir()
+                return hashes(paths, stage)
+
+            with (
+                patch.object(artifacts, "hashes", side_effect=occupy_during_verification),
+                self.assertRaisesRegex(ValueError, "requires a new directory"),
+            ):
+                windows_delivery.export_native(built, inventory, output)
+            self.assertEqual(list(destination.parent.iterdir()), [destination])
+            self.assertEqual(list(destination.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt", "creating symlinks on Windows can require privileges")
+    def test_native_export_rejects_parent_escape_and_dangling_destination(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            built, output, inventory = native_export_fixture(root)
+            output.mkdir()
+            parent = output / "sdk-windows"
+            outside = root / "other directory"
+            parent.symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "requires a new directory"):
+                windows_delivery.export_native(built, inventory, output)
+            self.assertFalse(outside.exists())
+            parent.unlink()
+            parent.mkdir()
+            destination = parent / windows_delivery.RID
+            destination.symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "requires a new directory"):
+                windows_delivery.export_native(built, inventory, output)
+            self.assertTrue(destination.is_symlink())
+            self.assertFalse(outside.exists())
+
     def test_locked_fetch_covers_build_and_notice_graphs(self):
         targets = (
             "x86_64-pc-windows-msvc",
@@ -254,6 +309,15 @@ class WindowsDeliveryTests(unittest.TestCase):
                         destination=destination,
                     )
                 self.assertFalse(destination.exists())
+
+
+def native_export_fixture(root):
+    built = root / "built"
+    (built / "Other").mkdir(parents=True)
+    (built / "lib.dll").write_bytes(b"native fixture")
+    (built / "Other" / "notice.txt").write_bytes(b"license fixture")
+    (built / "native-build.json").write_bytes(b'{"schema":2}\r\n')
+    return built, root / "accepted outputs", artifacts.hashes(artifacts.files(built), built)
 
 
 def x64_evidence(root):
