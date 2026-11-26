@@ -733,15 +733,21 @@ the ordinary Git dependency through a job-private file rewrite and checks its
 revision in both a fresh consumer lock and Cargo metadata. Public registry
 resolution may use the network; execution is locked and offline. A shallow
 checkout requires a complete explicit `--git-source` repository or bundle.
-An SDK that uses additional private Git packages declares each package's
-canonical URL and full revision through `rust_git_dependencies` and repeats each
-exact pin in the fixture manifest. Packages from the same repository share a
-mirror and must use the same URL and revision. In CI, the Rust verifier selects
-the exact `VM_RUNNER_SOURCE_MANIFEST` row and its positional bundle. The gate then checks
-the selected bundle's checksum and advertised HEAD before Cargo starts.
+An SDK that uses additional Git packages lists their names in
+`rust_git_dependencies` and pins their canonical URLs and full revisions in
+the Cargo workspace. In the fixture manifest, repeat the URL and supply the
+full revision or use `rev = "@GIT_REVISION_example-sdk@"` for the `example-sdk`
+dependency. Tooling fills the token from the declared workspace pin.
+Packages from the same repository share a mirror and must use the same URL
+and revision. In CI, the Rust verifier selects the exact
+`VM_RUNNER_SOURCE_MANIFEST` row and its positional bundle. The gate then
+checks the selected bundle's checksum and advertised HEAD before Cargo starts.
 Outside CI, pass `--git-dependency-source OWNER/REPO=PATH` once per
 repository, using a complete checkout, mirror, or bundle. A single repository
 also accepts the unqualified `--git-dependency-source PATH` form.
+
+On Windows, if Cargo reports that a checkout path is too long, set `TEMP`
+and `TMP` to a short path to an existing writable directory for the check.
 
 The fresh, file-only Git configuration contains the declared mirrors. The lock
 and metadata accept Git packages only from the exact declared SDK revisions,

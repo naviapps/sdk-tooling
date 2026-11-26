@@ -467,6 +467,40 @@ class InstalledConsumersTests(unittest.TestCase):
                         revision,
                     )
 
+    def test_manifest_renders_only_declared_additional_git_revisions(self):
+        packages = ("producer",)
+        revision = "a" * 40
+        dependency = {"git": DEPENDENCY_URL, "rev": "b" * 40}
+        layout = {"git": "https://github.com/naviapps/layout.git", "rev": "c" * 40}
+        dependencies = {"dependency": dependency, "layout-sdk": layout}
+        token = "@GIT_REVISION_dependency@"
+        template = self.manifest(packages) + (
+            f'dependency = {{ git = "{dependency["git"]}", rev = "{token}" }}\n'
+            f'layout-sdk = {{ git = "{layout["git"]}", rev = "@GIT_REVISION_layout-sdk@" }}\n'
+        )
+        literal = template.replace(token, dependency["rev"]).replace(
+            "@GIT_REVISION_layout-sdk@", layout["rev"]
+        )
+        self.assertEqual(
+            rust_git._rust_manifest(
+                template, GIT_URL, packages, revision, dependencies=dependencies
+            ),
+            rust_git._rust_manifest(
+                literal, GIT_URL, packages, revision, dependencies=dependencies
+            ),
+        )
+        for invalid in (
+            template + f"# {token}\n",
+            literal + f"# {token}\n",
+            template.replace(token, "@GIT_REVISION_undeclared@"),
+            template.replace(DEPENDENCY_URL, GIT_URL),
+            literal.replace(dependency["rev"], "d" * 40),
+        ):
+            with self.subTest(template=invalid), self.assertRaises(ValueError):
+                rust_git._rust_manifest(
+                    invalid, GIT_URL, packages, revision, dependencies=dependencies
+                )
+
     def test_registry_dependency_requires_an_exact_manifest_version_and_features(self):
         packages = ("producer",)
         revision = "a" * 40

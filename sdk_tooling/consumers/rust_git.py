@@ -185,6 +185,18 @@ def _rust_manifest(
     if template.count("@SDK_REVISION@") != len(packages):
         raise ValueError("The Rust fixture must parameterize each SDK dependency")
     text = template.replace("@SDK_REVISION@", revision)
+    if "@GIT_REVISION_" in text:
+        declared = tomllib.loads(text).get("dependencies")
+        for name, pin in (dependencies or {}).items():
+            token = f"@GIT_REVISION_{name}@"
+            if (
+                text.count(token) == 1
+                and isinstance(declared, dict)
+                and declared.get(name) == (pin | {"rev": token})
+            ):
+                text = text.replace(token, pin["rev"])
+        if "@GIT_REVISION_" in text:
+            raise ValueError("Use each Git revision token once for its declared dependency")
     manifest = tomllib.loads(text)
     if "workspace" not in manifest or manifest.get("dependencies") != {
         **{
