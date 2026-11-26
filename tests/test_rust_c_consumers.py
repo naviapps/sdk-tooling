@@ -155,7 +155,7 @@ class InstalledConsumersTests(unittest.TestCase):
 
         def cargo(command, *, cwd, env):
             cache = Path(env["CARGO_HOME"])
-            if command[1] == "generate-lockfile":
+            if command[1] == "fetch":
                 self.assertFalse(cwd.is_relative_to(root))
                 self.assertEqual(list(cache.iterdir()), [])
                 self.assertEqual(env["GIT_ALLOW_PROTOCOL"], "file")
@@ -277,7 +277,7 @@ class InstalledConsumersTests(unittest.TestCase):
         def cargo(command, *, cwd, env):
             calls.append(command[1])
             marker = Path(env["CARGO_HOME"]) / "Cargo.toml"
-            if command[1] == "generate-lockfile":
+            if command[1] == "fetch":
                 self.assertEqual(env["GIT_ALLOW_PROTOCOL"], "file")
                 config = Path(env["GIT_CONFIG_GLOBAL"]).read_text(encoding="utf-8")
                 self.assertEqual(config.count("insteadOf = "), 3)
@@ -343,7 +343,7 @@ class InstalledConsumersTests(unittest.TestCase):
                         ],
                         rust_git_dependencies=dependencies,
                     )
-                    self.assertEqual(calls, ["generate-lockfile", "fetch", "metadata", "run"])
+                    self.assertEqual(calls, ["fetch", "metadata", "run"])
                     calls.clear()
                     summary = json.loads(evidence.read_text(encoding="utf-8"))
                     self.assertEqual(summary["state"], "passed")
@@ -592,8 +592,9 @@ class InstalledConsumersTests(unittest.TestCase):
                 return SimpleNamespace(stdout="release: 1.99.1\nhost: aarch64-apple-darwin\n")
             cache = Path(env["CARGO_HOME"])
             caches.add(cache)
-            if action == "generate-lockfile":
+            if action == "fetch":
                 self.assertFalse((cwd / "Cargo.lock").exists())
+                self.assertNotIn("--locked", command)
                 (cwd / "Cargo.lock").write_bytes(lock)
             if action in {"metadata", "run"}:
                 self.assertIn("--locked", command)
@@ -638,7 +639,6 @@ class InstalledConsumersTests(unittest.TestCase):
                 rust_mode_check=check,
                 argv=["--evidence", str(report)],
             )
-        self.assertEqual(actions.count("generate-lockfile"), 1)
         self.assertEqual(actions.count("fetch"), 1)
         self.assertEqual(inspected, list(modes))
         self.assertEqual(len(caches), 1)
@@ -703,7 +703,7 @@ class InstalledConsumersTests(unittest.TestCase):
         def fake_cargo(command, *, cwd, env):
             action = command[1]
             events.append(action)
-            if action == "generate-lockfile":
+            if action == "fetch":
                 self.prepare_verifier.assert_called_once()
                 self.assertNotIn("CARGO_HOME", self.prepare_verifier.call_args.args[2])
                 self.assertNotIn("CARGO_TARGET_DIR", self.prepare_verifier.call_args.args[2])
@@ -751,7 +751,7 @@ class InstalledConsumersTests(unittest.TestCase):
         self.assertEqual(evidence["state"], "failed")
         self.assertEqual(evidence["rust"]["gitIdentity"], identity)
         self.assertEqual(evidence["rust"]["cargoLockSHA256"], hashlib.sha256(lock).hexdigest())
-        self.assertEqual(events, ["generate-lockfile", "fetch", "metadata", "run"])
+        self.assertEqual(events, ["fetch", "metadata", "run"])
         self.assertTrue(work_dirs and not any(path.exists() for path in work_dirs))
 
     @unittest.skipIf(os.name == "nt", "Requires POSIX symlinks")
@@ -1138,7 +1138,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 if action == "--print":
                     self.assertEqual(command[2:], ["target-libdir", "--target", target])
                     return SimpleNamespace(stdout=str(stdlib))
-                if action == "generate-lockfile":
+                if action == "fetch":
                     self.assertEqual(
                         (cwd / "src/main.rs").read_bytes(),
                         (root / "fixtures/consumers/rust/src/main.rs").read_bytes(),
@@ -1176,7 +1176,7 @@ class InstalledConsumersTests(unittest.TestCase):
                     )
                 if action in {"fetch", "build"}:
                     self.assertEqual(command[command.index("--target") + 1], target)
-                    self.assertIn("--locked", command)
+                    self.assertEqual("--locked" in command, action == "build")
                 if action == "build":
                     self.assertIn("--offline", command)
                     self.assertEqual(command[command.index("--bin") + 1], "selected")
@@ -1268,7 +1268,7 @@ class InstalledConsumersTests(unittest.TestCase):
                 actions,
                 ["-vV"]
                 + (["--print"] if host != target_arch else [])
-                + ["generate-lockfile", "fetch", "metadata", "build", "execute"],
+                + ["fetch", "metadata", "build", "execute"],
             )
 
     def test_windows_rejects_wrong_compiler_host_before_resolving_dependencies(self):

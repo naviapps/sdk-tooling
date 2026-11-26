@@ -498,8 +498,9 @@ def _run_rust(
         encoding="utf-8",
     )
     target_flags = ["--target", target] if target else []
-    run([cargo, "generate-lockfile"], cwd=client, env=env)
-    run([cargo, "fetch", "--locked", *target_flags], cwd=client, env=env)
+    # The fresh consumer has no lockfile. Fetch resolves it before downloading;
+    # metadata and execution below use the resulting lockfile offline.
+    run([cargo, "fetch", *target_flags], cwd=client, env=env)
     expected = _git_identity(git_url, revision)
     extra_identities = {
         name: _git_identity(pin["git"], pin["rev"]) for name, pin in (dependencies or {}).items()
