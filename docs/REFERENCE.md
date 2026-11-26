@@ -303,12 +303,22 @@ dependency package filenames separated by LF. Keep those packages and their
 
 The workflow checks the same package set on macOS ARM64, Rosetta x64 and
 Windows x64, with optional [Windows on Arm coverage](../README.md#windows-on-arm).
+For a transient failure in one Windows NuGet consumer, rerun that job from the
+original workflow run. It downloads the combined package by the macOS job's
+artifact ID and checks its digest again. This works while the artifact is
+available. Packaged desktop fixtures such as MSIX installation run in the
+Windows producer. Rerunning the producer also reruns its dependent jobs.
+Start a new distribution run when the inputs change or the original run
+lacks the Windows host you need. See [GitHub's job rerun guide].
+
 A downloaded combined artifact has its primary package at the root and
 dependencies under `dependencies/`. Place them in one local feed.
 When the Windows plan exports a separate adapter under `sdk-nuget-companions`,
 use the adapter and combined core from the same successful run. The
 [package consumer](#installed-nuget-consumers) verifies the supplied archives
 and the workflow rechecks package and receipt bytes after execution.
+
+[GitHub's job rerun guide]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs#re-running-a-specific-job-in-a-workflow
 
 ## Native artifacts and provenance
 
