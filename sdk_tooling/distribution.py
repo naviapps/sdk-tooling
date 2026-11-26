@@ -30,8 +30,38 @@ def ordinary_file(root, value):
     return path
 
 
-def _argument(value):
-    return isinstance(value, str) and bool(value.strip()) and value.isprintable()
+def _argument(value, *, allow_blank=False):
+    return (
+        isinstance(value, str)
+        and bool(value if allow_blank else value.strip())
+        and value.isprintable()
+    )
+
+
+def platform_commands(data, platforms, *, allow_blank_arguments=False):
+    """Read argv arrays shared by local and hosted distribution checks."""
+    if not data or data.keys() - set(platforms):
+        raise ValueError(f"Declare distribution commands under {' or '.join(platforms)}")
+
+    plan = {}
+    for platform, settings in data.items():
+        if not isinstance(settings, dict) or settings.keys() - {"commands"}:
+            raise ValueError(f"Declare commands for {platform}")
+        commands = settings.get("commands")
+        if (
+            not isinstance(commands, list)
+            or not commands
+            or not all(
+                isinstance(argv, list)
+                and argv
+                and _argument(argv[0])
+                and all(_argument(value, allow_blank=allow_blank_arguments) for value in argv[1:])
+                for argv in commands
+            )
+        ):
+            raise ValueError(f"Distribution commands for {platform} must be nonempty argv arrays")
+        plan[platform] = commands
+    return plan
 
 
 def load_plan(root, manifest=None):
@@ -45,23 +75,7 @@ def load_plan(root, manifest=None):
             else tomllib.loads(path.read_text(encoding="utf-8"))
         )
     packaging = data.pop("nuget", None)
-    if not data or data.keys() - set(PLATFORMS):
-        raise ValueError("Declare distribution commands under macos, windows or linux")
-    plan = {}
-    for platform, settings in data.items():
-        if not isinstance(settings, dict) or settings.keys() != {"commands"}:
-            raise ValueError(f"Declare commands for {platform}")
-        commands = settings["commands"]
-        if (
-            not isinstance(commands, list)
-            or not commands
-            or any(
-                not isinstance(argv, list) or not argv or not all(map(_argument, argv))
-                for argv in commands
-            )
-        ):
-            raise ValueError(f"Distribution commands for {platform} must be nonempty argv arrays")
-        plan[platform] = commands
+    plan = platform_commands(data, PLATFORMS)
     if packaging is not None:
         if not isinstance(packaging, dict) or packaging.keys() != {"pack"}:
             raise ValueError("Declare the SDK's NuGet packer under nuget.pack")

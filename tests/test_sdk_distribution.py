@@ -12,6 +12,8 @@ from pathlib import Path
 from textwrap import dedent
 from unittest.mock import patch
 
+from sdk_tooling.distribution import load_plan
+
 SCRIPT = Path(__file__).resolve().parents[1] / "ci/check_distribution.py"
 DISPATCH = runpy.run_path(str(SCRIPT))
 
@@ -84,6 +86,19 @@ class DistributionTests(unittest.TestCase):
         for content in plans:
             with self.subTest(content=content), self.assertRaises(ValueError):
                 self.distribution_plan(content)
+
+    def test_hosted_plan_preserves_printable_blank_argument(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            source = Path(disposable).resolve()
+            config = source / "sdk-tooling.toml"
+            config.write_text('[distribution.macos]\ncommands = [["make", " "]]', encoding="utf-8")
+            self.assertEqual(DISPATCH["distribution_plan"](source), {"macos": [["make", " "]]})
+            with self.assertRaisesRegex(ValueError, "argv arrays"):
+                load_plan(source)
+
+            config.write_text('[distribution.macos]\ncommands = [["make", ""]]', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "argv arrays"):
+                DISPATCH["distribution_plan"](source)
 
     def test_combined_nuget_plan_requires_both_producers_and_checkout_owned_files(self):
         with tempfile.TemporaryDirectory() as disposable:

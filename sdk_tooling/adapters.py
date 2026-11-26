@@ -17,9 +17,6 @@ from .quality import EXCLUDED
 
 _TOOLING_ROOT = Path(__file__).resolve().parents[1]
 _TOOLING_URL = "https://github.com/naviapps/sdk-tooling.git"
-_TOOLING_TASK = re.compile(
-    rf"uvx --from git\+{re.escape(_TOOLING_URL)}@([a-f0-9]{{40}}) sdk-tooling"
-)
 _FIXTURE_SOURCE_EXTENSIONS = {
     ".c",
     ".cs",
@@ -86,18 +83,28 @@ def _load(package, name):
     return import_module(f"{package}.{name}")
 
 
+def tooling_task_revision(configuration, url):
+    """Require the exact immutable command selecting a Tooling checkout."""
+    tasks = configuration.get("tasks", {})
+    if not isinstance(tasks, dict):
+        raise ValueError("SDK mise tasks must be a table")
+    task = tasks.get("sdk-tooling")
+    command = task.get("run") if isinstance(task, dict) else None
+    pattern = rf"uvx --from git\+{re.escape(url)}@([a-f0-9]{{40}}) sdk-tooling"
+    match = re.fullmatch(pattern, command) if isinstance(command, str) else None
+    if match is None:
+        raise ValueError("Pin [tasks.sdk-tooling] in mise.toml to a full Git SHA")
+    return match[1]
+
+
 def pinned_tooling(root, checkout):
     """Load a dependency's build tools from its declared revision in a fresh checkout."""
     manifest = Path(root).resolve(strict=True) / "mise.toml"
     if manifest.resolve() != manifest or not manifest.is_file():
         raise ValueError("Expected an ordinary mise.toml in the dependency SDK")
-    tasks = tomllib.loads(manifest.read_text(encoding="utf-8")).get("tasks")
-    task = tasks.get("sdk-tooling") if isinstance(tasks, dict) else None
-    command = task.get("run") if isinstance(task, dict) else None
-    match = _TOOLING_TASK.fullmatch(command) if isinstance(command, str) else None
-    if match is None:
-        raise ValueError("Dependency SDK must pin SDK Tooling to a full Git SHA")
-    revision = match[1]
+    revision = tooling_task_revision(
+        tomllib.loads(manifest.read_text(encoding="utf-8")), _TOOLING_URL
+    )
 
     checkout = Path(checkout)
     checkout.mkdir()

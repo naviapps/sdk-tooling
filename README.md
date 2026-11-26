@@ -115,14 +115,8 @@ checksummed source bundle and local Git mirror supplied by its host.
 
 ### Windows on Arm
 
-For a local x64 build on Windows 11 ARM64, use ARM64 Python and Rust, install
-the Rust target `x86_64-pc-windows-msvc`, and select Visual Studio C++
-components for both ARM64 and x64 so the driver can use `HostARM64/x64`.
-Set `DOTNET_BIN` to the absolute path of the x64 .NET SDK executable.
-The driver builds x64 binaries and runs x64 managed consumers under emulation.
-Use the SDK's documented Windows driver. See
-[Windows builds and inspection][Windows builds and inspection]
-for the shared requirements.
+For local x64 builds on Windows 11 ARM64, follow the [shared Windows setup]
+and run the SDK's documented Windows driver.
 
 For a combined NuGet package in hosted CI, add `--field windows-on-arm=true`
 to the [distribution command](#sdk-distribution) to test the same `win-x64`
@@ -183,4 +177,4 @@ SDK Tooling is available under the [MIT License](LICENSE).
 [checks workflow]: https://github.com/naviapps/sdk-tooling/blob/main/.github/workflows/check.yml
 [distribution workflow]: https://github.com/naviapps/sdk-tooling/blob/main/.github/workflows/check-sdk-distribution.yml
 [shared source workflow]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#shared-source-workflow
-[Windows builds and inspection]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#windows-builds-and-inspection
+[shared Windows setup]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#windows-builds-and-inspection

@@ -503,12 +503,16 @@ verify its receipt, including when building and packaging on different hosts.
 
 Windows receipts use schema 2; macOS framework receipts use schema 3.
 
-On [Windows on Arm](../README.md#windows-on-arm), select ARM64-hosted MSVC
-for the x64 target through
-`windows.native_msvc_environment("arm64", target_architecture="x64")`. The
-helper selects the matching Visual Studio components and checks that the
-compiler and linker are ARM64 executables from `HostARM64/x64`. It verifies the
-first VC and Windows SDK libraries found on `LIB` against the selected x64
+For a local x64 build on Windows 11 ARM64, install ARM64 Python, the SDK-pinned
+ARM64 Rust toolchain with the `x86_64-pc-windows-msvc` target, Visual Studio C++
+components for both ARM64 and x64, and the Windows SDK. The SDK's Windows driver
+builds x64 binaries and runs x64 managed consumers under emulation.
+
+Select ARM64-hosted MSVC for the x64 target with
+`windows.native_msvc_environment("arm64", target_architecture="x64")`.
+The helper selects the matching Visual Studio components and checks that
+the compiler and linker are ARM64 executables from `HostARM64/x64`. It verifies
+the first VC and Windows SDK libraries on `LIB` against the selected x64
 directories and sets the target-specific Cargo linker and C compiler paths.
 For an SDK build that also needs .NET, use
 `windows.native_environment("arm64", target_architecture="x64")`. Set
@@ -692,7 +696,7 @@ the disposable consumer tree.
 
 The contributor check runs the declared executables with the fixture manifest
 and `Sources`. Select full dependency verification with `--distribution` or set
-`verify_dependencies = true` in `[swift]`. Full verification builds the entire
+`verify_dependencies = true` in `[checks.swift]`. Full verification builds the entire
 fixture, rejects resolved dependencies outside the fresh install, and enforces
 the SDK's `Package.resolved` at the consumer root when present. It retains SDK and
 fixture `.swiftpm/configuration/mirrors.json` files and rejects conflicting policy.
@@ -703,7 +707,7 @@ for dependency URL rewrites. Both checks remove their temporary state when done.
 ### Installed Rust and C consumers
 
 `rust-c-consumers` runs independent Git Rust and copied-framework C fixtures from
-the SDK's `[rust_c]` declaration. SDKs select their canonical repository, public Rust
+the SDK's `[checks.rust_c]` declaration. SDKs select their canonical repository, public Rust
 packages, framework and header. The Rust fixture owns
 `fixtures/consumers/rust/Cargo.toml.in` and `src/`.
 The C fixture owns `fixtures/consumers/c/main.c`. Both receive an absolute empty

@@ -18,7 +18,9 @@ from pathlib import Path
 from platform import machine
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+adapters = import_module("sdk_tooling.adapters")
 manifest = import_module("sdk_tooling.manifest")
+distribution = import_module("sdk_tooling.distribution")
 
 REVISION = re.compile(r"[a-f0-9]{40}")
 SHA256 = re.compile(r"[a-f0-9]{64}")
@@ -122,25 +124,9 @@ def mise_configuration(source):
 
 
 def tooling_revision(source, repository):
-    tasks = mise_configuration(source).get("tasks", {})
-    if not isinstance(tasks, dict):
-        raise ValueError("SDK mise tasks must be a table")
-    task = tasks.get("sdk-tooling")
-    command = task.get("run") if isinstance(task, dict) else None
-    prefix = f"uvx --from git+https://github.com/{repository}.git@"
-    suffix = " sdk-tooling"
-    if (
-        not isinstance(command, str)
-        or not command.startswith(prefix)
-        or not command.endswith(suffix)
-    ):
-        raise ValueError(
-            "Declare the shared CLI at a full Git SHA in mise.toml [tasks.sdk-tooling]"
-        )
-    pin = command.removeprefix(prefix).removesuffix(suffix)
-    if not REVISION.fullmatch(pin):
-        raise ValueError("SDK tooling task must pin one full lowercase Git SHA")
-    return pin
+    return adapters.tooling_task_revision(
+        mise_configuration(source), f"https://github.com/{repository}.git"
+    )
 
 
 def has_dotnet_pin(source):
@@ -175,37 +161,10 @@ def windows_rust_pin(source):
     )
 
 
-def clean_text(value):
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and all(character.isprintable() for character in value)
-    )
-
-
 def distribution_plan(source):
     plan = manifest.read_section(source, "distribution")
     packaging = plan.pop("nuget", None)
-    if not plan or not plan.keys() <= set(PLATFORMS):
-        raise ValueError("Declare macos or windows distribution commands")
-    selected = {}
-    for platform, settings in plan.items():
-        if not isinstance(settings, dict) or not settings.keys() <= {"commands"}:
-            raise ValueError(f"Unknown distribution settings for {platform}")
-        commands = settings.get("commands")
-        if (
-            not isinstance(commands, list)
-            or not commands
-            or not all(
-                isinstance(argv, list)
-                and argv
-                and all(clean_text(argument) for argument in argv)
-                and argv[0].strip()
-                for argv in commands
-            )
-        ):
-            raise ValueError(f"Distribution commands for {platform} must be nonempty argv arrays")
-        selected[platform] = commands
+    selected = distribution.platform_commands(plan, PLATFORMS, allow_blank_arguments=True)
     if packaging is not None:
         if (
             not isinstance(packaging, dict)
