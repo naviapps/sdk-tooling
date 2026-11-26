@@ -52,6 +52,21 @@ class WorkspaceTests(unittest.TestCase):
                 [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8],
             )
 
+    def test_workspace_retries_a_windows_directory_with_pending_removals(self):
+        error = OSError("Windows still sees a directory entry")
+        error.winerror = 145
+        remove_tree = tempfile.TemporaryDirectory._rmtree
+        with tempfile.TemporaryDirectory() as parent:
+            with (
+                patch.object(tempfile.TemporaryDirectory, "_rmtree", wraps=remove_tree) as cleanup,
+                patch.object(workspaces.time, "sleep") as sleep,
+                workspaces.temporary_workspace(parent, prefix="fixture-") as work,
+            ):
+                cleanup.side_effect = [error, unittest.mock.DEFAULT]
+                (work / "abi.exe").touch()
+            sleep.assert_called_once()
+            self.assertFalse(work.exists())
+
     def test_workspace_preserves_body_error_when_cleanup_fails(self):
         error = PermissionError("Workspace removal denied")
         body_error = ValueError("Fixture execution failed")

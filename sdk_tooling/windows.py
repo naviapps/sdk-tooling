@@ -9,9 +9,9 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
+from . import workspaces
 from .artifacts import build_lock, file_sha256, files, hashes, publish, stage_native, write_json
 from .cargo import CargoDependencies
 from .cargo_build import compile_units, verify_units
@@ -372,7 +372,8 @@ def inspect_pe(path, machine, symbols, *, allow_import=None):
 
 
 def tool_inputs():
-    return tool_input_hashes(Path(__file__))
+    source = Path(__file__)
+    return tool_input_hashes(source, source.with_name("workspaces.py"))
 
 
 def _output(builder, architecture, output_root):
@@ -444,8 +445,7 @@ def verify_artifact(
 def probe_abi(builder, library, import_library, tools, env, architecture):
     """Execute only version getters with the exact staged target DLL bytes."""
     expected = file_sha256(library), file_sha256(import_library)
-    with tempfile.TemporaryDirectory(prefix="abi-", dir=library.parent.parent) as temporary:
-        work = Path(temporary)
+    with workspaces.temporary_workspace(library.parent.parent, prefix="abi-") as work:
         dll = stage_native(library, work / library.name)
         lib = stage_native(import_library, work / import_library.name)
         executable = builder.compile_abi_probe(
@@ -586,8 +586,8 @@ def build_library(
                 or set(hashes(files(destination), destination)) != expected
             ):
                 raise ValueError("Windows output contains files outside its previous receipt")
-        with tempfile.TemporaryDirectory(prefix="stage-", dir=parent) as temporary:
-            stage = Path(temporary) / destination.name
+        with workspaces.temporary_workspace(parent, prefix="stage-") as temporary:
+            stage = temporary / destination.name
             stage.mkdir()
             shutil.copyfile(library, stage / library.name)
             shutil.copyfile(library.with_suffix(".dll.lib"), stage / (library.name + ".lib"))

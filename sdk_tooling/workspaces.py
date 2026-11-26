@@ -11,8 +11,8 @@ def _cleanup_workspace(directory):
     for delay in (0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8):
         try:
             directory.cleanup()
-        except PermissionError as error:
-            if getattr(error, "winerror", None) not in {5, 32, 33}:
+        except OSError as error:
+            if getattr(error, "winerror", None) not in {5, 32, 33, 145}:
                 raise
             time.sleep(delay)
         else:

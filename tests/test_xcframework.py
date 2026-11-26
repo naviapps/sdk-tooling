@@ -310,7 +310,8 @@ class NativeInputsTests(unittest.TestCase):
             "manifest.py",
             "native_plan.py",
         }
-        for name in expected_shared | {"windows.py", "xcframework.py"}:
+        windows_sources = {"windows.py", "workspaces.py"}
+        for name in expected_shared | windows_sources | {"xcframework.py"}:
             (package / name).write_text(name, encoding="utf-8")
         parser = tooling / DEP_INFO_PARSER
         parser.parent.mkdir(parents=True)
@@ -327,7 +328,7 @@ class NativeInputsTests(unittest.TestCase):
         ):
             windows_inputs = windows.tool_inputs()
             mac_inputs = self.builder.tool_inputs()
-            self.assertEqual(set(windows_inputs), expected_shared | {"windows.py"})
+            self.assertEqual(set(windows_inputs), expected_shared | windows_sources)
             self.assertEqual(
                 set(mac_inputs), expected_shared | {"xcframework.py", DEP_INFO_PARSER.as_posix()}
             )
@@ -353,6 +354,12 @@ class NativeInputsTests(unittest.TestCase):
             parser.write_text("new parser", encoding="utf-8")
             self.assertNotEqual(self.builder.tool_inputs(), mac_inputs)
             self.assertEqual(windows.verify_artifact(product, "x64")[0], destination)
+            mac_inputs = self.builder.tool_inputs()
+            (package / "workspaces.py").write_text("new cleanup tool", encoding="utf-8")
+            self.assertEqual(self.builder.tool_inputs(), mac_inputs)
+            with self.assertRaisesRegex(ValueError, "sources or build contract"):
+                windows.verify_artifact(product, "x64")
+            (package / "workspaces.py").write_text("workspaces.py", encoding="utf-8")
             (package / "cargo.py").write_text("new shared build tool", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "sources or build contract"):
                 windows.verify_artifact(product, "x64")

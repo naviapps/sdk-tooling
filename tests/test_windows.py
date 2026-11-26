@@ -564,8 +564,22 @@ class WindowsPublicationTests(unittest.TestCase):
             staged.write_bytes(b"changed after execution")
 
         builder.run_abi_probe.side_effect = execute
-        with self.assertRaisesRegex(ValueError, "changed during the ABI probe"):
+        original_remove = tempfile.TemporaryDirectory._rmtree
+        locked = PermissionError("Windows still holds the ABI probe executable")
+        locked.winerror = 5
+
+        def remove_after_release(name, *, ignore_errors):
+            if Path(name).name.startswith("abi-") and not wait.called:
+                raise locked
+            return original_remove(name, ignore_errors=ignore_errors)
+
+        with (
+            patch.object(tempfile.TemporaryDirectory, "_rmtree", side_effect=remove_after_release),
+            patch.object(workspaces.time, "sleep") as wait,
+            self.assertRaisesRegex(ValueError, "changed during the ABI probe"),
+        ):
             probe_abi(builder, library, imports, root / "msvc", {}, "x64")
+        wait.assert_called_once()
         self.assertEqual(library.read_bytes(), b"known DLL")
         self.assertEqual(list(root.iterdir()), [output])
 
