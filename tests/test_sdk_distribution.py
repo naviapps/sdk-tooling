@@ -792,6 +792,34 @@ class DistributionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ordinary SDK file"):
                 has_pin(source)
 
+    def test_distribution_checks_exact_dotnet_before_selecting_it(self):
+        check_version = DISPATCH["check_dotnet_version"]
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary).resolve()
+            settings = source / "global.json"
+            dotnet = str(source / "selected dotnet")
+            env = {"PATH": "owned"}
+            calls = []
+
+            def run(root, environment, *args, stdout):
+                calls.append((root, environment, args, stdout))
+                return "10.0.403\r\n"
+
+            with patch.dict(check_version.__globals__, run=run):
+                settings.write_text('{"sdk":{"version":"10.0.403","rollForward":"latestPatch"}}')
+                with self.assertRaisesRegex(ValueError, "rollForward=disable"):
+                    check_version(source, env, dotnet=dotnet)
+                self.assertEqual(calls, [])
+
+                settings.write_text('{"sdk":{"version":"10.0.404","rollForward":"disable"}}')
+                with self.assertRaisesRegex(ValueError, "Install the SDK's exact .NET version"):
+                    check_version(source, env, dotnet=dotnet)
+                settings.write_text('{"sdk":{"version":"10.0.403","rollForward":"disable"}}')
+                self.assertEqual(
+                    check_version(source, env, dotnet=dotnet), env | {"DOTNET_BIN": dotnet}
+                )
+                self.assertEqual(calls, [(source, env, (dotnet, "--version"), subprocess.PIPE)] * 2)
+
     def test_sdk_checkout_rejects_off_main_commit(self):
         with tempfile.TemporaryDirectory() as disposable:
             root = Path(disposable).resolve()

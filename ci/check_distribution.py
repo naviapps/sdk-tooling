@@ -19,6 +19,8 @@ from platform import machine
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 adapters = import_module("sdk_tooling.adapters")
+artifacts = import_module("sdk_tooling.artifacts")
+dotnet_tools = import_module("sdk_tooling.dotnet")
 manifest = import_module("sdk_tooling.manifest")
 distribution = import_module("sdk_tooling.distribution")
 
@@ -113,8 +115,7 @@ def read_regular(source, relative):
 def file_digest(path):
     if path.resolve() != path or not path.is_file():
         raise ValueError("Expected an ordinary NuGet package")
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+    return artifacts.file_sha256(path)
 
 
 def mise_configuration(source):
@@ -278,13 +279,12 @@ def execute(source, platform, commands, env, temp, tooling, *, xcframework_outpu
 
 
 def check_dotnet_version(source, env, *, dotnet=None):
-    settings = json.loads(read_regular(source, "global.json"))["sdk"]
+    config = distribution.ordinary_file(source.resolve(), "global.json")
+    version = dotnet_tools.pinned_sdk_version(config.parent)
     dotnet = dotnet or shutil.which("dotnet", path=env.get("PATH"))
     if (
         not dotnet
-        or settings.get("rollForward") != "disable"
-        or run(source, env, dotnet, "--version", stdout=subprocess.PIPE).strip()
-        != settings.get("version")
+        or run(source, env, dotnet, "--version", stdout=subprocess.PIPE).strip() != version
     ):
         raise ValueError("Install the SDK's exact .NET version before checking its package")
     return dict(env, DOTNET_BIN=dotnet)

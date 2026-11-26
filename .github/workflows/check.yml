@@ -56,7 +56,7 @@ jobs:
           EXPECTED_DOTNET_ARCHITECTURE: ${{ matrix.architecture }}
         shell: bash
         run: |
-          expected=$(python -c 'import json; print(json.load(open("global.json", encoding="utf-8"))["sdk"]["version"])')
+          expected=$(python -B -c 'from sdk_tooling.dotnet import pinned_sdk_version; print(pinned_sdk_version("."))')
           version=$(dotnet --version | tr -d '\r')
           printf '.NET SDK %s\n' "$version"
           test "$version" = "$expected"
@@ -72,16 +72,16 @@ jobs:
           add_shims_to_path: false
           export_path: false
           env: false
-      - name: Check owned source and workflow
+      - name: Select pinned Rust toolchain
+        shell: bash
+        run: rustup show
+      - name: Check formatting, lint and workflows
         if: runner.os == 'macOS'
         env:
           MISE_DISABLE_TOOLS: python,rust
           MISE_AUTO_INSTALL: "0"
         shell: bash
-        run: mise exec -- python -B -m sdk_tooling quality check --language python --language data
-      - name: Select pinned Rust toolchain
-        shell: bash
-        run: rustup show
+        run: mise run lint
       - name: Verify SDK mechanisms and clean NuGet consumers
         env:
           SDK_TOOLING_TEST_DOTNET: "1"
@@ -92,9 +92,6 @@ jobs:
         run: |
           set -euo pipefail
           target='${{ matrix.target }}'
-          if [[ "$RUNNER_OS" == macOS ]]; then
-            cargo fmt --all -- --check
-          fi
           cargo fetch --locked --target "$target"
           cargo clippy --locked --offline --workspace --target "$target" --all-targets -- -D warnings
           cargo test --locked --offline --workspace --target "$target"
