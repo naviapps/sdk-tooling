@@ -414,6 +414,83 @@ class NativePackageTests(unittest.TestCase):
                     self.invoke(runtimes=["osx-arm64", "osx-x64"])
                 self.assert_previous()
 
+    def test_checkout_settings_for_the_project_and_linked_source_are_recorded(self):
+        shared = self.file("bindings/Shared/Linked.cs")
+        settings = [
+            self.file("Directory.Build.props"),
+            self.file("bindings/Directory.Build.targets"),
+            self.file("bindings/Directory.Packages.props"),
+            self.file("Directory.Build.rsp"),
+            self.file(".editorconfig"),
+            self.file("bindings/src/Feature/.editorconfig"),
+            self.file("bindings/Shared/.globalconfig"),
+        ]
+        unrelated = self.file("unrelated/Directory.Build.props")
+        generated = self.file("bindings/src/obj/.editorconfig")
+
+        self.invoke(input_files=[shared])
+
+        recorded = json.loads(self.previous_record.read_bytes())["managedInputs"]
+        for path in [shared, *settings]:
+            self.assertEqual(
+                recorded[path.relative_to(self.root).as_posix()],
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+        for path in (unrelated, generated):
+            self.assertNotIn(path.relative_to(self.root).as_posix(), recorded)
+
+    def test_added_changed_or_removed_settings_preserve_previous_package(self):
+        settings = self.root / "bindings/Directory.Build.props"
+        for initial, changed in ((None, b"new"), (b"old", b"new"), (b"old", None)):
+            with self.subTest(initial=initial, changed=changed):
+                if initial is None:
+                    settings.unlink(missing_ok=True)
+                else:
+                    settings.write_bytes(initial)
+
+                def mutate():
+                    if changed is None:
+                        settings.unlink()
+                    else:
+                        settings.write_bytes(changed)
+
+                self.mutate = mutate
+                with self.assertRaisesRegex(ValueError, "packaging inputs changed"):
+                    self.invoke()
+                self.assert_previous()
+
+    def test_links_in_managed_settings_and_sources_are_rejected_before_build(self):
+        other = self.file("unscanned/Other.cs").parent
+        for path, target, is_directory, message in (
+            (self.root / "Directory.Build.props", "unrecorded", False, "ordinary file"),
+            (self.project.parent / "Linked", other, True, "directory must not be linked"),
+        ):
+            with self.subTest(path=path):
+                try:
+                    path.symlink_to(target, target_is_directory=is_directory)
+                except OSError as error:
+                    if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                        self.skipTest(
+                            "Windows denied symlink creation; no privilege changes attempted"
+                        )
+                    raise
+                try:
+                    with self.assertRaisesRegex(ValueError, message):
+                        self.invoke()
+                finally:
+                    path.unlink()
+        self.build.assert_not_called()
+        self.assert_previous()
+
+    def test_project_outside_the_checkout_cannot_be_used_before_build(self):
+        with tempfile.TemporaryDirectory() as outside:
+            project = Path(outside) / self.project.name
+            shutil.copyfile(self.project, project)
+            with self.assertRaisesRegex(ValueError, "inside the SDK checkout"):
+                self.invoke(project=project)
+        self.build.assert_not_called()
+        self.assert_previous()
+
     def test_selected_input_mutation_is_not_published(self):
         self.mutate = lambda: self.library.write_bytes(b"changed native library")
         with self.assertRaisesRegex(ValueError, "bytes differ"):

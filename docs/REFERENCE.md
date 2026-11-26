@@ -524,6 +524,10 @@ compares its emitted dependency requirements to the evaluated project.
 When an entry point supplies explicit package sources, the packer resolves
 dependencies from those sources with a fresh staging cache. It rejects input
 changes before publication.
+The `managedInputs` receipt includes checkout-local MSBuild, NuGet and Roslyn
+directory settings. The packer discovers standard settings for the managed
+project and analyzer settings for explicitly listed linked C# source files.
+Declare custom imports and other additional inputs in `input_files`.
 MSBuild writes new packages with a fixed ZIP timestamp. Identical native and
 managed inputs under the same packaging toolchain can reproduce the unsigned
 archive bytes. Separately rebuilding native inputs can change identifiers,

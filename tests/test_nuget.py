@@ -775,7 +775,14 @@ class NativeConsumerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="native-package-timestamp-") as directory:
             root = Path(directory).resolve()
             self.select_sdk(root)
-            project = root / "TimestampFixture.csproj"
+            project = root / "bindings/src/TimestampFixture.csproj"
+            project.parent.mkdir(parents=True)
+            inherited_settings = root / "bindings/Directory.Build.props"
+            inherited_settings.write_text(
+                '<Project><ItemGroup><AssemblyMetadata Include="Settings" Value="directory-policy" />'
+                "</ItemGroup></Project>",
+                encoding="utf-8",
+            )
             project.write_text(
                 """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -789,7 +796,7 @@ class NativeConsumerTests(unittest.TestCase):
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="BuildDependency" Version="1.0.0" />
-    <None Include="README.md;LICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../README.md;../../LICENSE" Pack="true" PackagePath="/" />
     <None Include="$(SdkNativeRuntimeAssets)/**/*" Pack="true"
           Condition="'$(SdkNativeRuntimeAssets)' != ''"
           PackagePath="runtimes/%(RecursiveDir)%(Filename)%(Extension)" />
@@ -875,8 +882,15 @@ class NativeConsumerTests(unittest.TestCase):
                     )
                 self.assertEqual(error.exception.cmd[1], "restore")
             self.assertEqual(hashlib.sha256(package.read_bytes()).hexdigest(), first)
+            receipt = json.loads(package.with_suffix(".nupkg.json").read_bytes())
+            self.assertEqual(
+                receipt["managedInputs"]["bindings/Directory.Build.props"],
+                hashlib.sha256(inherited_settings.read_bytes()).hexdigest(),
+            )
             with zipfile.ZipFile(package) as archive:
-                self.assertIn(b"fresh-dependency", archive.read("lib/net10.0/TimestampFixture.dll"))
+                assembly = archive.read("lib/net10.0/TimestampFixture.dll")
+                self.assertIn(b"fresh-dependency", assembly)
+                self.assertIn(b"directory-policy", assembly)
                 self.assertEqual(
                     {entry.date_time for entry in archive.infolist()}, {(1980, 1, 1, 0, 0, 0)}
                 )

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,17 @@ _WINDOWS_USER_PATH = re.compile(
     rb"[a-z]:\\users\\(?:[^\\\x00]+(?P<end>\\)|(?P<partial>[^\\\x00]*)\Z)"
 )
 _WINDOWS_USER_END = re.compile(rb"[\\\x00]")
+_ANALYZER_SETTINGS = (".editorconfig", ".globalconfig")
+_PROJECT_SETTINGS = (
+    *_ANALYZER_SETTINGS,
+    "Directory.Build.props",
+    "Directory.Build.targets",
+    "Directory.Packages.props",
+    "Directory.Build.rsp",
+)
+_PROJECT_SETTINGS_NAMES = {name.casefold() for name in _PROJECT_SETTINGS}
+_MANAGED_SOURCE_SUFFIXES = {".cs", ".csproj", ".props", ".targets"}
+_MANAGED_OUTPUT_DIRECTORIES = {".native-build", "bin", "obj"}
 
 
 def retained_notice_files(directory, archive_prefix):
@@ -397,6 +409,73 @@ def _prepare_macos_library(path, rid):
         raise ValueError(f"Staged macOS library must contain only the {architecture} slice")
 
 
+def _checkout_parents(root, path):
+    parents = []
+    if ".." not in path.parts:
+        for parent in path.parents:
+            # Allow an alias for the checkout itself, such as /var on macOS.
+            if parent == root or (not parent.is_relative_to(root) and parent.resolve() == root):
+                return [*parents, parent]
+            if parent.is_symlink() or parent.is_junction():
+                break
+            parents.append(parent)
+    raise ValueError(f"Managed source must use an ordinary path inside the SDK checkout: {path}")
+
+
+def _managed_file(path, *, optional=False):
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        if optional:
+            return False
+        raise
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"Managed build input must be an ordinary file: {path}")
+    return True
+
+
+def _managed_sources(root, project, input_files, package_files, nuget_config):
+    sources = {project, nuget_config, *input_files}
+    settings = {root / "global.json"}
+    for source in sources:
+        parents = _checkout_parents(root, source)
+        _managed_file(source)
+        suffix = source.suffix.casefold()
+        if suffix == ".csproj" or source == project:
+            names = _PROJECT_SETTINGS
+        elif suffix == ".cs":
+            # Compiler settings also apply to declared files linked from another directory.
+            names = _ANALYZER_SETTINGS
+        else:
+            continue
+        settings.update(parent / name for parent in parents for name in names)
+
+    paths = [*sources, *package_files.values()]
+    for directory, subdirectories, names in project.parent.walk():
+        # Generated output is excluded from both snapshots; don't traverse it.
+        subdirectories[:] = [
+            name for name in subdirectories if name not in _MANAGED_OUTPUT_DIRECTORIES
+        ]
+        for name in subdirectories:
+            path = directory / name
+            if path.is_junction():
+                raise ValueError(f"Managed project directory must not be linked: {path}")
+        for name in names:
+            path = directory / name
+            if name not in _MANAGED_OUTPUT_DIRECTORIES and (
+                path.is_junction() or (path.is_symlink() and path.is_dir())
+            ):
+                raise ValueError(f"Managed project directory must not be linked: {path}")
+            if (
+                path.suffix.casefold() in _MANAGED_SOURCE_SUFFIXES
+                or name.casefold() in _PROJECT_SETTINGS_NAMES
+            ):
+                _managed_file(path)
+                paths.append(path)
+    paths.extend(path for path in settings if _managed_file(path, optional=True))
+    return hashes(paths, root)
+
+
 def pack_native(
     native,
     *,
@@ -416,7 +495,9 @@ def pack_native(
         rid not in ("osx-arm64", "osx-x64", "win-arm64", "win-x64") for rid in runtimes
     ):
         raise ValueError("Select at least one supported native package runtime")
-    root, project = native.root, Path(project)
+    root = Path(native.root).resolve()
+    project, nuget_config = root / project, root / nuget_config
+    input_files = tuple(Path(path).absolute() for path in input_files)
     version = native.version
     env = dotnet_tools.subprocess_environment(environment)
     dotnet = env.get("DOTNET_BIN") or shutil.which("dotnet", path=env.get("PATH"))
@@ -440,21 +521,7 @@ def pack_native(
         raise ValueError("Select the package README.md and LICENSE explicitly.")
 
     def managed_sources():
-        paths = [*input_files, *package_files.values(), project, nuget_config]
-        if (root / "global.json").is_file():
-            paths.append(root / "global.json")
-        for directory, subdirectories, names in project.parent.walk():
-            # Generated output is excluded from both snapshots; don't traverse it.
-            subdirectories[:] = [
-                name for name in subdirectories if name not in {".native-build", "bin", "obj"}
-            ]
-            paths.extend(
-                path
-                for name in names
-                if (path := directory / name).suffix in {".cs", ".csproj", ".props", ".targets"}
-                and path.is_file()
-            )
-        return hashes(paths, root)
+        return _managed_sources(root, project, input_files, package_files, nuget_config)
 
     output = root / ".native-build/packages"
 
