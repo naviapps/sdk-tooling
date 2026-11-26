@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+_DRIVER_PREPARES_HEADERS = "--driver-prepares-headers"
+
 
 def _xcframework(args, *, root):
     from .c_headers import prepare_generated
@@ -26,7 +28,9 @@ def main(argv=None):
     if argv[:1] == ["windows"] and argv[1:] not in (["-h"], ["--help"]):
         from .hosted_windows import run
 
-        return run(Path.cwd(), argv[1:])
+        driver_prepares_headers = argv[1:2] == [_DRIVER_PREPARES_HEADERS]
+        command = argv[2:] if driver_prepares_headers else argv[1:]
+        return run(Path.cwd(), command, prepare_headers=not driver_prepares_headers)
 
     if len(argv) > 1 and argv[0] == "python" and argv[1:] not in (["-h"], ["--help"]):
         from .adapters import python_command
@@ -74,7 +78,16 @@ def main(argv=None):
     sdk_checks.add_commands(commands)
     binding_checks.add_commands(commands)
     windows_bindings.add_command(commands)
-    commands.add_parser("windows", help="Run an SDK-owned Windows x64 validation command")
+    command = commands.add_parser(
+        "windows",
+        help="Run an SDK-owned Windows x64 validation command",
+        usage=f"sdk-tooling windows [{_DRIVER_PREPARES_HEADERS}] SCRIPT [ARGS ...]",
+    )
+    command.add_argument(
+        _DRIVER_PREPARES_HEADERS,
+        action="store_true",
+        help="Provision the generator and let the acceptance driver generate headers",
+    )
     commands.add_parser("python", help="Run an SDK-owned Python fixture or -m module")
     args = parser.parse_args(argv)
     if handler := getattr(args, "handler", None):

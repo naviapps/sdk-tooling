@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sdk_tooling import adapters, hosted_windows
+from sdk_tooling.__main__ import main
 
 
 class HostedWindowsTests(unittest.TestCase):
@@ -175,7 +176,7 @@ class HostedWindowsTests(unittest.TestCase):
                     self.assertEqual(version.call_args.args[0], [binary, "--version"])
                     self.assertEqual(command.call_count, 0 if warm else 2)
 
-    def test_sdk_acceptance_uses_a_prepared_generator_without_installing_any_tools(self):
+    def test_driver_gets_the_cached_generator_without_preparing_headers_twice(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             sdk = root / "SDK"
@@ -187,6 +188,7 @@ class HostedWindowsTests(unittest.TestCase):
             flags = {"RUNNER_TEMP": str(root), "SDK_TOOLING_HOSTED_CBINDGEN_CACHE": "true"}
             with (
                 patch.object(hosted_windows.sys, "platform", "win32"),
+                patch.object(Path, "cwd", return_value=sdk),
                 patch.dict(os.environ, flags, clear=True),
                 patch.object(hosted_windows.shutil, "which", return_value=str(root / "dotnet.exe")),
                 patch.object(hosted_windows.c_headers, "has_generated_products", return_value=True),
@@ -194,8 +196,8 @@ class HostedWindowsTests(unittest.TestCase):
                 patch.object(hosted_windows.subprocess, "run") as run,
             ):
                 command = ["-m", "distribution.verify_windows"]
-                hosted_windows.run(sdk, command)
-            generated.assert_called_once()
+                main(["windows", "--driver-prepares-headers", *command])
+            generated.assert_not_called()
             run.assert_called_once()
             self.assertEqual(run.call_args.args[0], adapters.python_command(sdk, *command))
             self.assertEqual(run.call_args.kwargs["env"]["PATH"], str(binary.parent))

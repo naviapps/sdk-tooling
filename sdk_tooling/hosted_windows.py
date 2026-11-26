@@ -91,7 +91,7 @@ def prepare_cbindgen_cache(temp, version, rust, *, warm):
         raise ValueError("Cached cbindgen version differs from the SDK pin")
 
 
-def run(sdk_root, command):
+def run(sdk_root, command, *, prepare_headers=True):
     if sys.platform != "win32":
         raise SystemExit("Hosted Windows SDK acceptance requires Windows.")
     if not command:
@@ -125,5 +125,6 @@ def run(sdk_root, command):
         if not cbindgen.is_file() or cbindgen.resolve() != cbindgen:
             raise ValueError("Expected the pinned cbindgen executable")
         env = dict(env, PATH=os.pathsep.join(filter(None, (str(cbindgen.parent), env.get("PATH")))))
-        c_headers.prepare_generated(sdk_root, env=env)
+        if prepare_headers:
+            c_headers.prepare_generated(sdk_root, env=env)
         subprocess.run(invocation, cwd=sdk_root, env=env, check=True)

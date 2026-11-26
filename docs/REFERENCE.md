@@ -515,6 +515,11 @@ the command the verified tooling checkout and revision, the .NET executable on
 Python, Rust and .NET versions, and the SDK's command verifies the architecture
 and artifacts.
 
+The launcher provisions the pinned cbindgen and generates opted-in headers
+before starting the driver. If the driver already generates them, write
+`sdk-tooling windows --driver-prepares-headers` before the script or `-m` module.
+The launcher still provisions cbindgen.
+
 ### NuGet package publication
 
 `nuget.pack_native` builds receipt-checked NuGet packages with the standard
