@@ -116,7 +116,8 @@ checksummed source bundle and local Git mirror supplied by its host.
 ### Windows on Arm
 
 For local x64 builds on Windows 11 ARM64, follow the [shared Windows setup]
-and run the SDK's documented Windows driver.
+and run the `mise run sdk-tooling -- python` command documented by the SDK.
+The `sdk-tooling windows` launcher uses the hosted runner's `RUNNER_TEMP`.
 
 For a combined NuGet package in hosted CI, add `--field windows-on-arm=true`
 to the [distribution command](#sdk-distribution) to test the same `win-x64`
