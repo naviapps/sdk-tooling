@@ -3,12 +3,12 @@
 import json
 import subprocess
 import sys
-import tempfile
 import tomllib
 from pathlib import Path
 
 from .adapters import python_command, tooling_command
 from .manifest import MANIFEST, read_section
+from .workspaces import temporary_workspace
 
 PLATFORMS = ("macos", "windows", "linux")
 HOSTS = {"darwin": "macos", "win32": "windows", "linux": "linux"}
@@ -91,9 +91,9 @@ def execute(plan, root, platform):
         raise ValueError(f"No distribution commands declared for {platform}")
     if platform != HOSTS.get(sys.platform):
         raise ValueError(f"The {platform} plan requires a {platform} host")
-    with tempfile.TemporaryDirectory(prefix="sdk-distribution-") as scratch:
+    with temporary_workspace(None, prefix="sdk-distribution-") as scratch:
         for command, *arguments in plan[platform]:
-            arguments = [argument.replace("{temp}", scratch) for argument in arguments]
+            arguments = [argument.replace("{temp}", str(scratch)) for argument in arguments]
             if command == "sdk-tooling":
                 argv = tooling_command(*arguments, root=root)
             elif command == "python":

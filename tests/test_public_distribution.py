@@ -6,8 +6,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import DEFAULT, patch
 
-from sdk_tooling.distribution import HOSTS
+from sdk_tooling import distribution, workspaces
 
 CLI = Path(__file__).resolve().parents[1] / "ci/run_sdk_tooling.py"
 
@@ -18,7 +19,7 @@ class PublicDistributionTests(unittest.TestCase):
         self.root = Path(work) / "Independent Example"
         self.root.mkdir()
         self.manifest = self.root / "release.toml"
-        self.host = HOSTS[sys.platform]
+        self.host = distribution.HOSTS[sys.platform]
 
     def invoke(self, *arguments, use_default_manifest=False):
         override = [] if use_default_manifest else ["--manifest", self.manifest.name]
@@ -73,6 +74,32 @@ class PublicDistributionTests(unittest.TestCase):
         output = Path(checked.stdout.splitlines()[-1])
         self.assertEqual(output.name, "output name")
         self.assertFalse(output.parent.exists())
+
+    def test_disposable_command_output_is_removed_after_a_windows_file_lock(self):
+        error = PermissionError("Command output is still locked")
+        error.winerror = 32
+
+        def run(command, *, cwd, check):
+            path = Path(command[1])
+            path.write_text("output", encoding="utf-8")
+
+        with (
+            patch.object(distribution.subprocess, "run", side_effect=run) as command,
+            patch.object(
+                tempfile.TemporaryDirectory,
+                "_rmtree",
+                wraps=tempfile.TemporaryDirectory._rmtree,
+                side_effect=[error, DEFAULT],
+            ) as cleanup,
+            patch.object(workspaces.time, "sleep") as sleep,
+        ):
+            distribution.execute(
+                {self.host: [["sdk-check", "{temp}/result"]]}, self.root, self.host
+            )
+        output = Path(command.call_args.args[0][1])
+        self.assertFalse(output.parent.exists())
+        self.assertEqual(cleanup.call_count, 2)
+        sleep.assert_called_once_with(0.1)
 
     def test_outside_packer_fails_before_any_command_runs(self):
         outside = self.root.parent / "pack.py"

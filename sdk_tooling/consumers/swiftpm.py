@@ -4,8 +4,9 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path, PureWindowsPath
+
+from ..workspaces import temporary_workspace
 
 _SWIFT_DEVELOPER_INPUTS = {
     ".git",
@@ -179,8 +180,8 @@ def run_swift_consumer(
         work_parent = Path(work_parent).resolve()
         work_parent.mkdir(parents=True, exist_ok=True)
     run = runner or subprocess.run
-    with tempfile.TemporaryDirectory(dir=work_parent, prefix="swift-consumer-") as directory:
-        work = Path(directory).resolve()
+    with temporary_workspace(work_parent, prefix="swift-consumer-") as directory:
+        work = directory.resolve()
         sdk, consumer = work / "sdk", work / "consumer"
         sdk.mkdir()
         consumer.mkdir()

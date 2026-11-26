@@ -6,11 +6,11 @@ import json
 import os
 import re
 import sys
-import tempfile
 from contextlib import nullcontext
 from pathlib import Path
 
 from .. import vm_environment, windows
+from ..workspaces import temporary_workspace
 from . import c_framework, rust_git
 from .workspace import _source_revision
 
@@ -212,8 +212,8 @@ def check_installed(
     with destination.open("x", encoding="utf-8") if destination else nullcontext() as report:
         try:
             # Cargo checks out full SDK trees, including macOS frameworks on Windows.
-            with tempfile.TemporaryDirectory(prefix="sdk-") as directory:
-                work = Path(directory).resolve()
+            with temporary_workspace(None, prefix="sdk-") as directory:
+                work = directory.resolve()
                 if work.is_relative_to(root):
                     raise ValueError("External clients must be outside the SDK workspace")
                 for language in selected:

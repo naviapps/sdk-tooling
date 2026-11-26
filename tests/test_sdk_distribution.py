@@ -618,6 +618,23 @@ class DistributionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must provide ci/run_sdk_tooling.py"):
                 execute(root, "windows", [], {}, root, root / "tooling")
 
+    def test_linked_pinned_launcher_fails_before_running_commands(self):
+        with tempfile.TemporaryDirectory() as disposable:
+            root = Path(disposable).resolve()
+            tooling = root / "tooling"
+            launcher = tooling / "ci/run_sdk_tooling.py"
+            launcher.parent.mkdir(parents=True)
+            outside = root / "outside.py"
+            outside.touch()
+            try:
+                launcher.symlink_to(outside)
+            except OSError as error:
+                if getattr(error, "winerror", None) == 1314:
+                    self.skipTest("Windows denied symlink creation (WinError 1314)")
+                raise
+            with self.assertRaisesRegex(ValueError, "must provide ci/run_sdk_tooling.py"):
+                DISPATCH["execute"](root, "windows", [], {}, root, tooling)
+
     def test_native_generation_runs_only_for_macos_with_a_regular_declaration(self):
         with tempfile.TemporaryDirectory() as disposable:
             root = Path(disposable).resolve()

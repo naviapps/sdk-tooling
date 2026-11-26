@@ -533,14 +533,13 @@ def pack_native(
 
     with (
         build_lock(output),
-        tempfile.TemporaryDirectory(prefix="pack-", dir=output) as temporary,
+        temporary_workspace(output, prefix="pack-") as stage,
     ):
         inputs, managed_inputs = native.build_sources(), managed_sources()
         tool_inputs = packer_inputs()
         libraries, receipt_paths, receipt_hashes = _verified_package_libraries(
             native, runtimes, windows_output_root, windows_source_inputs
         )
-        stage = Path(temporary)
         properties = {
             "Version": version,
             "UseSharedCompilation": "false",

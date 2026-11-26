@@ -11,7 +11,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import tomllib
 from importlib import import_module
 from pathlib import Path
@@ -23,6 +22,7 @@ artifacts = import_module("sdk_tooling.artifacts")
 dotnet_tools = import_module("sdk_tooling.dotnet")
 manifest = import_module("sdk_tooling.manifest")
 distribution = import_module("sdk_tooling.distribution")
+temporary_workspace = import_module("sdk_tooling.workspaces").temporary_workspace
 
 REVISION = re.compile(r"[a-f0-9]{40}")
 SHA256 = re.compile(r"[a-f0-9]{64}")
@@ -105,11 +105,21 @@ def verify_checkout(root, revision, repository, env, *, require_main=False):
         run(root, env, "git", "merge-base", "--is-ancestor", revision, "refs/remotes/origin/main")
 
 
-def read_regular(source, relative):
+def ordinary_sdk_file(source, relative):
     path = source.resolve() / relative
     if path.resolve() != path or not path.is_file():
         raise ValueError(f"Expected an ordinary SDK file: {relative}")
-    return path.read_bytes()
+    return path
+
+
+def read_regular(source, relative):
+    return ordinary_sdk_file(source, relative).read_bytes()
+
+
+def pinned_cli(tooling):
+    launcher = "ci/run_sdk_tooling.py"
+    ordinary_sdk_file(tooling, launcher)
+    return (sys.executable, "-I", "-B", str(tooling / launcher))
 
 
 def file_digest(path):
@@ -212,10 +222,10 @@ def execute(source, platform, commands, env, temp, tooling, *, xcframework_outpu
         # Cargo clones can contain macOS framework paths even on Windows.
         env = dict(env, TMPDIR=env["RUNNER_TEMP"])
     prefix = ()
-    launcher = tooling / "ci/run_sdk_tooling.py"
-    if not launcher.is_file():
-        raise ValueError("Pinned SDK Tooling must provide ci/run_sdk_tooling.py")
-    sdk_cli = [sys.executable, "-I", "-B", str(launcher)]
+    try:
+        sdk_cli = pinned_cli(tooling)
+    except ValueError:
+        raise ValueError("Pinned SDK Tooling must provide ci/run_sdk_tooling.py") from None
     if platform == "macos" and (source / "mise.toml").is_file():
         run(source, env, "mise", "trust", "mise.toml")
         run(source, env, "mise", "install")
@@ -404,8 +414,8 @@ def pack_combined_nuget(source, env, sdk_cli, script, output, *, macos_x64_env=N
     if output.exists() or output.is_symlink() or output.is_relative_to(source):
         raise ValueError("NuGet artifact output must be a new directory outside the SDK checkout")
     prefix = ("mise", "exec", "--") if (source / "mise.toml").is_file() else ()
-    with tempfile.TemporaryDirectory(dir=output.parent, prefix="nuget-candidate-") as directory:
-        stage = Path(directory).resolve() / "package"
+    with temporary_workspace(output.parent, prefix="nuget-candidate-") as directory:
+        stage = directory.resolve() / "package"
         stage.mkdir()
         result = stage / "package-name"
         run(
@@ -538,9 +548,7 @@ def main(argv=None):
         if artifact.is_symlink():
             raise ValueError("Combined NuGet artifact must be an ordinary directory")
         artifact = artifact.resolve()
-        launcher = tooling / "ci/run_sdk_tooling.py"
-        read_regular(tooling, "ci/run_sdk_tooling.py")
-        sdk_cli = (sys.executable, "-I", "-B", str(launcher))
+        sdk_cli = pinned_cli(tooling)
         env = check_dotnet_version(source, env)
         if args.macos_x64_dotnet is not None:
             require_macos_dotnet_rid(source, env, "osx-arm64")
@@ -556,15 +564,13 @@ def main(argv=None):
         )
         return
     if args.mode in PLATFORMS:
-        with tempfile.TemporaryDirectory(
-            dir=env.get("RUNNER_TEMP"), prefix="sdk-distribution-"
-        ) as work:
+        with temporary_workspace(env.get("RUNNER_TEMP"), prefix="sdk-distribution-") as work:
             execute(
                 source,
                 args.mode,
                 plan[args.mode],
                 env,
-                Path(work).resolve(),
+                work.resolve(),
                 tooling,
                 xcframework_output=args.xcframework_output,
             )
