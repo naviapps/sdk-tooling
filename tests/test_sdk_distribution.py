@@ -503,7 +503,7 @@ class DistributionTests(unittest.TestCase):
         revision = "a" * 40
         with tempfile.TemporaryDirectory(prefix="distribution test ") as directory:
             root = Path(directory).resolve()
-            temp = root / "scratch files"
+            temp = root / "scratch files {tooling}"
             temp.mkdir()
             tooling = root / "shared tools"
             script = tooling / "ci/run_sdk_tooling.py"

@@ -212,7 +212,8 @@ Keep only the platforms and operations the SDK supports. The host tables are
 `macos`, `windows`, and `linux`. Each command is an argument array executed
 from the SDK root. `sdk-tooling` uses the already selected CLI. `python` runs
 a checkout-owned fixture with that CLI's interpreter. `{temp}` expands to a
-fresh directory shared by the commands in one check.
+fresh directory shared by the commands in one check. `{tooling}` expands to
+the selected CLI's package root. Accepted arguments retain leading and trailing spaces.
 
 ```sh
 sdk-tooling distribution plan --root /path/to/sdk
@@ -500,6 +501,8 @@ When an SDK builds a native package for a pinned dependency, use
 `adapters.pinned_tooling(dependency, checkout)` to load the build modules
 from that dependency's declared Tooling commit. Use the same revision to
 verify its receipt, including when building and packaging on different hosts.
+To use a trusted fork, pass `tooling_repository="owner/name"`. The dependency's
+mise task must match that repository and select a full commit SHA.
 
 Windows receipts use schema 2; macOS framework receipts use schema 3.
 

@@ -16,7 +16,8 @@ from .manifest import LEGACY_MANIFESTS, MANIFEST
 from .quality import EXCLUDED
 
 _TOOLING_ROOT = Path(__file__).resolve().parents[1]
-_TOOLING_URL = "https://github.com/naviapps/sdk-tooling.git"
+_DEFAULT_TOOLING_REPOSITORY = "naviapps/sdk-tooling"
+GITHUB_REPOSITORY = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 _FIXTURE_SOURCE_EXTENSIONS = {
     ".c",
     ".cs",
@@ -97,21 +98,27 @@ def tooling_task_revision(configuration, url):
     return match[1]
 
 
-def pinned_tooling(root, checkout):
+def pinned_tooling(root, checkout, *, tooling_repository=_DEFAULT_TOOLING_REPOSITORY):
     """Load a dependency's build tools from its declared revision in a fresh checkout."""
+    if (
+        not isinstance(tooling_repository, str)
+        or not GITHUB_REPOSITORY.fullmatch(tooling_repository)
+        or ".." in tooling_repository
+        or tooling_repository.endswith(".git")
+    ):
+        raise ValueError("Select a trusted tooling repository as GitHub owner/name")
+    url = f"https://github.com/{tooling_repository}.git"
     manifest = Path(root).resolve(strict=True) / "mise.toml"
     if manifest.resolve() != manifest or not manifest.is_file():
         raise ValueError("Expected an ordinary mise.toml in the dependency SDK")
-    revision = tooling_task_revision(
-        tomllib.loads(manifest.read_text(encoding="utf-8")), _TOOLING_URL
-    )
+    revision = tooling_task_revision(tomllib.loads(manifest.read_text(encoding="utf-8")), url)
 
     checkout = Path(checkout)
     checkout.mkdir()
     git(None, "init", "--quiet", checkout)
     git(checkout, "config", "core.autocrlf", "false")
     git(checkout, "config", "core.longpaths", "true")
-    git(checkout, "fetch", "--quiet", "--depth=1", "--no-tags", _TOOLING_URL, revision)
+    git(checkout, "fetch", "--quiet", "--depth=1", "--no-tags", url, revision)
     git(checkout, "checkout", "--quiet", "--detach", revision)
     if git(checkout, "rev-parse", "HEAD^{commit}").decode().strip() != revision:
         raise ValueError("SDK Tooling checkout differs from the dependency pin")

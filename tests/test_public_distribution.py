@@ -56,19 +56,33 @@ class PublicDistributionTests(unittest.TestCase):
             self.manifest.unlink()
 
     def test_external_check_preserves_literal_argument_and_disposable_output(self):
+        commands = [
+            [
+                "python",
+                "verify.py",
+                "{temp}/output name",
+                "$literal",
+                " one argument ",
+                "{tooling}/sdk_tooling/adapters.py",
+            ]
+        ]
         self.manifest.write_text(
-            f'[{self.host}]\ncommands = [["python", "verify.py", "{{temp}}/output name", "$literal"]]\n'
+            f"[{self.host}]\ncommands = {json.dumps(commands)}\n", encoding="utf-8"
         )
         (self.root / "verify.py").write_text(
             "import sys\nfrom pathlib import Path\n"
+            "from sdk_tooling import adapters\n"
             "result = Path(sys.argv[1])\n"
             "result.write_text(sys.argv[2])\n"
             "assert result.name == 'output name' and result.read_text() == '$literal'\n"
-            "print(result)\n"
+            "assert sys.argv[3] == ' one argument '\n"
+            "assert Path(sys.argv[4]).samefile(adapters.__file__)\n"
+            "print(result)\n",
+            encoding="utf-8",
         )
         plan = self.invoke("plan")
         self.assertEqual(plan.returncode, 0, plan.stderr)
-        self.assertEqual(json.loads(plan.stdout)[self.host][0][-1], "$literal")
+        self.assertEqual(json.loads(plan.stdout), {self.host: commands})
         checked = self.invoke("check")
         self.assertEqual(checked.returncode, 0, checked.stderr)
         output = Path(checked.stdout.splitlines()[-1])

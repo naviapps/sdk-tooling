@@ -1,6 +1,7 @@
 """Read and execute a repository's distribution plan."""
 
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -86,14 +87,22 @@ def load_plan(root, manifest=None):
     return plan
 
 
+def expand_command(argv, *, temp, tooling):
+    paths = {"temp": str(temp), "tooling": str(tooling)}
+    return [
+        re.sub(r"\{(temp|tooling)\}", lambda token: paths[token[1]], argument) for argument in argv
+    ]
+
+
 def execute(plan, root, platform):
     if platform not in plan:
         raise ValueError(f"No distribution commands declared for {platform}")
     if platform != HOSTS.get(sys.platform):
         raise ValueError(f"The {platform} plan requires a {platform} host")
+    tooling = Path(__file__).resolve().parents[1]
     with temporary_workspace(None, prefix="sdk-distribution-") as scratch:
-        for command, *arguments in plan[platform]:
-            arguments = [argument.replace("{temp}", str(scratch)) for argument in arguments]
+        for declared in plan[platform]:
+            command, *arguments = expand_command(declared, temp=scratch, tooling=tooling)
             if command == "sdk-tooling":
                 argv = tooling_command(*arguments, root=root)
             elif command == "python":

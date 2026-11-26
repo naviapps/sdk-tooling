@@ -27,7 +27,6 @@ temporary_workspace = import_module("sdk_tooling.workspaces").temporary_workspac
 REVISION = re.compile(r"[a-f0-9]{40}")
 SHA256 = re.compile(r"[a-f0-9]{64}")
 PACKAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.nupkg")
-REPOSITORY = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
 PLATFORMS = ("macos", "windows")
 PACKAGE_MODES = ("nuget-pack", "nuget-consume")
 NUGET_RUNTIMES = ("osx-arm64", "osx-x64", "win-x64")
@@ -235,10 +234,7 @@ def execute(source, platform, commands, env, temp, tooling, *, xcframework_outpu
         env = dict(env, SDK_TOOLING=shlex.join(sdk_cli).replace("$", "$$"))
 
     for argv in commands:
-        command = [
-            argument.replace("{temp}", str(temp)).replace("{tooling}", str(tooling))
-            for argument in argv
-        ]
+        command = distribution.expand_command(argv, temp=temp, tooling=tooling)
         if command[0] == "sdk-tooling":
             command = [*sdk_cli, *command[1:]]
         elif platform == "windows" and command[0] == "python":
@@ -487,8 +483,8 @@ def main(argv=None):
     owner = repository.partition("/")[0]
     sdk_repository = f"{owner}/{args.sdk}"
     if (
-        not REPOSITORY.fullmatch(repository)
-        or not REPOSITORY.fullmatch(sdk_repository)
+        not adapters.GITHUB_REPOSITORY.fullmatch(repository)
+        or not adapters.GITHUB_REPOSITORY.fullmatch(sdk_repository)
         or ".." in sdk_repository
         or sdk_repository.endswith(".git")
         or not REVISION.fullmatch(args.revision)

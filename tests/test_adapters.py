@@ -24,7 +24,6 @@ class AdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             upstream = root / "upstream"
-            checkout = root / "checkout"
             adapters.git(None, "init", "--quiet", upstream)
             package = upstream / "sdk_tooling"
             package.mkdir()
@@ -35,34 +34,57 @@ class AdapterTests(unittest.TestCase):
             revision = adapters.git(upstream, "rev-parse", "HEAD").decode().strip()
             (package / "ffi.py").write_text("identity = 'latest'\n", encoding="utf-8")
             self._commit(upstream)
-            url = "https://github.com/naviapps/sdk-tooling.git"
             manifest = root / "mise.toml"
-            manifest.write_text(
-                f'[tasks.sdk-tooling]\nrun = "uvx --from git+{url}@{revision} sdk-tooling"\n',
-                encoding="utf-8",
-            )
-            with patch.dict(
-                os.environ,
-                GIT_CONFIG_COUNT="1",
-                GIT_CONFIG_KEY_0=f"url.{upstream.resolve().as_uri()}.insteadOf",
-                GIT_CONFIG_VALUE_0=url,
+
+            def pin(repository, revision):
+                url = f"https://github.com/{repository}.git"
+                manifest.write_text(
+                    f'[tasks.sdk-tooling]\nrun = "uvx --from git+{url}@{revision} sdk-tooling"\n',
+                    encoding="utf-8",
+                )
+                return url
+
+            for repository, options in (
+                ("naviapps/sdk-tooling", {}),
+                ("example/build-tools", {"tooling_repository": "example/build-tools"}),
             ):
-                selected = adapters.pinned_tooling(root, checkout)
+                with self.subTest(repository=repository):
+                    checkout = root / repository.partition("/")[0]
+                    url = pin(repository, revision)
+                    if options:
+                        with self.assertRaisesRegex(ValueError, "full Git SHA"):
+                            adapters.pinned_tooling(root, checkout)
+                        self.assertFalse(checkout.exists())
+                    with patch.dict(
+                        os.environ,
+                        GIT_CONFIG_COUNT="1",
+                        GIT_CONFIG_KEY_0=f"url.{upstream.resolve().as_uri()}.insteadOf",
+                        GIT_CONFIG_VALUE_0=url,
+                    ):
+                        selected = adapters.pinned_tooling(root, checkout, **options)
 
-            self.assertEqual(selected("windows").ffi.identity, "pinned")
-            self.assertIs(selected("ffi"), selected("windows").ffi)
-            self.assertIsNot(selected("ffi"), adapters.load("ffi"))
-            self.assertEqual(
-                Path(selected("ffi").__file__).resolve().parents[1], checkout.resolve()
-            )
+                    self.assertEqual(selected("windows").ffi.identity, "pinned")
+                    self.assertIs(selected("ffi"), selected("windows").ffi)
+                    self.assertIsNot(selected("ffi"), adapters.load("ffi"))
+                    self.assertEqual(
+                        Path(selected("ffi").__file__).resolve().parents[1], checkout.resolve()
+                    )
 
-            manifest.write_text(
-                f'[tasks.sdk-tooling]\nrun = "uvx --from git+{url}@main sdk-tooling"\n',
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "full Git SHA"):
-                adapters.pinned_tooling(root, root / "unpinned")
-            self.assertFalse((root / "unpinned").exists())
+                    pin(repository, "main")
+                    with self.assertRaisesRegex(ValueError, "full Git SHA"):
+                        adapters.pinned_tooling(root, root / "unpinned", **options)
+                    self.assertFalse((root / "unpinned").exists())
+
+    def test_dependency_tooling_requires_a_github_repository_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("example/tooling.git", "example/../tooling", "example/tools..bak"):
+                with (
+                    self.subTest(name=name),
+                    self.assertRaisesRegex(ValueError, "GitHub owner/name"),
+                ):
+                    adapters.pinned_tooling(root, root / "checkout", tooling_repository=name)
+            self.assertFalse((root / "checkout").exists())
 
     @staticmethod
     def _commit(root):
