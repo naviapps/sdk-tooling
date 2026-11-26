@@ -1,5 +1,6 @@
 """Build and run a C client against a copied framework and its retained receipt."""
 
+import hashlib
 import json
 import os
 import plistlib
@@ -8,11 +9,14 @@ import shutil
 from pathlib import Path
 
 from ..artifacts import files, hashes
+from ..c_headers import prepare_generated
+from ..manifest import MANIFEST, manifest_path, read_section
 from .workspace import _environment, _git, _run
 
 _C_FIXTURE = "fixtures/consumers/c/main.c"
 _C_RECEIPT = "Artifacts/native-build.json"
 _C_DEPENDENCY_TARGET = "sdk-consumer"
+_NATIVE_SECTION_INPUT = f"{MANIFEST}#native"
 
 
 def _relative(name):
@@ -40,6 +44,31 @@ def _c_file(root, name, suffix, *, directory=".", tracked=False):
     return resolved
 
 
+def _matches_receipt_inputs(root, expected):
+    sources = {name: root / _relative(name) for name in expected if name != _NATIVE_SECTION_INPUT}
+    missing = {
+        name
+        for name, path in sources.items()
+        if (path.suffix == ".h" or path.name == "module.modulemap")
+        and not (path.exists() or path.is_symlink())
+    }
+    observed = hashes([path for name, path in sources.items() if name not in missing], root)
+    if _NATIVE_SECTION_INPUT in expected:
+        if manifest_path(root, "native").name != MANIFEST:
+            raise ValueError(f"The native receipt requires [native] in {MANIFEST}")
+        # Match the canonical section recorded by FfiProduct._source_hashes.
+        section = read_section(root, "native")
+        canonical = json.dumps(section, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        observed[_NATIVE_SECTION_INPUT] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if observed != {name: digest for name, digest in expected.items() if name not in missing}:
+        return False
+    if missing:
+        # Verify present inputs before the generator can replace any of them.
+        prepare_generated(root, verify=True)
+        observed.update(hashes(sources.values(), root))
+    return observed == expected
+
+
 def _stage_c(root, work, framework, *, c_receipt=_C_RECEIPT):
     path = _c_file(root, c_receipt, ".json", directory="Artifacts")
     receipt = json.loads(path.read_text(encoding="utf-8"))
@@ -47,10 +76,14 @@ def _stage_c(root, work, framework, *, c_receipt=_C_RECEIPT):
     minimum_macos = configuration.get("minimumMacOS") if isinstance(configuration, dict) else None
     if not isinstance(minimum_macos, str) or not re.fullmatch(r"[0-9]+\.[0-9]+", minimum_macos):
         raise ValueError("The native receipt must declare a minimum macOS version")
-    for group in ("inputs", "outputs"):
-        expected = receipt[group]
-        if not expected or hashes([root / _relative(name) for name in expected], root) != expected:
-            raise ValueError("The accepted native input/output bytes differ from their receipt")
+    inputs, outputs = receipt["inputs"], receipt["outputs"]
+    if (
+        not inputs
+        or not outputs
+        or hashes([root / _relative(name) for name in outputs], root) != outputs
+        or not _matches_receipt_inputs(root, inputs)
+    ):
+        raise ValueError("The accepted native input/output bytes differ from their receipt")
     install = work / "install"
     install.mkdir()
     shutil.copytree(root / framework, install / framework.name, symlinks=True)

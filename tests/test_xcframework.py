@@ -12,6 +12,7 @@ from cargo_build_fixtures import FIXTURE_UNIT, fixture_dependencies
 
 from sdk_tooling import ffi, windows, xcframework
 from sdk_tooling.artifacts import files, hashes
+from sdk_tooling.consumers import c_framework
 from sdk_tooling.xcframework import DEP_INFO_PARSER, XcframeworkBuilder, dep_info_sources
 
 
@@ -147,6 +148,39 @@ class NativeInputsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Production source"):
             self.verify_without_tools()
         self.assertNotEqual(windows_inputs, self.builder.build_sources())
+
+    def test_installed_c_accepts_the_same_manifest_inputs_as_the_producer(self):
+        framework = (self.builder.artifact / "macos-arm64_x86_64/CFixture.framework").relative_to(
+            self.root
+        )
+
+        def stage():
+            with tempfile.TemporaryDirectory() as work:
+                c_framework._stage_c(self.root, Path(work).resolve(), framework)
+
+        self.accept([])
+        stage()
+        legacy = self.write("native.toml", "# Edited legacy manifest bytes\n")
+        with self.assertRaisesRegex(ValueError, "differ from their receipt"):
+            stage()
+
+        specification = (
+            '[[native.artifacts]]\nid = "fixture"\n'
+            'symbol_prefix = "fixture_"\nminimum_macos = "26.0"\n'
+        )
+        unified = self.write("sdk-tooling.toml", specification)
+        self.builder = xcframework.xcframework(self.root)
+        self.accept([])
+        stage()
+        self.write("sdk-tooling.toml", "[checks]\ncommands = []\n" + specification)
+        stage()
+        self.write("sdk-tooling.toml", specification.replace('"26.0"', '"27.0"'))
+        with self.assertRaisesRegex(ValueError, "differ from their receipt"):
+            stage()
+        unified.unlink()
+        legacy.write_text(specification.replace("native.artifacts", "artifacts"))
+        with self.assertRaisesRegex(ValueError, r"requires \[native\] in sdk-tooling.toml"):
+            stage()
 
     def test_verify_platform_requires_the_framework_install_name_in_each_slice(self):
         library = self.root / "CFixture"

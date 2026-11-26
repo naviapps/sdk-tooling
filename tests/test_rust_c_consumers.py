@@ -850,10 +850,10 @@ class InstalledConsumersTests(unittest.TestCase):
         return root
 
     @staticmethod
-    def receipt(root, *, minimum_macos="26.0"):
+    def receipt(root, *, minimum_macos="26.0", sources=()):
         receipt = {
             "configuration": {"minimumMacOS": minimum_macos},
-            "inputs": hashes(files(root / "ThirdParty"), root),
+            "inputs": hashes([*files(root / "ThirdParty"), *sources], root),
             "outputs": hashes(files(root / FRAMEWORK), root),
         }
         (root / "Artifacts/native-build.json").write_text(json.dumps(receipt), encoding="utf-8")
@@ -1038,6 +1038,32 @@ class InstalledConsumersTests(unittest.TestCase):
         (root / FRAMEWORK / "unrecorded").write_text("unrecorded", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "accepted output inventory"):
             c_framework._stage_c(root, self.directory("extra-work"), FRAMEWORK)
+
+    def test_c_regenerates_missing_source_headers_only_after_verifying_present_inputs(self):
+        root = self.c_sdk()
+        header = root / "generated.h"
+        module_map = root / "module.modulemap"
+        header.write_bytes(b"header")
+        module_map.write_bytes(b"module map")
+        self.receipt(root, sources=(header, module_map))
+        header.unlink()
+
+        def regenerate(source, *, verify):
+            self.assertTrue(verify)
+            (source / header.name).write_bytes(b"header")
+            (source / module_map.name).write_bytes(b"module map")
+
+        with patch.object(c_framework, "prepare_generated", side_effect=regenerate) as prepare:
+            module_map.write_bytes(b"altered module map")
+            with self.assertRaisesRegex(ValueError, "differ from their receipt"):
+                c_framework._stage_c(root, self.directory("stale-input"), FRAMEWORK)
+            prepare.assert_not_called()
+            module_map.write_bytes(b"module map")
+            c_framework._stage_c(root, self.directory("fresh-input"), FRAMEWORK)
+            prepare.assert_called_once_with(root, verify=True)
+            prepare.reset_mock()
+            c_framework._stage_c(root, self.directory("prepared-input"), FRAMEWORK)
+            prepare.assert_not_called()
 
     def test_c_receipt_requires_the_frameworks_minimum_macos(self):
         root = self.c_sdk()
