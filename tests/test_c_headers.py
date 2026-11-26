@@ -102,7 +102,12 @@ class CHeaderTests(unittest.TestCase):
 
         self.generator.side_effect = invoke
         self.assertTrue(c_headers.has_generated_products(self.root))
-        c_headers.prepare_generated(self.root)
+        with patch.object(c_headers, "_package", wraps=c_headers._package) as read_package:
+            c_headers.prepare_generated(self.root)
+        self.assertEqual(
+            [call.args[0] for call in read_package.call_args_list],
+            [crate, self.root / "crates/beta"],
+        )
         self.assertFalse((self.root / "crates/beta/include").exists())
         staged = crate
         self.assertEqual((staged / "include/alpha.h").read_bytes(), portable_header)
@@ -169,9 +174,11 @@ class CHeaderTests(unittest.TestCase):
         self.assertEqual(installed.read_bytes(), portable)
 
     def test_late_generator_failure_preserves_all_existing_outputs(self):
+        self.write("crates/ffi/cbindgen.toml", b'language = "C"\n[parse]\nparse_deps = true\n')
         header = self.write("crates/ffi/include/alpha.h", b"old header\n")
         module_map = self.write("crates/ffi/module.modulemap", b"old module map\n")
         self.generator.side_effect = [
+            b'{"version": 1, "packages": []}\n',
             b"void alpha_run(void);\n",
             b"void alpha_windows_run(void);\n",
             subprocess.CalledProcessError(1, ["pinned-cbindgen"]),
@@ -181,6 +188,8 @@ class CHeaderTests(unittest.TestCase):
             main(["c-headers", "generate"])
 
         self.assertIsInstance(error.exception.__cause__, subprocess.CalledProcessError)
+        metadata = Path(self.generator.call_args_list[1].args[0][-1])
+        self.assertFalse(metadata.parent.exists())
         self.assertEqual(header.read_bytes(), b"old header\n")
         self.assertEqual(module_map.read_bytes(), b"old module map\n")
         self.assertFalse((self.root / "crates/ffi/include/windows/alpha_windows.h").exists())
@@ -199,10 +208,13 @@ class CHeaderTests(unittest.TestCase):
         self.assertEqual(module_map.read_bytes(), b"old module map\n")
         self.assertEqual(obstruction.read_bytes(), b"not a directory\n")
 
-    def test_dependency_parsing_uses_locked_workspace_metadata(self):
-        config = self.write(
-            "crates/beta/cbindgen.toml", b'language = "C"\n[parse]\nparse_deps = true\n'
-        )
+    def test_dependent_headers_share_one_locked_workspace_metadata_snapshot(self):
+        configurations = {
+            self.write(
+                f"crates/{name}/cbindgen.toml", b'language = "C"\n[parse]\nparse_deps = true\n'
+            ): package
+            for name, package in (("ffi", "calpha"), ("beta", "cbeta"))
+        }
         metadata = b'{"version": 1, "packages": []}\n'
         metadata_files = []
 
@@ -215,19 +227,28 @@ class CHeaderTests(unittest.TestCase):
                     ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"],
                 )
                 return metadata
-            self.assertEqual(
-                command[:-1],
-                ["pinned-cbindgen", "--config", str(config), "--crate", "cbeta", "--metadata"],
-            )
+            config = Path(command[2])
+            if config.name == "cbindgen-windows.toml":
+                self.assertEqual(command[3:], [str(self.root / "crates/ffi/src/windows.rs")])
+                return b"void windows_run(void);\n"
+            package = configurations[config]
+            self.assertEqual(command[3:-1], ["--crate", package, "--metadata"])
             path = Path(command[-1])
             self.assertEqual(path.read_bytes(), metadata)
             metadata_files.append(path)
-            return b"void beta_run(void);\n"
+            return f"void {package}_run(void);\n".encode()
 
         self.generator.side_effect = invoke
 
-        self.assertEqual(main(["c-headers", "generate", "--product", "beta"]), 0)
+        self.assertEqual(main(["c-headers", "generate"]), 0)
 
-        self.assertEqual(self.generator.call_count, 2)
-        self.assertEqual(len(metadata_files), 1)
+        self.assertEqual(self.generator.call_count, 4)
+        self.assertEqual(len(metadata_files), 2)
+        self.assertEqual(metadata_files[0], metadata_files[1])
         self.assertFalse(metadata_files[0].exists())
+        self.assertEqual(
+            (self.root / "crates/ffi/include/alpha.h").read_bytes(), b"void calpha_run(void);\n"
+        )
+        self.assertEqual(
+            (self.root / "crates/beta/include/beta.h").read_bytes(), b"void cbeta_run(void);\n"
+        )

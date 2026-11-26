@@ -3,7 +3,8 @@
 import re
 import subprocess
 import tomllib
-from contextlib import nullcontext
+from contextlib import ExitStack
+from functools import cache, partial
 
 from . import quality
 from .artifacts import build_lock, stage_file
@@ -36,46 +37,59 @@ def _package(ffi):
     return package["name"], settings
 
 
-def _generated_products(root, product=None):
-    root, products = product_options(root, required=False)
+def _selected_packages(root, product, *, generated_only=False):
+    root, products = product_options(root, required=not generated_only)
     if not products:
         return root, []
-    if product is not None:
-        products = [select_product(products, product)]
-    else:
-        products = products.values()
-    return root, [
-        options
-        for options in products
-        if _package(root / options.get("ffi", "crates/ffi"))[1].get("generated", False)
-    ]
+    selected = [select_product(products, product)] if product is not None else products.values()
+    packages = []
+    for options in selected:
+        ffi = root / options.get("ffi", "crates/ffi")
+        package, settings = _package(ffi)
+        if not generated_only or settings.get("generated", False):
+            packages.append((ffi, package, settings, options["symbol_prefix"]))
+    return root, packages
 
 
 def has_generated_products(root):
     """Whether the SDK opted into build-time C header generation."""
-    return bool(_generated_products(root)[1])
+    return bool(_selected_packages(root, None, generated_only=True)[1])
 
 
-def _render_header(root, executable, config, source, package, env):
+def _render_header(executable, config, source, package, *, process, dependency_metadata):
     config = _ordinary_path(config)
     _ordinary_path(source)
     settings = tomllib.loads(config.read_text(encoding="utf-8"))
     command = [executable, "--config", str(config)]
-    parse_dependencies = settings.get("parse", {}).get("parse_deps", False)
-    if parse_dependencies and source.name != "lib.rs":
-        raise ValueError(f"Dependency parsing requires the crate entry point: {config}")
+    if settings.get("parse", {}).get("parse_deps", False):
+        if source.name != "lib.rs":
+            raise ValueError(f"Dependency parsing requires the crate entry point: {config}")
+        command.extend(("--crate", package, "--metadata", str(dependency_metadata())))
+    else:
+        command.append(str(source))
+    relative_config = config.relative_to(process["cwd"])
+    try:
+        raw = subprocess.check_output(command, **process)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"cbindgen failed for {relative_config}") from error
+    data = raw.decode("utf-8").replace("\r\n", "\n")
+    if not data.strip() or not data.endswith("\n") or "\r" in data or "\0" in data:
+        raise ValueError(f"cbindgen returned invalid header text for {relative_config}")
+    return data.encode("utf-8")
+
+
+def _render(root, packages, executable, env=None):
+    outputs = {}
+    retained = {}
+    generated = {}
     process = {"cwd": root}
     if env is not None:
         process["env"] = env
-    with (
-        temporary_workspace(None, prefix="sdk-cbindgen-")
-        if parse_dependencies
-        else nullcontext() as stage
-    ):
-        if stage is None:
-            command.append(str(source))
-        else:
-            metadata = stage / "metadata.json"
+    with ExitStack() as workspace:
+
+        @cache
+        def dependency_metadata():
+            stage = workspace.enter_context(temporary_workspace(None, prefix="sdk-cbindgen-"))
             try:
                 locked = subprocess.check_output(
                     ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"],
@@ -85,65 +99,51 @@ def _render_header(root, executable, config, source, package, env):
                 raise RuntimeError(
                     "Could not resolve locked Cargo metadata for cbindgen"
                 ) from error
+            metadata = stage / "metadata.json"
             metadata.write_bytes(locked)
-            command.extend(("--crate", package, "--metadata", str(metadata)))
-        try:
-            raw = subprocess.check_output(command, **process)
-        except subprocess.CalledProcessError as error:
-            raise RuntimeError(f"cbindgen failed for {config.relative_to(root)}") from error
-    data = raw.decode("utf-8").replace("\r\n", "\n")
-    if not data.strip() or not data.endswith("\n") or "\r" in data or "\0" in data:
-        raise ValueError(f"cbindgen returned invalid header text for {config.relative_to(root)}")
-    return data.encode("utf-8")
+            return metadata
 
-
-def _render(root, products, executable, env=None):
-    outputs = {}
-    retained = {}
-    generated = {}
-    for product in products:
-        ffi = root / product.get("ffi", "crates/ffi")
-        package, settings = _package(ffi)
-        module = settings.get("module")
-        if not isinstance(module, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module):
-            raise ValueError(
-                f"Declare a Swift module name in {ffi}/Cargo.toml package.metadata.c-bindings"
-            )
-        prefix = product["symbol_prefix"]
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", prefix) or not prefix.removesuffix("_"):
-            raise ValueError(f"Invalid C symbol prefix: {prefix}")
-        module_map = ffi / "module.modulemap"
-        if module_map in outputs:
-            raise ValueError(f"C header generation requires distinct FFI crates: {ffi}")
-        name = prefix.removesuffix("_") + ".h"
-        header = ffi / "include" / name
-        keyword = "umbrella header" if settings.get("umbrella", True) else "header"
-        files = {
-            module_map: f'framework module {module} {{\n  {keyword} "{name}"\n  export *\n}}\n'.encode(),
-            header: _render_header(
-                root, executable, ffi / "cbindgen.toml", ffi / "src/lib.rs", package, env
-            ),
-        }
-        windows = ffi / "cbindgen-windows.toml"
-        if windows.exists() or windows.is_symlink():
-            files[ffi / "include/windows" / (prefix + "windows.h")] = _render_header(
-                root, executable, windows, ffi / "src/windows.rs", package, env
-            )
-        outputs.update(files)
-        if settings.get("generated", False):
-            framework = (
-                root
-                / "Artifacts"
-                / (module + ".xcframework")
-                / "macos-arm64_x86_64"
-                / (module + ".framework")
-                / "Versions/A"
-            )
-            retained[framework / "Modules/module.modulemap"] = files[module_map]
-            retained[framework / "Headers" / name] = files[header]
-            generated.update(files)
-        else:
-            retained.update(files)
+        render_header = partial(
+            _render_header, executable, process=process, dependency_metadata=dependency_metadata
+        )
+        for ffi, package, settings, prefix in packages:
+            module = settings.get("module")
+            if not isinstance(module, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module):
+                raise ValueError(
+                    f"Declare a Swift module name in {ffi}/Cargo.toml package.metadata.c-bindings"
+                )
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", prefix) or not prefix.removesuffix("_"):
+                raise ValueError(f"Invalid C symbol prefix: {prefix}")
+            module_map = ffi / "module.modulemap"
+            if module_map in outputs:
+                raise ValueError(f"C header generation requires distinct FFI crates: {ffi}")
+            name = prefix.removesuffix("_") + ".h"
+            header = ffi / "include" / name
+            keyword = "umbrella header" if settings.get("umbrella", True) else "header"
+            files = {
+                module_map: f'framework module {module} {{\n  {keyword} "{name}"\n  export *\n}}\n'.encode(),
+                header: render_header(ffi / "cbindgen.toml", ffi / "src/lib.rs", package),
+            }
+            windows = ffi / "cbindgen-windows.toml"
+            if windows.exists() or windows.is_symlink():
+                files[ffi / "include/windows" / (prefix + "windows.h")] = render_header(
+                    windows, ffi / "src/windows.rs", package
+                )
+            outputs.update(files)
+            if settings.get("generated", False):
+                framework = (
+                    root
+                    / "Artifacts"
+                    / (module + ".xcframework")
+                    / "macos-arm64_x86_64"
+                    / (module + ".framework")
+                    / "Versions/A"
+                )
+                retained[framework / "Modules/module.modulemap"] = files[module_map]
+                retained[framework / "Headers" / name] = files[header]
+                generated.update(files)
+            else:
+                retained.update(files)
     return outputs, retained, generated
 
 
@@ -182,20 +182,19 @@ def _verify_retained(root, retained):
 
 def prepare_generated(root, *, env=None, product=None, verify=False):
     """Generate opted-in declarations, optionally verifying the bundled copies first."""
-    root, products = _generated_products(root, product)
-    if products:
+    root, packages = _selected_packages(root, product, generated_only=True)
+    if packages:
         executable = quality.tool(root, "cbindgen", "cargo:cbindgen", env=env)
-        outputs, retained, _ = _render(root, products, executable, env)
+        outputs, retained, _ = _render(root, packages, executable, env)
         if verify:
             _verify_retained(root, retained)
         _publish(root, outputs)
 
 
 def run_operation(args, *, root):
-    root, products = product_options(root)
-    selected = [select_product(products, args.product)] if args.product else products.values()
+    root, packages = _selected_packages(root, args.product or None)
     executable = quality.tool(root, "cbindgen", "cargo:cbindgen")
-    outputs, retained, generated = _render(root, selected, executable)
+    outputs, retained, generated = _render(root, packages, executable)
     if args.operation == "generate":
         _publish(root, outputs)
         return
