@@ -105,7 +105,7 @@ fn check_reports_adopted_policy_drift_without_writing() {
     let path = root.path();
     let ruff = path.join("ruff.toml");
     let swiftlint = path.join(".swiftlint.yml");
-    let rules = include_bytes!("../templates/.swiftlint.yml");
+    let rules = b"only_rules:\n  - unused_parameter\nstrict: true\n";
     fs::write(&ruff, "line-length = 90\n").unwrap();
     fs::write(&swiftlint, rules).unwrap();
     succeeds(sync(&[path], &["--check"]));
@@ -120,9 +120,7 @@ fn check_reports_adopted_policy_drift_without_writing() {
     );
     assert_eq!(
         fs::read(&swiftlint).unwrap(),
-        b"parent_config: \
-          https://raw.githubusercontent.com/naviapps/sdk-tooling/main/crates/template-sync/templates/.swiftlint.yml\n\
-          strict: true\n"
+        b"parent_config: https://raw.githubusercontent.com/naviapps/sdk-tooling/main/.swiftlint.yml\nstrict: true\n"
     );
     succeeds(sync(&[path], &["--check", "--quality"]));
     assert!(!path.join("rust-toolchain.toml").exists());

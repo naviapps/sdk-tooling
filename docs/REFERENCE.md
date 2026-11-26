@@ -66,8 +66,11 @@ defaults for layout and identifier style, plus SourceKit-independent bug checks
 selected from SwiftLint's built-in rules, including unused parameters. SwiftLint
 does not add metrics, TODO policy or encoding preferences.
 
-The SDK's `.swiftlint.yml` points to the [shared rules](../crates/template-sync/templates/.swiftlint.yml)
-on SDK Tooling's `main` branch. Direct SwiftLint commands and the quality check
+The SDK's `.swiftlint.yml` points to the [shared rules](../.swiftlint.yml)
+at the root of SDK Tooling's `main` branch. The
+[former rules path](../crates/template-sync/templates/.swiftlint.yml)
+forwards to the same rules for existing SDK checkouts.
+Direct SwiftLint commands and the quality check
 use that parent configuration. Keep `strict: true` in the SDK config because
 SwiftLint reads strict mode from the local file. SwiftLint tries to fetch the
 rules on each run and can use a cached copy when the server is unreachable.
