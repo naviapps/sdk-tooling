@@ -119,6 +119,11 @@ For local x64 builds on Windows 11 ARM64, follow the [shared Windows setup]
 and run the `mise run sdk-tooling -- python` command documented by the SDK.
 The `sdk-tooling windows` launcher uses the hosted runner's `RUNNER_TEMP`.
 
+For Native AOT checks, install the same pinned .NET SDK version for ARM64.
+Set `DOTNET_ROOT_ARM64` to its installation directory if it is outside the
+standard Windows location. Tooling uses the ARM64 compiler to publish and test
+a `win-x64` executable. Ordinary managed checks use the x64 .NET SDK.
+
 For a combined NuGet package in hosted CI, add `--field windows-on-arm=true`
 to the [distribution command](#sdk-distribution) to test the same `win-x64`
 package on a Windows ARM64 runner.

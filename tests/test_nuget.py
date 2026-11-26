@@ -661,13 +661,33 @@ class NuGetTests(unittest.TestCase):
         member = "runtimes/win-x64/native/sdk.dll"
         package = self.package({member: b"verified native bytes"})
         toolchain_id = "Microsoft.DotNet.ILCompiler"
+        arm_compiler = "runtime.win-arm64.Microsoft.DotNet.ILCompiler"
+        arm_sdk = self.file("ARM SDK/dotnet.exe").resolve()
+        x64_sdk = str(self.file("x64 SDK/dotnet.exe").resolve())
+        environment = self.env | {
+            "Dotnet_Root_Arm64": str(arm_sdk.parent),
+            "DOTNET_HOST_PATH": x64_sdk,
+        }
 
         def commands(argv, **options):
             self.run_command(argv, **options)
             work = Path(options["cwd"])
+            if argv[1:] == ["--version"]:
+                if argv[0] == x64_sdk:
+                    self.assertEqual(work, self.root.resolve())
+                else:
+                    self.assertEqual(argv[0], str(arm_sdk))
+                    self.assertEqual(options["env"]["DOTNET_HOST_PATH"], str(arm_sdk))
+                    self.assertEqual(dotnet_tools.pinned_sdk_version(work), "10.0.404")
+                return subprocess.CompletedProcess(argv, 0, stdout="10.0.404\n")
+            if argv[1:2] in (["restore"], ["publish"]):
+                expected = str(arm_sdk) if host == "arm64" else x64_sdk
+                self.assertEqual(argv[0], expected)
+                self.assertEqual(options["env"]["DOTNET_HOST_PATH"], expected)
             if argv[1:2] == ["restore"] and work.name == "toolchain":
                 project = ET.parse(work / "Toolchain.csproj")
                 self.assertEqual(project.findtext(".//PublishAot"), "true")
+                self.assertEqual(project.findtext(".//RuntimeIdentifier"), "win-x64")
                 self.assertEqual(project.findall(".//PackageReference"), [])
                 config = ET.parse(work / "NuGet.Config")
                 self.assertEqual(
@@ -680,12 +700,16 @@ class NuGetTests(unittest.TestCase):
                 }
                 self.assertIn(toolchain_id, names)
                 self.assertIn("Microsoft.WindowsDesktop.App.Runtime.win-x64", names)
+                self.assertEqual(
+                    {name for name in names if "win-arm64" in name},
+                    {arm_compiler} if host == "arm64" else set(),
+                )
                 self.assertNotIn("Example", names)
                 self.assertFalse(any("*" in name for name in names))
                 cache = Path(options["env"]["NUGET_PACKAGES"])
                 self.assertEqual(cache, work / "packages")
-                name = toolchain_id.lower()
-                archive = cache / name / "10.0.14" / f"{name}.10.0.14.nupkg"
+                name = (arm_compiler if host == "arm64" else toolchain_id).lower()
+                archive = cache / name / "10.0.15" / f"{name}.10.0.15.nupkg"
                 archive.parent.mkdir(parents=True)
                 archive.write_bytes(b"compiler archive")
             elif argv[1:2] == ["restore"]:
@@ -706,6 +730,7 @@ class NuGetTests(unittest.TestCase):
             else:
                 self.assertEqual(argv, [str(work / "Consumer.exe")])
                 self.assertEqual(work.name, "publish")
+                self.assertEqual(options["env"]["DOTNET_HOST_PATH"], x64_sdk)
             return subprocess.CompletedProcess(argv, 0)
 
         arguments = dict(
@@ -713,19 +738,33 @@ class NuGetTests(unittest.TestCase):
             references={"Example": "1.0.0"},
             source="// fixture",
             work_parent=self.root / "output",
-            env=self.env,
+            env=environment,
             runtime="win-x64",
             native_aot=True,
             runner=commands,
         )
-        with mock.patch.object(nuget.windows, "require_pe_machine") as require_machine:
-            result = nuget.run_isolated_consumer("dotnet", **arguments)
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(
-            [call[0][1:2] for call in self.calls], [["restore"], ["restore"], ["publish"], []]
-        )
-        require_machine.assert_called_once_with(Path(self.calls[-1][0][0]), "x64")
-        self.assertFalse(list(arguments["work_parent"].iterdir()))
+        for host in ("arm64", "x64"):
+            self.calls.clear()
+            with (
+                self.subTest(host=host),
+                chdir(self.root),
+                mock.patch.object(nuget.sys, "platform", "win32"),
+                mock.patch.object(nuget.windows, "host_architecture", return_value=host),
+                mock.patch.object(nuget.windows, "require_pe_machine") as require_machine,
+            ):
+                result = nuget.run_isolated_consumer(x64_sdk, **arguments)
+                self.assertEqual(result.returncode, 0)
+                selection = [["--version"], ["--version"]] if host == "arm64" else []
+                self.assertEqual(
+                    [call[0][1:2] for call in self.calls],
+                    selection + [["restore"], ["restore"], ["publish"], []],
+                )
+                hosts = [mock.call(arm_sdk, "arm64")] if host == "arm64" else []
+                require_machine.assert_has_calls(
+                    hosts + [mock.call(Path(self.calls[-1][0][0]), "x64")]
+                )
+                self.assertEqual(require_machine.call_count, len(hosts) + 1)
+                self.assertFalse(list(arguments["work_parent"].iterdir()))
 
         def replace_staged_dll(argv, **options):
             result = commands(argv, **options)
@@ -735,11 +774,34 @@ class NuGetTests(unittest.TestCase):
 
         self.calls.clear()
         with (
+            mock.patch.object(nuget.sys, "platform", "win32"),
+            mock.patch.object(nuget.windows, "host_architecture", return_value="x64"),
             mock.patch.object(nuget.windows, "require_pe_machine"),
             self.assertRaisesRegex(ValueError, "Published native DLLs differ"),
         ):
-            nuget.run_isolated_consumer("dotnet", **(arguments | {"runner": replace_staged_dll}))
+            nuget.run_isolated_consumer(x64_sdk, **(arguments | {"runner": replace_staged_dll}))
         self.assertEqual([call[0][1] for call in self.calls], ["restore", "restore", "publish"])
+
+    def test_arm64_native_aot_rejects_different_sdk_version_at_standard_location(self):
+        sdk = self.file("Program Files/dotnet/dotnet.exe").resolve()
+        work = self.root / "consumer"
+        work.mkdir()
+        env = self.env | {"ProgramW6432": str(sdk.parent.parent)}
+        versions = ["10.0.404", "10.0.405"]
+        with (
+            mock.patch.object(nuget.windows, "require_pe_machine") as machine,
+            mock.patch.object(
+                nuget.dotnet_tools,
+                "run_command",
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, stdout=version) for version in versions
+                ],
+            ) as command,
+            self.assertRaisesRegex(ValueError, "Install ARM64 .NET SDK 10.0.404"),
+        ):
+            nuget._arm64_aot_sdk("x64-dotnet", work, env, None)
+        machine.assert_called_once_with(sdk, "arm64")
+        self.assertEqual(command.call_args.args[0], [sdk, "--version"])
 
 
 @unittest.skipUnless(

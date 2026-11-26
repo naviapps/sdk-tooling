@@ -638,8 +638,8 @@ def pack_native(
         return destination
 
 
-# The pinned .NET SDK selects the versions. Its toolchain restore has no SDK
-# package references and can obtain only these Windows x64 packs from NuGet.org.
+# The pinned .NET SDK selects the versions. The toolchain restore has no SDK
+# package references and takes only these target packs and the host compiler.
 _NATIVE_AOT_PACKS = (
     "Microsoft.AspNetCore.App.Runtime.win-x64",
     "Microsoft.DotNet.ILCompiler",
@@ -652,7 +652,58 @@ _NATIVE_AOT_PACKS = (
 )
 
 
-def _restore_native_aot_packs(dotnet, work, project, env, runner):
+def _arm64_aot_sdk(dotnet, work, env, runner):
+    settings = {key.upper(): value for key, value in env.items()}
+    install = Path(settings.get("PROGRAMW6432") or settings.get("PROGRAMFILES") or "") / "dotnet"
+    executable = Path(settings.get("DOTNET_ROOT_ARM64") or install) / "dotnet.exe"
+    if not executable.is_absolute() or not executable.is_file():
+        raise ValueError("Install the pinned ARM64 .NET SDK or set DOTNET_ROOT_ARM64")
+    executable = executable.resolve(strict=True)
+    windows.require_pe_machine(executable, "arm64")
+
+    # The scratch directory can be outside the SDK checkout that pins .NET.
+    version = dotnet_tools.run_command(
+        [dotnet, "--version"],
+        cwd=Path.cwd(),
+        env=env,
+        runner=runner,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (work / "global.json").write_text(
+        json.dumps({"sdk": {"version": version, "rollForward": "disable"}}), encoding="utf-8"
+    )
+    build_env = {
+        key: value
+        for key, value in env.items()
+        if key.upper() not in {"DOTNET_BIN", "DOTNET_HOST_PATH", "DOTNET_ROOT", "DOTNET_ROOT_ARM64"}
+    }
+    build_env.update(
+        DOTNET_BIN=str(executable),
+        DOTNET_HOST_PATH=str(executable),
+        DOTNET_ROOT=str(executable.parent),
+        DOTNET_ROOT_ARM64=str(executable.parent),
+    )
+    try:
+        actual = dotnet_tools.run_command(
+            [executable, "--version"],
+            cwd=work,
+            env=build_env,
+            runner=runner,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except subprocess.CalledProcessError:
+        actual = None
+    if actual != version:
+        raise ValueError(f"Install ARM64 .NET SDK {version} at {executable.parent}")
+    return executable, build_env
+
+
+def _restore_native_aot_packs(dotnet, work, project, env, runner, *, arm64_host):
+    packs = _NATIVE_AOT_PACKS
+    if arm64_host:
+        packs += ("runtime.win-arm64.Microsoft.DotNet.ILCompiler",)
     toolchain = work / "toolchain"
     toolchain.mkdir()
     compiler_project = toolchain / "Toolchain.csproj"
@@ -668,7 +719,7 @@ def _restore_native_aot_packs(dotnet, work, project, env, runner):
     mapping = ET.SubElement(
         ET.SubElement(config, "packageSourceMapping"), "packageSource", key="nuget.org"
     )
-    for name in _NATIVE_AOT_PACKS:
+    for name in packs:
         ET.SubElement(mapping, "package", pattern=name)
     config_path = toolchain / "NuGet.Config"
     ET.ElementTree(config).write(config_path, encoding="utf-8", xml_declaration=True)
@@ -680,7 +731,7 @@ def _restore_native_aot_packs(dotnet, work, project, env, runner):
         runner=runner,
     )
     archives = sorted(cache.glob("*/*/*.nupkg"))
-    names = {name.lower() for name in _NATIVE_AOT_PACKS}
+    names = {name.lower() for name in packs}
     if not archives or any(
         archive.resolve() != archive or archive.parent.parent.name.lower() not in names
         for archive in archives
@@ -868,26 +919,41 @@ def run_isolated_consumer(
                     for part in clean[key].split(os.pathsep)
                     if not any(Path(part).resolve().is_relative_to(root) for root in roots)
                 )
+        build_dotnet, build_env = dotnet, clean
         if native_aot:
-            for pack in _restore_native_aot_packs(dotnet, work, project, clean, runner):
+            arm64_host = sys.platform == "win32" and windows.host_architecture() == "arm64"
+            if arm64_host:
+                build_dotnet, build_env = _arm64_aot_sdk(dotnet, work, clean, runner)
+            for pack in _restore_native_aot_packs(
+                build_dotnet, work, project, build_env, runner, arm64_host=arm64_host
+            ):
                 destination = feed / pack.name
                 if destination.exists():
                     raise ValueError("Native AOT toolchain package conflicts with the SDK feed")
                 package_hashes[pack] = file_sha256(pack)
                 shutil.copyfile(pack, destination)
         dotnet_tools.run_command(
-            [dotnet, "restore", project_path, "--configfile", config_path],
+            [build_dotnet, "restore", project_path, "--configfile", config_path],
             cwd=work,
-            env=clean,
+            env=build_env,
             runner=runner,
         )
         _verify_restored_packages(work, feed, cache, set(package_hashes.values()), required)
         if native_aot:
             publish = work / "publish"
             dotnet_tools.run_command(
-                [dotnet, "publish", project_path, "--no-restore", "-c", "Release", "-o", publish],
+                [
+                    build_dotnet,
+                    "publish",
+                    project_path,
+                    "--no-restore",
+                    "-c",
+                    "Release",
+                    "-o",
+                    publish,
+                ],
                 cwd=work,
-                env=clean,
+                env=build_env,
                 runner=runner,
             )
             executable = publish / "Consumer.exe"
