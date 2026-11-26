@@ -11,7 +11,7 @@ def _xcframework(args, *, root):
     from .xcframework import xcframework, xcframeworks
 
     root = args.root or root
-    prepare_generated(root, product=args.product)
+    prepare_generated(root, product=args.product, verify=args.verify)
     products = [xcframework(root, args.product)] if args.product else xcframeworks(root).values()
     for product in products:
         if args.verify:

@@ -171,12 +171,23 @@ def _publish(root, outputs):
             stage_file(source, path)
 
 
-def prepare_generated(root, *, env=None, product=None):
-    """Materialize fresh declarations for opted-in native builds and C fixtures."""
+def _verify_retained(root, retained):
+    if changed := _different(retained):
+        names = ", ".join(path.relative_to(root).as_posix() for path in changed)
+        raise ValueError(
+            f"Generated C headers or module maps differ: {names}. "
+            "Run sdk-tooling c-headers generate or rebuild the affected XCFramework."
+        )
+
+
+def prepare_generated(root, *, env=None, product=None, verify=False):
+    """Generate opted-in declarations, optionally verifying the bundled copies first."""
     root, products = _generated_products(root, product)
     if products:
         executable = quality.tool(root, "cbindgen", "cargo:cbindgen", env=env)
-        outputs, _, _ = _render(root, products, executable, env)
+        outputs, retained, _ = _render(root, products, executable, env)
+        if verify:
+            _verify_retained(root, retained)
         _publish(root, outputs)
 
 
@@ -188,12 +199,7 @@ def run_operation(args, *, root):
     if args.operation == "generate":
         _publish(root, outputs)
         return
-    if changed := _different(retained):
-        names = ", ".join(path.relative_to(root).as_posix() for path in changed)
-        raise ValueError(
-            f"Generated C headers or module maps differ: {names}. "
-            "Run sdk-tooling c-headers generate or rebuild the affected XCFramework."
-        )
+    _verify_retained(root, retained)
     _publish(root, generated)
 
 

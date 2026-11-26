@@ -8,6 +8,7 @@ use tempfile::TempDir;
 
 const REVISION: &str = "1111111111111111111111111111111111111111";
 const OTHER: &str = "2222222222222222222222222222222222222222";
+const WORKFLOW: &str = ".github/workflows/check.yml";
 
 fn command(revision: &str) -> String {
     format!("uvx --from git+https://github.com/naviapps/sdk-tooling.git@{revision} sdk-tooling")
@@ -19,6 +20,17 @@ fn write_mise(root: &Path, revision: &str) {
         format!("[tasks.sdk-tooling]\nrun = '{}'\n", command(revision)),
     )
     .unwrap();
+}
+
+fn check_workflow(revision: &str) -> String {
+    format!(
+        "jobs:\r\n  check:\r\n    uses: 'naviapps/sdk-tooling/.github/workflows/check-sdk.yml@{revision}' # Keep {REVISION}\r\n    with:\r\n      windows: bindings\r\n  docs:\r\n    uses: naviapps/sdk-tooling/.github/workflows/plan-checks.yml@{REVISION}\r\n"
+    )
+}
+
+fn write_workflow(root: &Path, revision: &str) {
+    fs::create_dir_all(root.join(".github/workflows")).unwrap();
+    fs::write(root.join(WORKFLOW), check_workflow(revision)).unwrap();
 }
 
 fn temporary_sdk() -> TempDir {
@@ -223,6 +235,68 @@ fn check_accepts_distinct_immutable_pins_unless_a_revision_is_required() {
 }
 
 #[test]
+fn workflow_and_cli_pins_update_together_without_reformatting() {
+    let root = temporary_sdk();
+    let path = root.path();
+    write_workflow(path, REVISION);
+    succeeds(sync(&[path], &["--check"]));
+
+    succeeds(sync(&[path], &["--revision", OTHER]));
+    assert_eq!(
+        fs::read_to_string(path.join(WORKFLOW)).unwrap(),
+        check_workflow(OTHER)
+    );
+    assert!(
+        fs::read_to_string(path.join("mise.toml"))
+            .unwrap()
+            .contains(&command(OTHER))
+    );
+    succeeds(sync(&[path], &["--check", "--revision", OTHER]));
+}
+
+#[test]
+fn check_detects_workflow_skew_and_refuses_floating_references() {
+    let root = temporary_sdk();
+    let path = root.path();
+    write_workflow(path, OTHER);
+    fails(sync(&[path], &["--check"]), "differs from the CLI revision");
+    assert_eq!(
+        fs::read_to_string(path.join(WORKFLOW)).unwrap(),
+        check_workflow(OTHER)
+    );
+    succeeds(sync(&[path], &["--revision", REVISION]));
+    succeeds(sync(&[path], &["--check"]));
+
+    write_workflow(path, "main");
+    fails(
+        sync(&[path], &["--revision", OTHER]),
+        "canonical immutable revision",
+    );
+    assert_eq!(
+        fs::read_to_string(path.join(WORKFLOW)).unwrap(),
+        check_workflow("main")
+    );
+    assert!(
+        fs::read_to_string(path.join("mise.toml"))
+            .unwrap()
+            .contains(&command(REVISION))
+    );
+}
+
+#[test]
+fn an_sdk_with_its_own_check_workflow_can_update_just_the_cli_pin() {
+    let root = temporary_sdk();
+    let path = root.path();
+    write_workflow(path, REVISION);
+    let local = check_workflow(REVISION).replace("check-sdk.yml@", "custom-check.yml@");
+    let workflow = path.join(WORKFLOW);
+    fs::write(&workflow, &local).unwrap();
+    succeeds(sync(&[path], &["--revision", OTHER]));
+    succeeds(sync(&[path], &["--check"]));
+    assert_eq!(fs::read_to_string(&workflow).unwrap(), local);
+}
+
+#[test]
 fn adopted_editorconfig_keeps_local_sections() {
     let root = temporary_sdk();
     let path = root.path();
@@ -276,6 +350,7 @@ fn a_pending_file_preserves_the_current_pin_and_another_publishers_bytes() {
     let path = root.path();
     let pin = path.join("mise.toml");
     let original = fs::read(&pin).unwrap();
+    write_workflow(path, REVISION);
     let pending = path.join("mise.toml.pending");
     fs::write(&pending, "another publisher").unwrap();
 
@@ -285,6 +360,11 @@ fn a_pending_file_preserves_the_current_pin_and_another_publishers_bytes() {
     );
     assert_eq!(fs::read(&pin).unwrap(), original);
     assert_eq!(fs::read_to_string(&pending).unwrap(), "another publisher");
+    assert_eq!(
+        fs::read_to_string(path.join(WORKFLOW)).unwrap(),
+        check_workflow(REVISION)
+    );
+    assert!(!path.join(".github/workflows/check.yml.pending").exists());
 }
 
 #[cfg(unix)]

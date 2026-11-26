@@ -50,7 +50,7 @@ To opt in to the clean NuGet consumer tests, use the .NET SDK pinned in
 [`global.json`](global.json):
 
 ```sh
-SDK_TOOLING_TEST_DOTNET=1 MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=dotnet mise run check
+SDK_TOOLING_TEST_DOTNET=1 MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=rust,dotnet mise run check
 ```
 
 The [CI workflow](.github/workflows/check.yml) also runs these tests on standard
@@ -101,7 +101,6 @@ The SDK's `make check` uses the pinned shared CLI for quality and standalone
 consumer checks. Use the SDK's language test commands for a focused test run.
 The [shared source workflow](docs/REFERENCE.md#shared-source-workflow) runs the
 same source and consumer checks on GitHub-hosted runners.
-This tooling repository uses `mise run check` and has no Makefile.
 
 SDKs that declare `[native]` use the pinned CLI from `mise.toml` for local
 distribution checks and SDK-owned Python fixtures. A prepared VM can use a
@@ -111,7 +110,7 @@ checksummed source bundle and local Git mirror supplied by its host.
 
 | Scope               | Tools and version authority                                                                                                                                                                                                                                 |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repository checks   | Each repository's `mise.toml` selects Python, formatters and linters. `global.json` pins the .NET SDK where applicable. `uv` supplies the PyPI tool backend.                                                                                                |
+| Repository checks   | `mise.toml` selects Python, formatters and linters. `global.json` pins .NET where applicable. `uv` runs the pinned CLI.                                                                                                                                     |
 | Rust producers      | `rust-toolchain.toml` selects Rust, rustfmt and Clippy. Install only the standard-library targets needed by the job: both Darwin targets for universal frameworks, the appropriate MSVC target for Windows, or the WebAssembly target for browser bindings. |
 | macOS SDKs          | Select full Xcode for Swift, SwiftPM, swift-format, Clang, `xcodebuild` and Mach-O inspection. Use the macOS signing tools for framework checks. Do not install separate copies of these tools through mise.                                                |
 | Native Windows SDKs | Use Python and Rust for the host architecture, Visual Studio C++ tools with the Windows SDK, and the x64 .NET SDK pinned in `global.json` for x64 SDKs.                                                                                                     |

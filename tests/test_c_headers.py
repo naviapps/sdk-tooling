@@ -132,8 +132,41 @@ class CHeaderTests(unittest.TestCase):
     def test_automatic_generation_skips_legacy_native_products(self):
         self.assertFalse(c_headers.has_generated_products(self.root))
         c_headers.prepare_generated(self.root)
+        c_headers.prepare_generated(self.root, verify=True)
         self.tool.assert_not_called()
         self.generator.assert_not_called()
+
+    def test_xcframework_verify_compares_and_stages_generated_headers_once(self):
+        crate = self.root / "crates/ffi"
+        manifest = crate / "Cargo.toml"
+        manifest.write_bytes(manifest.read_bytes() + b"generated = true\n")
+        portable = b"void alpha_run(void);\n"
+        windows = b"void alpha_windows_run(void);\n"
+        self.generator.side_effect = [portable, windows, portable, windows]
+        framework = "Artifacts/CAlpha.xcframework/macos-arm64_x86_64/CAlpha.framework/Versions/A"
+        installed = self.write(f"{framework}/Headers/alpha.h", b"stale header\n")
+        self.write(
+            f"{framework}/Modules/module.modulemap",
+            b'framework module CAlpha {\n  umbrella header "alpha.h"\n  export *\n}\n',
+        )
+        command = ["xcframework", "--verify", "--product", "alpha"]
+
+        with patch("sdk_tooling.xcframework.xcframework") as builder:
+            with self.assertRaisesRegex(ValueError, "Headers/alpha.h"):
+                main(command)
+            builder.assert_not_called()
+            self.assertFalse((crate / "include").exists())
+            self.assertEqual(self.generator.call_count, 2)
+
+            installed.write_bytes(portable)
+            self.assertEqual(main(command), 0)
+            builder.assert_called_once_with(self.root, "alpha")
+            builder.return_value.verify.assert_called_once_with()
+
+        self.assertEqual(self.generator.call_count, 4)
+        self.assertEqual((crate / "include/alpha.h").read_bytes(), portable)
+        self.assertEqual((crate / "include/windows/alpha_windows.h").read_bytes(), windows)
+        self.assertEqual(installed.read_bytes(), portable)
 
     def test_late_generator_failure_preserves_all_existing_outputs(self):
         header = self.write("crates/ffi/include/alpha.h", b"old header\n")

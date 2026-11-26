@@ -14,6 +14,8 @@ use toml_edit::Document;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const CLI_PREFIX: &str = "uvx --from git+https://github.com/naviapps/sdk-tooling.git@";
+const WORKFLOW_PATH: &str = ".github/workflows/check.yml";
+const WORKFLOW_PREFIX: &str = "naviapps/sdk-tooling/.github/workflows/check-sdk.yml@";
 const RUST_TEMPLATES: [(&str, &[u8]); 2] = [
     (
         ".editorconfig",
@@ -144,7 +146,7 @@ fn ordinary_contents(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-fn tooling_pin(source: &[u8]) -> Result<(&str, Range<usize>)> {
+fn tooling_pin(source: &[u8]) -> Result<Range<usize>> {
     let source = std::str::from_utf8(source)?;
     let document = Document::parse(source)?;
     let run = document
@@ -164,8 +166,55 @@ fn tooling_pin(source: &[u8]) -> Result<(&str, Range<usize>)> {
         .ok_or(immutable)?;
     let value = run.span().ok_or(immutable)?;
     let start = source[value.clone()].find(revision).ok_or(immutable)? + value.start;
-    let span = start..start + revision.len();
-    Ok((&source[span.clone()], span))
+    Ok(start..start + revision.len())
+}
+
+fn workflow_source(root: &Path) -> Result<Option<Vec<u8>>> {
+    let path = root.join(WORKFLOW_PATH);
+    let Some(info) = metadata(&path)? else {
+        return Ok(None);
+    };
+    if !info.is_file() || is_linked(&info) || path.canonicalize()? != path {
+        return Err(format!("Expected an ordinary SDK workflow: {}", path.display()).into());
+    }
+    Ok(Some(fs::read(path)?))
+}
+
+fn workflow_pin(source: &[u8]) -> Result<Option<Range<usize>>> {
+    let mut offset = 0;
+    let mut jobs = false;
+    let mut pin = None;
+    for line in std::str::from_utf8(source)?.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let text = line.trim_ascii();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+        if line.starts_with(text) {
+            jobs = text.split_ascii_whitespace().next() == Some("jobs:");
+        }
+        let Some(reference) = line
+            .strip_prefix("    uses:")
+            .and_then(|value| value.split_ascii_whitespace().next())
+            .filter(|_| jobs)
+        else {
+            continue;
+        };
+        if let Some(revision) = reference
+            .trim_matches(['\'', '"'])
+            .strip_prefix(WORKFLOW_PREFIX)
+        {
+            if pin.is_some() || !immutable_revision(revision) {
+                return Err(
+                    "Shared SDK check workflow requires one canonical immutable revision".into(),
+                );
+            }
+            let start = start + line.find(WORKFLOW_PREFIX).unwrap() + WORKFLOW_PREFIX.len();
+            pin = Some(start..start + revision.len());
+        }
+    }
+    Ok(pin)
 }
 
 fn ordinary_file(path: &Path) -> io::Result<bool> {
@@ -190,12 +239,22 @@ struct Replacement {
 }
 
 impl Replacement {
-    fn write(self) -> Result<()> {
+    fn pin(path: PathBuf, previous: Vec<u8>, span: Range<usize>, revision: &str) -> Self {
+        let mut desired = previous.clone();
+        desired[span].copy_from_slice(revision.as_bytes());
+        Self {
+            path,
+            previous,
+            desired,
+        }
+    }
+
+    fn write(&self, previous: &[u8], desired: &[u8]) -> Result<()> {
         let parent = self
             .path
             .parent()
             .ok_or("SDK configuration has no parent")?;
-        if !metadata(parent)?.is_some_and(|info| info.is_dir() && !is_linked(&info)) {
+        if parent.canonicalize()? != parent {
             return Err(
                 format!("SDK configuration directory changed: {}", parent.display()).into(),
             );
@@ -216,10 +275,10 @@ impl Replacement {
             )
         })?;
         let updated: Result<()> = (|| {
-            if ordinary_contents(&self.path)?.as_deref() != Some(self.previous.as_slice()) {
+            if ordinary_contents(&self.path)?.as_deref() != Some(previous) {
                 return Err(format!("SDK configuration changed: {}", self.path.display()).into());
             }
-            file.write_all(&self.desired)?;
+            file.write_all(desired)?;
             if let Some(previous) = metadata(&self.path)? {
                 file.set_permissions(previous.permissions())?;
             }
@@ -232,6 +291,24 @@ impl Replacement {
         }
         updated
     }
+}
+
+fn apply(replacements: &[Replacement]) -> Result<()> {
+    for (index, replacement) in replacements.iter().enumerate() {
+        if let Err(error) = replacement.write(&replacement.previous, &replacement.desired) {
+            let mut failure = format!("Cannot update {}: {error}", replacement.path.display());
+            for installed in replacements[..index].iter().rev() {
+                if let Err(error) = installed.write(&installed.desired, &installed.previous) {
+                    failure.push_str(&format!(
+                        "\nCannot restore {}: {error}",
+                        installed.path.display()
+                    ));
+                }
+            }
+            return Err(failure.into());
+        }
+    }
+    Ok(())
 }
 
 fn plan(options: &Options) -> Result<Vec<Replacement>> {
@@ -255,7 +332,15 @@ fn plan(options: &Options) -> Result<Vec<Replacement>> {
         }
         let current_mise = ordinary_contents(&mise)?
             .ok_or_else(|| format!("SDK checkout requires mise.toml: {}", root.display()))?;
-        let (actual, span) = tooling_pin(&current_mise)?;
+        let span = tooling_pin(&current_mise)?;
+        let actual = std::str::from_utf8(&current_mise[span.clone()])?;
+        let revision = options.revision.as_deref().unwrap_or(actual);
+        if options.check && actual != revision {
+            return Err(format!(
+                "SDK tooling pin differs from the requested revision: {} (expected {revision}, found {actual})",
+                mise.display()
+            ).into());
+        }
         for (name, template) in templates(options, rust) {
             let path = root.join(name);
             let Some(previous) = ordinary_contents(&path)? else {
@@ -274,22 +359,24 @@ fn plan(options: &Options) -> Result<Vec<Replacement>> {
                 });
             }
         }
+        if let Some(workflow) = workflow_source(&root)?
+            && let Some(pin) = workflow_pin(&workflow)?
+            && workflow[pin.clone()] != *revision.as_bytes()
+        {
+            let path = root.join(WORKFLOW_PATH);
+            if options.check {
+                let actual = std::str::from_utf8(&workflow[pin])?;
+                return Err(format!(
+                    "Shared SDK check workflow pin differs from the CLI revision: {} (expected {revision}, found {actual})",
+                    path.display()
+                ).into());
+            }
+            replacements.push(Replacement::pin(path, workflow, pin, revision));
+        }
         if let Some(revision) = &options.revision
             && actual != revision
         {
-            if options.check {
-                return Err(format!(
-                    "SDK tooling pin differs from the requested revision: {} (expected {revision}, found {actual})",
-                    mise.display()
-                ).into());
-            }
-            let mut desired = current_mise.clone();
-            desired[span].copy_from_slice(revision.as_bytes());
-            replacements.push(Replacement {
-                path: mise,
-                previous: current_mise,
-                desired,
-            });
+            replacements.push(Replacement::pin(mise, current_mise, span, revision));
         }
     }
     Ok(replacements)
@@ -305,10 +392,7 @@ fn run() -> Result<()> {
             .collect();
         return Err(format!("SDK tooling templates differ: {}", names.join(", ")).into());
     }
-    for replacement in replacements {
-        replacement.write()?;
-    }
-    Ok(())
+    apply(&replacements)
 }
 
 fn main() -> ExitCode {

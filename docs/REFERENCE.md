@@ -133,18 +133,20 @@ resolve from the working directory. To use a prepared Cargo cache without
 network access, add `--offline` to the Cargo options.
 
 Select a Rust or Swift SDK with a pinned `[tasks.sdk-tooling]` command in
-`mise.toml`. Synchronization replaces its literal commit SHA and preserves
-the rest of the mise configuration. Each SDK owns its dprint configuration
-and Git attributes.
+`mise.toml`. Synchronization updates that commit SHA and the existing
+literal job reference to `naviapps/sdk-tooling/.github/workflows/check-sdk.yml`
+in `.github/workflows/check.yml`. It preserves other workflow contents and
+leaves SDKs with their own workflows free to use the CLI pin on its own. Each
+SDK owns its dprint configuration and Git attributes.
 
 Rust SDKs receive updates for their existing EditorConfig and Rust toolchain
 files. SDK-specific EditorConfig sections are retained. Use `--quality` to
 update existing Ruff and SwiftLint configuration.
 
-The tool validates all selected checkout paths before replacing files and
-writes each updated pin after its templates. A check without `--revision`
-accepts any canonical immutable pin. Add `--revision FULL_COMMIT_SHA` to
-require every selected checkout to use that revision.
+The tool validates the selected checkout paths before updating files and attempts
+to restore earlier updates if one fails. `--check` requires an immutable CLI revision and the same
+revision in the shared workflow when present. Add `--revision FULL_COMMIT_SHA`
+to require every selected checkout to use that revision.
 
 ## Shared source workflow
 
@@ -348,6 +350,8 @@ Ignore the exact generated source-side header and module map files. The
 XCFramework build and C fixtures generate these inputs before use.
 `c-headers check` compares freshly generated portable headers and module maps
 with the bundled copies and prepares the ignored files for C compilation.
+`xcframework --verify` performs the same comparison before checking the
+framework and receipt.
 Run `mise run sdk-tooling -- c-headers generate` to prepare the declarations
 without rebuilding the framework. Add `--product ID` to select one product
 from `[native]`.
@@ -568,15 +572,9 @@ affected SDKs with the updated Tooling checkout before pushing the related
 commits together. Use distribution checks for changes to package contents,
 packaging or installation.
 
-The [Swift matrix](../.github/workflows/check-swift.yml) and
-[Windows x64 check step](../.github/actions/test-rust-windows/action.yml) can be
-called at a fixed tooling revision. The matrix runs `make test` and
-`make test-consumer` on macOS 26 and 27, with `make check-source` on macOS 27 by
-default. Select `source-macos` to change the source check's OS or
-`source-target` to select its Make target. The standalone Swift consumer uses
-the tools already installed for that job. The Windows check can install the
-pinned x64 .NET SDK and accepts `test-bindings: "true"` to run the SDK's
-contributor fixtures.
+The [shared source workflow](#shared-source-workflow) calls the
+[Swift matrix](../.github/workflows/check-swift.yml) and the
+[Windows x64 check step](../.github/actions/test-rust-windows/action.yml).
 
 ### C ABI and .NET project checks
 

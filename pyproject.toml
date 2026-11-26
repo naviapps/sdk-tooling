@@ -26,15 +26,11 @@ ignore = ["E731"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "/README.md",
   "/sdk_tooling",
   "/ci/run_sdk_tooling.py",
   "/crates/cargo-consumer-identity/src/main.rs",
   "/crates/rustc-dep-info/src/main.rs",
 ]
-
-[tool.hatch.build.targets.wheel]
-packages = ["sdk_tooling"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "crates/cargo-consumer-identity/src/main.rs" = "crates/cargo-consumer-identity/src/main.rs"
