@@ -611,12 +611,21 @@ class DistributionTests(unittest.TestCase):
             for environment, _ in invocations[2:]:
                 self.assertIn("shared $$tooling", environment["SDK_TOOLING"])
 
-    def test_missing_pinned_launcher_fails_before_running_commands(self):
-        with tempfile.TemporaryDirectory() as disposable:
-            root = Path(disposable)
+    def test_missing_distribution_launchers_fail_before_running_commands(self):
+        with tempfile.TemporaryDirectory() as disposable, patch.object(subprocess, "run") as run:
+            root = Path(disposable).resolve()
             execute = DISPATCH["execute"]
             with self.assertRaisesRegex(ValueError, "must provide ci/run_sdk_tooling.py"):
                 execute(root, "windows", [], {}, root, root / "tooling")
+            launcher = root / "ci/run_sdk_tooling.py"
+            launcher.parent.mkdir()
+            launcher.touch()
+            with (
+                patch.dict(execute.__globals__, __file__=str(root / "dispatcher/ci/check.py")),
+                self.assertRaisesRegex(ValueError, "ordinary SDK file: ci/run_sdk_tooling.py"),
+            ):
+                execute(root, "macos", [["make"]], {}, root, root, xcframework_output=root / "out")
+            run.assert_not_called()
 
     def test_linked_pinned_launcher_fails_before_running_commands(self):
         with tempfile.TemporaryDirectory() as disposable:

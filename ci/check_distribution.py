@@ -225,6 +225,8 @@ def execute(source, platform, commands, env, temp, tooling, *, xcframework_outpu
         sdk_cli = pinned_cli(tooling)
     except ValueError:
         raise ValueError("Pinned SDK Tooling must provide ci/run_sdk_tooling.py") from None
+    if xcframework_output is not None:
+        archive_cli = pinned_cli(Path(__file__).resolve().parents[1])
     if platform == "macos" and (source / "mise.toml").is_file():
         run(source, env, "mise", "trust", "mise.toml")
         run(source, env, "mise", "install")
@@ -265,15 +267,11 @@ def execute(source, platform, commands, env, temp, tooling, *, xcframework_outpu
 
     # The dispatcher owns the archive format. Its verifier uses the exact
     # producer revision that generated the framework and receipt.
-    dispatcher = Path(__file__).resolve().with_name("run_sdk_tooling.py")
     run(
         source,
         env,
         *prefix,
-        sys.executable,
-        "-I",
-        "-B",
-        str(dispatcher),
+        *archive_cli,
         "xcframework-archive",
         "--output",
         str(xcframework_output),
