@@ -674,7 +674,7 @@ class NuGetTests(unittest.TestCase):
             work = Path(options["cwd"])
             if argv[1:] == ["--version"]:
                 if argv[0] == x64_sdk:
-                    self.assertEqual(work, self.root.resolve())
+                    self.assertTrue(work.samefile(self.root), work)
                 else:
                     self.assertEqual(argv[0], str(arm_sdk))
                     self.assertEqual(options["env"]["DOTNET_HOST_PATH"], str(arm_sdk))
