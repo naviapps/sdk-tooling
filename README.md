@@ -7,11 +7,11 @@ distributed artifacts directly.
 
 ## Documentation
 
-- [Check source and synchronize SDK policy](docs/REFERENCE.md#quality-checks)
-- [Configure distribution and find its artifacts](docs/REFERENCE.md#hosted-distribution)
+- [Check source and synchronize SDK policy][quality checks]
+- [Configure distribution and find its artifacts][hosted distribution]
 - [Build and verify SDK packages on Windows on Arm](#windows-on-arm)
-- [Verify installed SwiftPM, NuGet, Rust and C consumers](docs/REFERENCE.md#consumer-verification)
-- [Recover artifacts after a failed replacement](docs/REFERENCE.md#recover-previous-artifacts)
+- [Verify installed SwiftPM, NuGet, Rust and C consumers][consumer verification]
+- [Recover artifacts after a failed replacement][artifact recovery]
 
 ## Use a pinned revision
 
@@ -24,17 +24,15 @@ Set `SDK_TOOLING_REVISION` to the full commit SHA and run:
 uvx --from "git+https://github.com/naviapps/sdk-tooling.git@$SDK_TOOLING_REVISION" sdk-tooling --help
 ```
 
-The CLI can run in a checkout owned by any organization. Start with the
-[distribution CLI guide](docs/REFERENCE.md#distribution-cli) to declare the
-commands and fixtures for your package.
-
-Declare [native products](docs/REFERENCE.md#macos-builder-specifications), [consumer checks](docs/REFERENCE.md#consumer-verification) and [distribution commands](docs/REFERENCE.md#distribution-cli) in `sdk-tooling.toml`.
+The CLI can run in a checkout owned by any organization. Declare [native products][native products],
+[consumer checks][consumer verification] and [distribution commands][distribution CLI] in `sdk-tooling.toml`.
 
 ## Developer bootstrap
 
-Git and mise must already be available. Review this repository's
-[`mise.toml`](mise.toml) before trusting its tool configuration and tasks, then run
-from the repository root:
+These commands require Git, mise and a clone of the
+[SDK Tooling repository](https://github.com/naviapps/sdk-tooling). Review
+`mise.toml` before trusting its tool configuration and tasks, then run from the
+clone root:
 
 ```sh
 mise trust mise.toml
@@ -46,14 +44,13 @@ mise run check
 `mise install` may download the pinned tools. `mise run check` selects the pinned
 Python and Rust and tests both command paths without pip dependencies or .NET.
 The template sync crate may fetch its locked public Cargo dependencies on first use.
-To opt in to the clean NuGet consumer tests, use the .NET SDK pinned in
-[`global.json`](global.json):
+To opt in to the clean NuGet consumer tests, use the .NET SDK pinned in `global.json`:
 
 ```sh
 SDK_TOOLING_TEST_DOTNET=1 MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=rust,dotnet mise run check
 ```
 
-The [CI workflow](.github/workflows/check.yml) also runs these tests on standard
+The [CI workflow][checks workflow] also runs these tests on standard
 macOS ARM64 and Windows x64 runners.
 
 After changing a workflow's action dependencies, regenerate its
@@ -67,7 +64,7 @@ directories and acquires native publisher locks before removing output.
 
 ## SDK distribution
 
-Run the [distribution workflow](.github/workflows/check-sdk-distribution.yml)
+Run the [distribution workflow][distribution workflow]
 from the SDK checkout at the intended commit on `main`:
 
 ```sh
@@ -75,7 +72,7 @@ gh workflow run check-sdk-distribution.yml --repo naviapps/sdk-tooling \
   --field sdk=configuration-storage --field "revision=$(git rev-parse HEAD)"
 ```
 
-See [hosted distribution](docs/REFERENCE.md#hosted-distribution) for the plan,
+See [hosted distribution][hosted distribution] for the plan,
 runtime checks and downloadable artifacts.
 
 ## SDK checkouts
@@ -99,7 +96,7 @@ older checkouts need `MISE_ACTIVATE_AGGRESSIVE=1` before `mise exec`.
 Check Python against `mise.toml` and the formatter with `xcrun swift-format --version`.
 The SDK's `make check` uses the pinned shared CLI for quality and standalone
 consumer checks. Use the SDK's language test commands for a focused test run.
-The [shared source workflow](docs/REFERENCE.md#shared-source-workflow) runs the
+The [shared source workflow][shared source workflow] runs the
 same source and consumer checks on GitHub-hosted runners.
 
 SDKs that declare `[native]` use the pinned CLI from `mise.toml` for local
@@ -124,7 +121,7 @@ components for both ARM64 and x64 so the driver can use `HostARM64/x64`.
 Set `DOTNET_BIN` to the absolute path of the x64 .NET SDK executable.
 The driver builds x64 binaries and runs x64 managed consumers under emulation.
 Use the SDK's documented Windows driver. See
-[Windows builds and inspection](docs/REFERENCE.md#windows-builds-and-inspection)
+[Windows builds and inspection][Windows builds and inspection]
 for the shared requirements.
 
 For a combined NuGet package in hosted CI, add `--field windows-on-arm=true`
@@ -176,3 +173,14 @@ cleanup. Hosts own product policy, provider calls and release authorization.
 ## License
 
 SDK Tooling is available under the [MIT License](LICENSE).
+
+[quality checks]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#quality-checks
+[hosted distribution]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#hosted-distribution
+[consumer verification]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#consumer-verification
+[artifact recovery]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#recover-previous-artifacts
+[native products]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#macos-builder-specifications
+[distribution CLI]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#distribution-cli
+[checks workflow]: https://github.com/naviapps/sdk-tooling/blob/main/.github/workflows/check.yml
+[distribution workflow]: https://github.com/naviapps/sdk-tooling/blob/main/.github/workflows/check-sdk-distribution.yml
+[shared source workflow]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#shared-source-workflow
+[Windows builds and inspection]: https://github.com/naviapps/sdk-tooling/blob/main/docs/REFERENCE.md#windows-builds-and-inspection

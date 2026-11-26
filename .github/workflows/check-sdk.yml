@@ -116,10 +116,7 @@ jobs:
           skip-lts-prepass: true
       - name: Install pinned Rust
         run: rustup install --no-self-update
-      - name: Install pinned cbindgen
-        run: |
-          $version = python -c 'import tomllib; from pathlib import Path; print(tomllib.loads(Path("mise.toml").read_text())["tools"]["cargo:cbindgen"])'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo install --locked cbindgen --version $version
       - name: Verify the x64 packages and publish the Native AOT consumer
-        run: python -I -B ../tooling/ci/run_sdk_tooling.py windows -m distribution.verify_windows --native-aot
+        run: >-
+          python -I -B ../tooling/ci/run_sdk_tooling.py windows --driver-prepares-headers
+          -m distribution.verify_windows --native-aot

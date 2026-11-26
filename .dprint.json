@@ -1,10 +1,5 @@
 {
   "lineWidth": 100,
-  "indentWidth": 2,
-  "newLineKind": "lf",
-  "markdown": {
-    "textWrap": "maintain"
-  },
   "excludes": [
     "**/Artifacts/**",
     "**/ThirdParty/**",

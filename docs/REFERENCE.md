@@ -167,9 +167,9 @@ SDK-specific source check. Set `windows-fixture` to run the checkout's
 `managed` mode. Use `platform` to select `all`, `macos`, or `windows`.
 
 The optional `native-aot` input runs the SDK's manual win-x64 package check.
-That mode requires an SDK-owned `distribution.verify_windows` Python module
-that accepts `--native-aot`, plus the Rust, .NET and cbindgen pins declared by
-the SDK.
+Declare the Rust, .NET and cbindgen pins in the SDK. The launcher provisions
+cbindgen, and the SDK's `distribution.verify_windows` module prepares its
+headers and runs the `--native-aot` acceptance.
 
 ## Distribution CLI
 
